@@ -1,6 +1,6 @@
 {
   "name": "@kylaira/alloy",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
   "type": "module",
   "bin": {
