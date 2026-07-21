@@ -37,9 +37,11 @@
     "README.md"
   ],
   "scripts": {
+    "start": "node ./bin/alloy.mjs",
+    "alloy": "node ./bin/alloy.mjs",
     "test": "node --test test/unit/*.test.mjs",
     "doctor": "node bin/alloy.mjs --help",
-    "link-local": "npm link && npm link -g @earendil-works/pi-coding-agent"
+    "setup": "npm install && npm link"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",

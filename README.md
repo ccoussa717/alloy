@@ -153,16 +153,39 @@ sequenceDiagram
 
 ### Install Pi + Alloy
 
-```bash
-# Pi (global)
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+`npm install` alone does **not** put `alloy` on your PATH. You must link (or run via `node` / `npm start`).
 
-# Alloy (from this repo)
+```bash
+# 1) Node 20+ required (nvm works fine)
+node -v
+
+# 2) Alloy (from this repo)
 git clone git@gitlab.com:kylaira/infrastructure/alloy.git
 cd alloy
 npm install
 chmod +x bin/alloy.mjs
-npm link          # puts `alloy` on your PATH
+
+# 3) Put `alloy` on PATH (pick one)
+npm link                    # recommended — creates global `alloy` command
+# OR run without linking:
+npm start                   # same as: node ./bin/alloy.mjs
+./bin/alloy.mjs
+```
+
+Pi is a dependency of this package. The launcher finds it under `node_modules` after `npm install`.  
+Optional global Pi (not required if deps are installed):
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+**If `alloy` is still “not found” after `npm link`:** your npm global bin dir is not on `PATH`.
+
+```bash
+npm bin -g                  # e.g. ~/.npm-global/bin or ~/.nvm/.../bin
+# ensure that directory is in PATH, then open a new shell
+hash -r
+which alloy
 ```
 
 ### First run
