@@ -68,6 +68,26 @@ function overwriteMetadata(cp, update) {
   }
 }
 
+function overwriteRootMetadata(cp, update) {
+  const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+  const metadata = update(JSON.parse(readFileSync(rootPath, "utf8")));
+  writeFileSync(rootPath, `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+function convertToPriorModernMetadata(cp, repo) {
+  const restoreObject = cp.restoreObject || cp.refObject;
+  run(repo, ["update-ref", cp.ref, restoreObject, cp.refObject]);
+  overwriteMetadata(cp, (metadata) => {
+    const {
+      formatVersion: _formatVersion,
+      restoreObject: _restoreObject,
+      ...prior
+    } = metadata;
+    return { ...prior, refObject: restoreObject };
+  });
+  return restoreObject;
+}
+
 function checkpointArtifactPaths(repo, id) {
   const root = checkpointRootPath(repo);
   return [join(root, id), join(root, `${id}.json`)];
@@ -277,6 +297,236 @@ describe("P0.4 safe checkpoints", () => {
     assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "checkpoint dirty bytes\n");
   });
 
+  test("new checkpoints use an immutable manifest anchor that owns the restore object", () => {
+    const repo = initRepo("manifest-anchor");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+
+    const cp = git.createCheckpoint("manifest-anchor", repo);
+
+    assert.equal(cp.formatVersion, 2);
+    assert.match(cp.refObject, /^[0-9a-f]{40,64}$/);
+    assert.match(cp.restoreObject, /^[0-9a-f]{40,64}$/);
+    assert.equal(run(repo, ["rev-parse", cp.ref]).stdout.trim(), cp.refObject);
+    assert.equal(run(repo, ["cat-file", "-t", cp.refObject]).stdout.trim(), "commit");
+    assert.equal(run(repo, ["rev-parse", `${cp.refObject}^1`]).stdout.trim(), cp.restoreObject);
+    assert.match(
+      run(repo, ["show", "-s", "--format=%B", cp.refObject]).stdout,
+      /alloy-checkpoint-anchor-v1|manifestDigest|sha256/i,
+    );
+  });
+
+  test("restore rejects authenticated head substitution even when metadata copies agree", () => {
+    const repo = initRepo("tampered-authenticated-head");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("authenticated-head", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    run(repo, ["commit", "--allow-empty", "-m", "same-tree alternate head"]);
+    const substitutedHead = run(repo, ["rev-parse", "HEAD"]).stdout.trim();
+    overwriteMetadata(cp, (metadata) => ({
+      ...metadata,
+      head: substitutedHead,
+    }));
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|authenticated/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects root and store metadata disagreement before mutation", () => {
+    const repo = initRepo("mismatched-authenticated-metadata");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("metadata-mismatch", repo);
+    overwriteRootMetadata(cp, (metadata) => ({
+      ...metadata,
+      label: "tampered root label",
+    }));
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /metadata|mismatch|integrity/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects authenticated patch tampering before mutation", () => {
+    const repo = initRepo("tampered-authenticated-patch");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("authenticated-patch", repo);
+    writeFileSync(join(cp.storeDir, "worktree.patch"), "tampered patch bytes\n");
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects authenticated index patch tampering before mutation", () => {
+    const repo = initRepo("tampered-authenticated-index-patch");
+    writeFileSync(join(repo, "a.txt"), "checkpoint staged bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const cp = git.createCheckpoint("authenticated-index-patch", repo);
+    writeFileSync(join(cp.storeDir, "index.patch"), "tampered index patch bytes\n");
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects authenticated untracked payload tampering before mutation", () => {
+    const repo = initRepo("tampered-authenticated-untracked");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+    const cp = git.createCheckpoint("authenticated-untracked", repo);
+    writeFileSync(
+      join(cp.storeDir, "untracked", "untracked.txt"),
+      "tampered untracked bytes\n",
+    );
+    rmSync(join(repo, "untracked.txt"));
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(existsSync(join(repo, "untracked.txt")), false);
+  });
+
+  test("restore rejects authenticated untracked symlink target tampering", () => {
+    const repo = initRepo("tampered-authenticated-symlink");
+    symlinkSync("a.txt", join(repo, "untracked-link"));
+    const cp = git.createCheckpoint("authenticated-symlink", repo);
+    const storedLink = join(cp.storeDir, "untracked", "untracked-link");
+    rmSync(storedLink);
+    symlinkSync("different-target", storedLink);
+    rmSync(join(repo, "untracked-link"));
+    const before = snapshot(repo);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.deepEqual(snapshot(repo), before);
+    assert.equal(existsSync(join(repo, "untracked-link")), false);
+  });
+
+  test("restore rejects authenticated untracked mode tampering", (t) => {
+    const repo = initRepo("tampered-authenticated-mode");
+    writeFileSync(join(repo, "setuid.sh"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(repo, "setuid.sh"), 0o4755);
+    if ((lstatSync(join(repo, "setuid.sh")).mode & 0o7777) !== 0o4755) {
+      t.skip("filesystem strips setuid mode");
+      return;
+    }
+    const cp = git.createCheckpoint("authenticated-mode", repo);
+    const stored = join(cp.storeDir, "untracked", "setuid.sh");
+    if ((lstatSync(stored).mode & 0o7777) !== 0o4755) {
+      t.skip("checkpoint filesystem strips setuid mode");
+      return;
+    }
+    chmodSync(stored, 0o755);
+    rmSync(join(repo, "setuid.sh"));
+    const before = snapshot(repo);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.deepEqual(snapshot(repo), before);
+    assert.equal(existsSync(join(repo, "setuid.sh")), false);
+  });
+
+  test("prior unanchored modern metadata with external payloads fails with migration guidance", () => {
+    const repo = initRepo("prior-modern-external-payload");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+    const cp = git.createCheckpoint("prior-modern", repo);
+    convertToPriorModernMetadata(cp, repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    rmSync(join(repo, "untracked.txt"));
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /migration|export|unauthenticated|legacy/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("prior unanchored modern tracked-only metadata restores from its validated stash", () => {
+    const repo = initRepo("prior-modern-tracked-only");
+    writeFileSync(join(repo, "a.txt"), "prior checkpoint bytes\n");
+    const cp = git.createCheckpoint("prior-modern-tracked", repo);
+    convertToPriorModernMetadata(cp, repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "prior checkpoint bytes\n");
+  });
+
+  test("prior unanchored modern deletion remains canonical and scoped", () => {
+    const repo = initRepo("prior-modern-delete");
+    writeFileSync(join(repo, "a.txt"), "prior checkpoint bytes\n");
+    writeFileSync(join(repo, "legacy-untracked.txt"), "legacy payload\n");
+    const prior = git.createCheckpoint("prior-modern-delete", repo);
+    const priorObject = convertToPriorModernMetadata(prior, repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    rmSync(join(repo, "legacy-untracked.txt"));
+    writeFileSync(join(repo, "a.txt"), "unrelated checkpoint bytes\n");
+    const unrelated = git.createCheckpoint("unrelated", repo);
+
+    assert.equal(git.deleteCheckpoint(prior.id, repo), true);
+    assert.equal(run(repo, ["rev-parse", "--verify", prior.ref]).status, 128);
+    assert.equal(existsSync(prior.storeDir), false);
+    assert.equal(run(repo, ["cat-file", "-e", priorObject]).status, 0);
+    assert.equal(run(repo, ["rev-parse", unrelated.ref]).stdout.trim(), unrelated.refObject);
+    assert.equal(existsSync(unrelated.storeDir), true);
+  });
+
+  test("delete rejects authenticated payload tampering and preserves artifacts", () => {
+    const repo = initRepo("tampered-authenticated-delete");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+    const cp = git.createCheckpoint("authenticated-delete", repo);
+    const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+    writeFileSync(
+      join(cp.storeDir, "untracked", "untracked.txt"),
+      "tampered untracked bytes\n",
+    );
+
+    assert.throws(
+      () => git.deleteCheckpoint(cp.id, repo),
+      /anchor|digest|integrity|payload/i,
+    );
+    assert.equal(run(repo, ["rev-parse", cp.ref]).stdout.trim(), cp.refObject);
+    assert.equal(existsSync(cp.storeDir), true);
+    assert.equal(existsSync(rootPath), true);
+  });
+
   test("invalid checkpoint refs fail before mutating current state", () => {
     const repo = initRepo("invalid-ref-atomic");
     writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
@@ -393,10 +643,16 @@ describe("P0.4 safe checkpoints", () => {
     const repo = initRepo("legacy-raw-restore");
     writeFileSync(join(repo, "a.txt"), "legacy checkpoint bytes\n");
     const legacy = git.createCheckpoint("legacy", repo);
-    const legacyObject = legacy.refObject;
-    run(repo, ["update-ref", "-d", legacy.ref, legacyObject]);
+    const legacyObject = legacy.restoreObject;
+    run(repo, ["update-ref", "-d", legacy.ref, legacy.refObject]);
     overwriteMetadata(legacy, (metadata) => {
-      const { refObject: _refObject, ...rest } = metadata;
+      const {
+        formatVersion: _formatVersion,
+        refObject: _refObject,
+        restoreObject: _restoreObject,
+        manifestDigest: _manifestDigest,
+        ...rest
+      } = metadata;
       return { ...rest, ref: legacyObject };
     });
     run(repo, ["reset", "--hard", "HEAD"]);
@@ -418,11 +674,17 @@ describe("P0.4 safe checkpoints", () => {
     const repo = initRepo("legacy-raw-delete");
     writeFileSync(join(repo, "a.txt"), "legacy checkpoint bytes\n");
     const legacy = git.createCheckpoint("legacy", repo);
-    const legacyObject = legacy.refObject;
+    const legacyObject = legacy.restoreObject;
     const legacyRoot = join(dirname(dirname(legacy.path)), `${legacy.id}.json`);
-    run(repo, ["update-ref", "-d", legacy.ref, legacyObject]);
+    run(repo, ["update-ref", "-d", legacy.ref, legacy.refObject]);
     overwriteMetadata(legacy, (metadata) => {
-      const { refObject: _refObject, ...rest } = metadata;
+      const {
+        formatVersion: _formatVersion,
+        refObject: _refObject,
+        restoreObject: _restoreObject,
+        manifestDigest: _manifestDigest,
+        ...rest
+      } = metadata;
       return { ...rest, ref: legacyObject };
     });
     run(repo, ["reset", "--hard", "HEAD"]);
@@ -452,19 +714,28 @@ describe("P0.4 safe checkpoints", () => {
     );
   });
 
-  test("invalid fallback patches fail before mutating current state", () => {
+  test("unauthenticated fallback patches fail closed before mutating current state", () => {
     const repo = initRepo("invalid-patch-atomic");
     writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
     const cp = git.createCheckpoint("invalid-patch", repo);
     overwriteMetadata(cp, (metadata) => {
-      const { refObject: _refObject, ...rest } = metadata;
+      const {
+        formatVersion: _formatVersion,
+        refObject: _refObject,
+        restoreObject: _restoreObject,
+        manifestDigest: _manifestDigest,
+        ...rest
+      } = metadata;
       return { ...rest, ref: null };
     });
     writeFileSync(join(cp.storeDir, "worktree.patch"), "not a patch\n");
     writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
     const before = snapshot(repo, ["a.txt"]);
 
-    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /patch|apply/i);
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /migration|export|unauthenticated/i,
+    );
     assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 
@@ -503,6 +774,99 @@ describe("P0.4 safe checkpoints", () => {
     assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "concurrent bytes\n");
     assert.equal(run(repo, ["show", ":a.txt"]).stdout, "concurrent bytes\n");
     assert.equal(run(repo, ["status", "--porcelain"]).stdout.trim(), "M  a.txt");
+  });
+
+  test("restore rejects a symbolic HEAD switch at the same object during preflight", () => {
+    const repo = initRepo("restore-concurrent-head-switch");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("concurrent-head-switch", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+    const originalHead = run(repo, ["rev-parse", "HEAD"]).stdout.trim();
+    const bin = join(tmp, "fake-concurrent-head-switch-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "stash" ] && [ "$2" = "apply" ] && [ -n "$GIT_INDEX_FILE" ]; then\n  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$REAL_GIT" -C "$TEST_REPO" switch -c concurrent-branch >/dev/null 2>&1\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.REAL_GIT = realGit;
+    process.env.TEST_REPO = repo;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.restoreCheckpoint(cp.id, repo),
+        /HEAD|branch|changed|preflight/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.TEST_REPO;
+    }
+
+    assert.equal(run(repo, ["rev-parse", "HEAD"]).stdout.trim(), originalHead);
+    assert.equal(
+      run(repo, ["symbolic-ref", "--short", "HEAD"]).stdout.trim(),
+      "concurrent-branch",
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects an ignored tracked-destination collision created during preflight", () => {
+    const repo = initRepo("restore-concurrent-ignored-collision");
+    writeFileSync(join(repo, ".gitignore"), "owned-at-checkpoint.txt\n");
+    writeFileSync(join(repo, "owned-at-checkpoint.txt"), "checkpoint tracked bytes\n");
+    run(repo, ["add", ".gitignore"]);
+    run(repo, ["add", "-f", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "track ignored destination"]);
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("late-ignored-collision", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    run(repo, ["rm", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "remove ignored destination"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+    const bin = join(tmp, "fake-concurrent-ignored-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "stash" ] && [ "$2" = "apply" ] && [ -n "$GIT_INDEX_FILE" ]; then\n  printf \'late ignored bytes\\n\' > "$TEST_REPO/owned-at-checkpoint.txt"\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.REAL_GIT = realGit;
+    process.env.TEST_REPO = repo;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.restoreCheckpoint(cp.id, repo),
+        /collision|ignored|changed|preflight/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.TEST_REPO;
+    }
+
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(
+      readFileSync(join(repo, "owned-at-checkpoint.txt"), "utf8"),
+      "late ignored bytes\n",
+    );
   });
 
   test("restore preflights destination writability before tracked mutation", () => {
@@ -657,6 +1021,35 @@ describe("P0.4 safe checkpoints", () => {
     }
 
     assert.equal(lstatSync(join(repo, "executable.sh")).mode & 0o777, 0o777);
+  });
+
+  test("special untracked modes restore independently of process umask", (t) => {
+    const repo = initRepo("restore-untracked-special-modes");
+    const expected = new Map([
+      ["setuid.sh", 0o4755],
+      ["setgid-sticky.sh", 0o3755],
+    ]);
+    for (const [name, mode] of expected) {
+      writeFileSync(join(repo, name), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(repo, name), mode);
+      if ((lstatSync(join(repo, name)).mode & 0o7777) !== mode) {
+        t.skip(`filesystem strips mode ${mode.toString(8)}`);
+        return;
+      }
+    }
+    const cp = git.createCheckpoint("untracked-special-modes", repo);
+    for (const name of expected.keys()) rmSync(join(repo, name));
+    const oldUmask = process.umask(0o077);
+
+    try {
+      git.restoreCheckpoint(cp.id, repo);
+    } finally {
+      process.umask(oldUmask);
+    }
+
+    for (const [name, mode] of expected) {
+      assert.equal(lstatSync(join(repo, name)).mode & 0o7777, mode);
+    }
   });
 
   test("exact checkpoint ID wins and ambiguous prefixes fail without mutation", () => {

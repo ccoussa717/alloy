@@ -55,8 +55,9 @@ same staged, unstaged, and untracked baseline the planner observed.
     represent that valid state.
 18. A pre-existing root checkpoint index collision is never claimed or deleted;
     the owned partial store and durable ref are still compensated.
-19. Regular untracked file modes are restored explicitly and are independent of
-    the restoring process umask.
+19. Untracked regular-file modes through `0o7777`, including setuid, setgid, and
+    sticky bits, are restored and worktree-seeded explicitly and independently
+    of the process umask.
 20. Exact checkpoint IDs take precedence, while non-exact prefixes matching
     multiple checkpoints fail before repository mutation.
 21. Checkpoint creation claims a generated store ID before creating its durable
@@ -71,6 +72,17 @@ same staged, unstaged, and untracked baseline the planner observed.
 24. Legacy metadata with a raw object ID and no `refObject` restores only after
     stash-like validation and deletes only its own metadata/store/index without
     treating the raw object as an owned named ref.
+25. Final restore revalidation includes symbolic HEAD identity and
+    restore-relevant ignored collision state, so a same-object branch switch or
+    late ignored destination fails before Alloy mutation.
+26. New checkpoint canonical refs own immutable anchor commits that bind the
+    checkpoint ID, canonical ref, HEAD, restore object, matching metadata
+    copies, patches, and untracked payload bytes, symlink targets, and modes to
+    a versioned SHA-256 manifest digest verified before restore and deletion.
+27. Legacy raw-object and immediately prior unanchored modern restore remains
+    available only for tracked state fully authenticated by a validated stash
+    object. Formats requiring unauthenticated external payloads fail closed with
+    export/migration guidance; deletion remains safe and scoped.
 
 ## Plan
 
@@ -98,9 +110,13 @@ same staged, unstaged, and untracked baseline the planner observed.
     restore and artifact-only deletion compatibility.
 12. Document synchronous cooperative serialization, the quiescent-workspace
     requirement, and the absence of atomic global exclusion for external writes.
-13. Run the complete unit and integration suite, CLI smoke, and package dry run
+13. Bind checkpoint metadata and every stored payload to a versioned immutable
+    Git anchor while retaining only the safely derivable compatibility subset.
+14. Revalidate symbolic HEAD and ignored restore collisions, and preserve
+    untracked modes through `0o7777` in restore and worktree seeding.
+15. Run the complete unit and integration suite, CLI smoke, and package dry run
     through `npm run ci:local` under Node 22.19.0.
-14. Review the exact diff adversarially, then create one focused local commit if
+16. Review the exact diff adversarially, then create one focused local commit if
     every gate is green.
 
 ## Exclusions

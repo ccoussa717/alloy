@@ -208,6 +208,44 @@ describe("worktrees", () => {
     wt.removeWorktree(created.id, { cwd: repo });
   });
 
+  test("seeds special untracked modes independently of process umask", (t) => {
+    const repo = initRepo("untracked-special-modes");
+    const expected = new Map([
+      ["setuid.sh", 0o4755],
+      ["setgid-sticky.sh", 0o3755],
+    ]);
+    for (const [name, mode] of expected) {
+      writeFileSync(join(repo, name), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(repo, name), mode);
+      if ((lstatSync(join(repo, name)).mode & 0o7777) !== mode) {
+        t.skip(`filesystem strips mode ${mode.toString(8)}`);
+        return;
+      }
+    }
+    const oldUmask = process.umask(0o077);
+    let created;
+
+    try {
+      created = wt.createWorktree({
+        taskId: "special-modes1",
+        role: "builder",
+        cwd: repo,
+        seedDirty: true,
+      });
+    } finally {
+      process.umask(oldUmask);
+    }
+
+    try {
+      assert.equal(created.seed.applied, true);
+      for (const [name, mode] of expected) {
+        assert.equal(lstatSync(join(created.path, name)).mode & 0o7777, mode);
+      }
+    } finally {
+      wt.removeWorktree(created.id, { cwd: repo });
+    }
+  });
+
   test("copies only Git-enumerated files from an untracked directory", () => {
     const repo = initRepo("untracked-enumerated");
     writeFileSync(join(repo, ".gitignore"), "scratch/ignored.key\n");
