@@ -1,15 +1,15 @@
 /**
- * Alloy chrome — OpenCode empty-state splash + chat-box input.
+ * Alloy chrome — OpenCode layout, Alloy identity.
  *
- * Empty session (matches reference splash):
- *   centered green/white "alloy" wordmark
- *   left-accent chat box with placeholder-style status row
- *   dim key hints under the box
+ * Empty state (OpenCode splash, 1:1 structure):
+ *   clean black field (quietStartup — no Skills dump)
+ *   centered "alloy" wordmark (green brand beat)
+ *   solid gray chat panel + green left bar
+ *   Build · model on panel bottom row
+ *   dim key hints under the panel
  *
- * Active session:
- *   minimal top strip, same chat-box editor, key-hint footer
- *
- * Accent: Kylaira #1FE07A. Layout inspired by OpenCode, Alloy identity.
+ * Active: same panel style, compact brand strip.
+ * Only differences from OpenCode: green accent + "alloy" name.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -19,7 +19,7 @@ import {
   type ExtensionContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { Key, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -33,12 +33,16 @@ const { getAgent, getAgentTranscript, listAgents } = require(
   join(root, "lib", "agent-registry.mjs"),
 );
 
-const VERSION = process.env.ALLOY_VERSION || "0.7.3";
+const VERSION = process.env.ALLOY_VERSION || "0.7.4";
 
-type ThemeFg = { fg: (c: string, t: string) => string };
+type ThemeLike = {
+  fg: (c: string, t: string) => string;
+  bg?: (c: string, t: string) => string;
+  bold?: (t: string) => string;
+};
 
 // ---------------------------------------------------------------------------
-// Session helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
 function sessionHasUserMessages(ctx: ExtensionContext): boolean {
@@ -80,109 +84,109 @@ function fmtCount(n: number): string {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
-function formatCwd(cwd: string): string {
-  const home = process.env.HOME;
-  if (home && cwd.startsWith(home)) return `~${cwd.slice(home.length)}`;
-  return cwd;
-}
-
-function shortModelLabel(ctx: ExtensionContext): string {
+function shortModel(ctx: ExtensionContext): string {
   if (!ctx.model) return "no model";
   const id = ctx.model.id || "model";
   const provider = ctx.model.provider || "";
-  // OpenCode style: "Build · GPT-5.6 Sol OpenAI"
   return provider ? `${id} ${provider}` : id;
 }
 
+/** OpenCode-width centered panel on empty; near-full when chatting. */
+function panelWidth(termW: number, splash: boolean): number {
+  if (!splash) return Math.max(20, termW);
+  // ~ half screen like the reference, min 48 max 68
+  return Math.min(68, Math.max(48, Math.floor(termW * 0.52)));
+}
+
+function centerPad(termW: number, boxW: number): number {
+  return Math.max(0, Math.floor((termW - boxW) / 2));
+}
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+}
+
+function isVisuallyBlank(line: string): boolean {
+  return stripAnsi(line).replace(/\s/g, "").length === 0;
+}
+
+/** Pad plain or ANSI text to exact visible width with spaces (inside bg). */
+function padVisible(text: string, width: number): string {
+  const w = visibleWidth(text);
+  if (w >= width) return truncateToWidth(text, width, "");
+  return text + " ".repeat(width - w);
+}
+
+/**
+ * OpenCode panel row: green left bar + solid gray body.
+ * Bar is outside the bg so it reads as a pure accent strip.
+ */
+function panelRow(
+  theme: ThemeLike,
+  body: string,
+  boxW: number,
+): string {
+  const innerW = Math.max(1, boxW - 1);
+  const filled = padVisible(" " + body, innerW);
+  const bar = theme.fg("accent", "▌");
+  if (theme.bg) {
+    return bar + theme.bg("userMessageBg", filled);
+  }
+  return bar + filled;
+}
+
 // ---------------------------------------------------------------------------
-// Wordmark — gradient-ish "alloy" (green → white), OpenCode splash energy
+// Wordmark — OpenCode single-line mass, green brand (not blue)
 // ---------------------------------------------------------------------------
 
 /**
- * Large centered "alloy" wordmark.
- * Reference uses a heavy single-line logo; we use a compact block glyph
- * with Kylaira green (user: Alloy in green) and a bright white center beat.
+ * Heavy lowercase "alloy" like OpenCode's "opencode":
+ * left dim → green beat → bright white right.
  */
-function buildWordmarkBlock(theme: ThemeFg, width: number): string[] {
-  // 5-letter block rows (width ~29). Green fill, white highlight on the double-L stem.
-  const G = (s: string) => theme.fg("accent", s);
-  const W = (s: string) => theme.fg("text", s);
-  const D = (s: string) => theme.fg("dim", s);
+function buildWordmark(theme: ThemeLike, width: number): string[] {
+  // Two-row slab letters (same visual weight as OpenCode logo)
+  const d = (s: string) => theme.fg("dim", s);
+  const m = (s: string) => theme.fg("muted", s);
+  const g = (s: string) => theme.fg("accent", s);
+  const w = (s: string) => theme.fg("text", s);
 
-  // Row-based "alloy" — readable at a glance, centered like the reference
-  const rows = [
-    G("▄▀█") + " " + G("█") + D("░░") + " " + W("█") + D("░░") + " " + G("█▀█") + " " + G("█") + W("▄") + G("█"),
-    G("█▀█") + " " + G("█") + D("▄▄") + " " + W("█") + D("▄▄") + " " + G("█▄█") + " " + D("░") + W("█") + D("░"),
-  ];
-  const plainWidths = [rows[0], rows[1]].map(
-    (r) => r.replace(/\x1b\[[0-9;]*m/g, "").length,
-  );
-  return rows.map((row, i) => {
-    const left = Math.max(0, Math.floor((width - plainWidths[i]) / 2));
-    return " ".repeat(left) + row;
-  });
-}
+  // a l l o y  — gradient through the word
+  const row1 =
+    d("▄▀█") +
+    " " +
+    m("█") +
+    d("  ") +
+    " " +
+    g("█") +
+    d("  ") +
+    " " +
+    w("▄▀█") +
+    " " +
+    w("█") +
+    g("▄") +
+    w("█");
+  const row2 =
+    d("█▀█") +
+    " " +
+    m("█") +
+    d("▄▄") +
+    " " +
+    g("█") +
+    d("▄▄") +
+    " " +
+    w("█▀█") +
+    " " +
+    d(" ") +
+    w("█") +
+    d(" ");
 
-// ---------------------------------------------------------------------------
-// Chat-box width (centered, not full terminal — like the reference)
-// ---------------------------------------------------------------------------
+  const center = (line: string) => {
+    const plain = stripAnsi(line);
+    const left = Math.max(0, Math.floor((width - plain.length) / 2));
+    return " ".repeat(left) + line;
+  };
 
-function chatBoxWidth(termWidth: number): number {
-  // Reference box sits centered at ~half–two-thirds width
-  const ideal = Math.floor(termWidth * 0.58);
-  return Math.min(Math.max(ideal, 42), Math.min(72, termWidth));
-}
-
-function sidePad(termWidth: number, boxW: number): number {
-  return Math.max(0, Math.floor((termWidth - boxW) / 2));
-}
-
-// ---------------------------------------------------------------------------
-// Footer — reference: "tab agents  ctrl+p commands"
-// ---------------------------------------------------------------------------
-
-class KeyHintFooter implements Component {
-  constructor(
-    private theme: ThemeFg,
-    private splash: () => boolean,
-    private getRunning: () => number,
-  ) {}
-
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    const th = this.theme;
-    if (this.splash()) {
-      // Match reference empty-state: few hints, left-aligned under the box zone
-      const boxW = chatBoxWidth(width);
-      const pad = sidePad(width, boxW);
-      const hints =
-        th.fg("dim", "tab") +
-        th.fg("muted", " agents") +
-        th.fg("dim", "  /agent") +
-        th.fg("muted", " spawn") +
-        th.fg("dim", "  Shift+Tab") +
-        th.fg("muted", " ask") +
-        th.fg("dim", "  /help");
-      return [" ".repeat(pad) + truncateToWidth(hints, boxW)];
-    }
-
-    const running = this.getRunning();
-    const left =
-      th.fg("dim", "esc") +
-      th.fg("muted", " interrupt") +
-      th.fg("dim", "  /help") +
-      th.fg("dim", "  Shift+Tab") +
-      th.fg("muted", " ask") +
-      th.fg("dim", "  /agent") +
-      th.fg("dim", "  Ctrl+Shift+A");
-    const right =
-      running > 0
-        ? th.fg("warning", `live agents:${running}`)
-        : th.fg("dim", `/effort  v${VERSION}`);
-    const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
-    return [truncateToWidth(left + " ".repeat(gap) + right, width)];
-  }
+  return ["", center(row1), center(row2), ""];
 }
 
 // ---------------------------------------------------------------------------
@@ -212,22 +216,18 @@ export function registerUi(pi: ExtensionAPI) {
           const brand = theme.fg("accent", "alloy");
           const perm = permissionStatusText(getState().permissionProfile);
           const { input, output, cost } = sessionTokenBits(ctx);
-          const statsPlain = `↑${fmtCount(input)} ↓${fmtCount(output)} $${cost.toFixed(2)}`;
-          const leftPlain = `alloy  ${perm}`;
-          const gap = Math.max(
-            1,
-            width - visibleWidth(leftPlain) - visibleWidth(statsPlain),
-          );
+          const stats = `↑${fmtCount(input)} ↓${fmtCount(output)} $${cost.toFixed(2)}`;
+          const left = `alloy  ${perm}`;
+          const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(stats));
           return [
             truncateToWidth(
               brand +
                 theme.fg("dim", "  ") +
                 theme.fg("muted", perm) +
                 " ".repeat(gap) +
-                theme.fg("dim", statsPlain),
+                theme.fg("dim", stats),
               width,
             ),
-            theme.fg("borderMuted", "─".repeat(Math.max(1, width))),
           ];
         },
       }));
@@ -282,7 +282,7 @@ export function registerUi(pi: ExtensionAPI) {
     try {
       ctx.ui.setTheme?.("alloy-dark");
     } catch {
-      // theme may already be loaded via launcher --theme
+      // already via launcher
     }
 
     ctx.ui.setStatus(
@@ -290,8 +290,7 @@ export function registerUi(pi: ExtensionAPI) {
       ctx.ui.theme?.fg ? ctx.ui.theme.fg("accent", "alloy") : "alloy",
     );
 
-    // Splash: no top header chrome (clean black field like the reference)
-    // Active: compact brand strip
+    // Empty header on splash (clean black); compact strip when active
     try {
       if (splashMode) {
         ctx.ui.setHeader(() => ({
@@ -307,25 +306,43 @@ export function registerUi(pi: ExtensionAPI) {
       // ignore
     }
 
-    // Key-hint footer
+    // Footer: OpenCode-style key hints under the panel
     try {
-      ctx.ui.setFooter((tui, theme, footerData) => {
-        const unsub = footerData.onBranchChange?.(() => tui.requestRender());
-        return {
-          dispose: unsub || (() => {}),
-          invalidate() {},
-          render(width: number): string[] {
-            const running = listAgents(process.cwd(), { limit: 20 }).filter(
-              (a: { status: string }) => a.status === "running",
-            ).length;
-            return new KeyHintFooter(
-              theme,
-              () => splashMode,
-              () => running,
-            ).render(width);
-          },
-        };
-      });
+      ctx.ui.setFooter((tui, theme) => ({
+        dispose() {},
+        invalidate() {},
+        render(width: number): string[] {
+          const boxW = panelWidth(width, splashMode);
+          const pad = splashMode ? centerPad(width, boxW) : 0;
+          if (splashMode) {
+            // Reference: "tab agents  ctrl+p commands"
+            const hints =
+              theme.fg("dim", "tab") +
+              theme.fg("muted", " agents") +
+              theme.fg("dim", "  ctrl+p") +
+              theme.fg("muted", " commands");
+            return [" ".repeat(pad) + truncateToWidth(hints, boxW)];
+          }
+          const running = listAgents(process.cwd(), { limit: 20 }).filter(
+            (a: { status: string }) => a.status === "running",
+          ).length;
+          const left =
+            theme.fg("dim", "esc") +
+            theme.fg("muted", " interrupt") +
+            theme.fg("dim", "  tab") +
+            theme.fg("muted", " agents") +
+            theme.fg("dim", "  /agent") +
+            theme.fg("dim", "  Shift+Tab") +
+            theme.fg("muted", " ask") +
+            theme.fg("dim", "  Ctrl+Shift+A");
+          const right =
+            running > 0
+              ? theme.fg("warning", `agents:${running}`)
+              : theme.fg("dim", "");
+          const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
+          return [truncateToWidth(left + " ".repeat(gap) + right, width)];
+        },
+      }));
     } catch {
       // ignore
     }
@@ -336,7 +353,7 @@ export function registerUi(pi: ExtensionAPI) {
       // ignore
     }
 
-    // Wordmark splash above the chat box (vertically nudged toward center)
+    // Centered wordmark above the chat panel (splash only)
     try {
       if (splashMode) {
         ctx.ui.setWidget(
@@ -346,12 +363,11 @@ export function registerUi(pi: ExtensionAPI) {
             render(width: number) {
               if (!splashMode) return [];
               const rows = tui.terminal?.rows || 24;
-              // Room for wordmark (2) + gap (1) + editor (~4) + footer (1) ≈ 8
-              const reserved = 10;
-              const pad = Math.max(2, Math.floor((rows - reserved) / 2));
+              // logo(~4) + panel(~3) + hints(1) ≈ 8; push unit toward vertical center
+              const reserved = 9;
+              const pad = Math.max(1, Math.floor((rows - reserved) / 2) - 1);
               const blanks = Array.from({ length: pad }, () => "");
-              const mark = buildWordmarkBlock(theme, width);
-              return [...blanks, ...mark, ""];
+              return [...blanks, ...buildWordmark(theme, width)];
             },
           }),
           { placement: "aboveEditor" },
@@ -361,7 +377,7 @@ export function registerUi(pi: ExtensionAPI) {
       // ignore
     }
 
-    // Chat box with left green accent (OpenCode input panel energy)
+    // Solid OpenCode-style chat panel
     try {
       class AlloyChatEditor extends CustomEditor {
         constructor(
@@ -371,106 +387,83 @@ export function registerUi(pi: ExtensionAPI) {
         ) {
           super(tui, theme, keybindings, { paddingX: 0 });
           activeTui = tui;
-          try {
-            const th = ctx.ui.theme;
-            if (th?.fg) {
-              // Soft outer edges; accent lives on the left bar
-              this.borderColor = (s: string) => th.fg("borderMuted", s);
-            }
-          } catch {
-            // keep default
-          }
+          // Hide default border color — we paint the panel ourselves
+          this.borderColor = (s: string) => s;
         }
 
         render(width: number): string[] {
-          const boxW = splashMode ? chatBoxWidth(width) : width;
-          const padN = splashMode ? sidePad(width, boxW) : 0;
+          const thm = ctx.ui.theme as ThemeLike;
+          const splash = splashMode;
+          const boxW = panelWidth(width, splash);
+          const padN = splash ? centerPad(width, boxW) : 0;
           const pad = " ".repeat(padN);
 
-          const inner = super.render(boxW);
-          if (inner.length < 2) {
-            return inner.map((l) => pad + l);
+          // Use super for text layout + cursor markers, then restyle into a panel
+          const raw = super.render(boxW);
+          if (raw.length < 2) return raw.map((l) => pad + l);
+
+          // Drop Pi's top/bottom ─ borders
+          let body = raw.slice(1, -1);
+
+          const typed = (this.getText?.() || "").length > 0;
+
+          // Empty splash: single input row (OpenCode is 2 rows: input + status)
+          if (splash && !typed) {
+            // Prefer the line that has the cursor
+            const cursorLine =
+              body.find((l) => l.includes("\x1b[7m") || l.includes("\u200b")) ||
+              body[0] ||
+              "";
+            body = [cursorLine];
+          } else {
+            // Collapse trailing blank padding lines Pi reserves (min 5)
+            while (body.length > 1 && isVisuallyBlank(body[body.length - 1]!)) {
+              body.pop();
+            }
+            // Keep at least one input row
+            if (body.length === 0) body = [""];
           }
 
-          const thm = ctx.ui.theme as ThemeFg;
-          const accentBar = (s: string) => thm.fg("accent", s);
-          const muted = (s: string) => thm.fg("borderMuted", s);
-          const dim = (s: string) => thm.fg("dim", s);
-          const text = (s: string) => thm.fg("text", s);
-
-          // Top edge: quiet (no heavy green window frame)
-          inner[0] = muted("─".repeat(boxW));
-
-          // Content rows: left green accent bar (OpenCode blue bar → Kylaira green)
-          // Preserve ANSI/cursor markers from super.render — only prefix the bar.
-          for (let i = 1; i < inner.length - 1; i++) {
-            const body = inner[i];
-            let line = accentBar("│") + " " + body;
-            const vw = visibleWidth(line);
-            if (vw < boxW) line = line + " ".repeat(boxW - vw);
-            else if (vw > boxW) line = truncateToWidth(line, boxW);
-            inner[i] = line;
+          // Placeholder on empty splash (OpenCode: Ask anything… "Fix broken tests")
+          if (splash && !typed && body[0] !== undefined) {
+            const line = body[0];
+            if (isVisuallyBlank(line) || stripAnsi(line).replace(/\s/g, "").length <= 1) {
+              // Keep cursor cell from super if present; append dim placeholder after
+              const ph = thm.fg("dim", 'Ask anything…  "Fix broken tests"');
+              if (isVisuallyBlank(line)) {
+                body[0] = ph;
+              } else {
+                // cursor at start — show placeholder after reverse-video cell
+                body[0] = line + thm.fg("dim", ' Ask anything…  "Fix broken tests"');
+              }
+            }
           }
 
-          // Status row sits on the bottom border area (Build · model)
+          // Paint input rows as solid panel
+          const out: string[] = [];
+          for (const line of body) {
+            out.push(panelRow(thm, line, boxW));
+          }
+
+          // Status row inside the panel (OpenCode: Build · model)
           let thinking = "off";
           try {
             thinking = pi.getThinkingLevel?.() || "off";
           } catch {
             // ignore
           }
-          const perm = permissionStatusText(getState().permissionProfile);
-          const model = shortModelLabel(ctx);
+          const model = shortModel(ctx);
           const thinkBit = thinking !== "off" ? ` · ${thinking}` : "";
-          const statusLeft = isWorking
+          const statusInner = isWorking
             ? thm.fg("accent", `${spinnerFrames[spinnerIndex]} working`)
-            : thm.fg("accent", `Build`) +
-              dim(" · ") +
-              text(model) +
-              dim(thinkBit);
+            : thm.fg("accent", "Build") +
+              thm.fg("dim", " · ") +
+              thm.fg("text", model) +
+              thm.fg("dim", thinkBit);
 
-          // When not splash, append perm/cwd on the right
-          let statusRight = "";
-          if (!splashMode) {
-            const cwd = formatCwd(ctx.cwd || process.cwd());
-            statusRight = dim(` ${perm} · ${cwd} `);
-          }
+          out.push(panelRow(thm, statusInner, boxW));
 
-          // Bottom line: left accent continues + status
-          const statusCore = statusLeft;
-          const right = statusRight;
-          const used =
-            2 + visibleWidth(statusCore) + visibleWidth(right); // │ + space + …
-          const gap = Math.max(1, boxW - used);
-          inner[inner.length - 1] =
-            accentBar("│") +
-            " " +
-            statusCore +
-            " ".repeat(gap) +
-            right;
-
-          // Empty splash: keep super's cursor cell intact, paint dim placeholder after it.
-          // Reference: Ask anything… "Fix broken tests"
-          try {
-            if (splashMode && !this.getText?.() && inner.length >= 3) {
-              const ph = dim(' Ask anything…  "Fix broken tests"');
-              // Content line already has accent bar + optional cursor reverse-video.
-              // Append placeholder only if the line has room and little plain text.
-              const raw = inner[1];
-              const plain = raw.replace(/\x1b\[[0-9;]*m/g, "");
-              if (plain.replace(/[│\s]/g, "").length <= 1) {
-                const used = visibleWidth(raw);
-                const room = Math.max(0, boxW - used);
-                if (room > 8) {
-                  inner[1] = raw + truncateToWidth(ph, room);
-                }
-              }
-            }
-          } catch {
-            // ignore placeholder failures
-          }
-
-          return inner.map((l) => pad + l);
+          return out.map((l) => pad + l);
         }
       }
 
@@ -479,7 +472,7 @@ export function registerUi(pi: ExtensionAPI) {
           new AlloyChatEditor(tui, theme, keybindings),
       );
     } catch {
-      // Custom editor optional if older Pi
+      // older Pi without setEditorComponent
     }
   });
 
@@ -500,19 +493,13 @@ export function registerUi(pi: ExtensionAPI) {
   pi.registerCommand("alloy", {
     description: "Alloy help and version",
     handler: async (_args, ctx) => {
-      const lines = [
+      await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "Kylaira multi-model coding harness",
+        "OpenCode layout · green accent #1FE07A · alloy wordmark",
         "",
-        "UI:      OpenCode-style splash · green alloy · accent #1FE07A",
-        "Agents:  /agent  /agents  /profiles  Ctrl+Shift+A",
-        "Auto:    /auto  /fusion",
-        "Perms:   Shift+Tab ask-levels",
-        "Effort:  /effort high",
-        "Auth:    /login  /login xai",
-        "Help:    /help",
-      ];
-      await ctx.ui.select("Alloy", lines);
+        "/agent  /agents  /profiles  Ctrl+Shift+A",
+        "Shift+Tab ask-levels  /effort  /help",
+      ]);
     },
   });
 
@@ -528,10 +515,7 @@ export function registerUi(pi: ExtensionAPI) {
       } catch {
         // ignore
       }
-      ctx.ui.notify(
-        "Chrome cleared. /reload or restart to restore Alloy chrome.",
-        "info",
-      );
+      ctx.ui.notify("Chrome cleared. Restart alloy to restore.", "info");
     },
   });
 }

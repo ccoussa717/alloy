@@ -7,7 +7,13 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  realpathSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -21,6 +27,32 @@ function exists(p) {
     return Boolean(p && existsSync(p));
   } catch {
     return false;
+  }
+}
+
+/**
+ * OpenCode-clean empty field: hide Pi's Skills/Prompts/Extensions/Themes dump.
+ * Must be set before Pi boots (too late in session_start).
+ * Only writes when quietStartup is missing/false — does not clobber other settings.
+ */
+function ensureQuietStartup() {
+  try {
+    const dir = join(homedir(), ".pi", "agent");
+    const path = join(dir, "settings.json");
+    mkdirSync(dir, { recursive: true });
+    let settings = {};
+    if (exists(path)) {
+      try {
+        settings = JSON.parse(readFileSync(path, "utf8") || "{}") || {};
+      } catch {
+        settings = {};
+      }
+    }
+    if (settings.quietStartup === true) return;
+    settings.quietStartup = true;
+    writeFileSync(path, JSON.stringify(settings, null, "\t") + "\n", "utf8");
+  } catch {
+    // non-fatal — chrome still works, just noisier
   }
 }
 
@@ -198,6 +230,9 @@ function buildArgs(userArgs) {
 const piBin = findPiBin();
 const args = buildArgs(process.argv.slice(2));
 
+// Hide Pi startup resource dump so the empty state matches OpenCode's clean field
+ensureQuietStartup();
+
 const isNodeEntry = piBin.endsWith(".js") || piBin.endsWith(".mjs");
 const command = isNodeEntry ? process.execPath : piBin;
 const finalArgs = isNodeEntry ? [piBin, ...args] : args;
@@ -207,7 +242,7 @@ const child = spawn(command, finalArgs, {
   env: {
     ...process.env,
     ALLOY_ROOT,
-    ALLOY_VERSION: "0.7.3",
+    ALLOY_VERSION: "0.7.4",
   },
   windowsHide: true,
 });

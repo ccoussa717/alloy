@@ -17,7 +17,7 @@ Then run `alloy`.
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.7.3) |
+| **Status** | MVP active development (v0.7.4) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
