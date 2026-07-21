@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   chmodSync,
+  lstatSync,
   readlinkSync,
   symlinkSync,
 } from "node:fs";
@@ -27,6 +28,22 @@ const wt = await import(
 
 function git(cwd, args) {
   return spawnSync("git", args, { cwd, encoding: "utf8" });
+}
+
+function rawGit(cwd, args) {
+  return spawnSync("git", args, {
+    cwd,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  }).stdout;
+}
+
+function observableState(cwd) {
+  return {
+    status: rawGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    index: rawGit(cwd, ["ls-files", "--stage", "-z"]),
+    staged: rawGit(cwd, ["diff", "--cached", "--binary"]),
+    unstaged: rawGit(cwd, ["diff", "--binary"]),
+  };
 }
 
 function initRepo(name) {
@@ -191,6 +208,72 @@ describe("worktrees", () => {
     wt.removeWorktree(created.id, { cwd: repo });
   });
 
+  test("copies only Git-enumerated files from an untracked directory", () => {
+    const repo = initRepo("untracked-enumerated");
+    writeFileSync(join(repo, ".gitignore"), "scratch/ignored.key\n");
+    git(repo, ["add", ".gitignore"]);
+    git(repo, ["commit", "-m", "ignore nested secret"]);
+    mkdirSync(join(repo, "scratch"));
+    writeFileSync(join(repo, "scratch", "visible.txt"), "visible\n");
+    writeFileSync(join(repo, "scratch", "ignored.key"), "credential\n");
+
+    const baseline = wt.captureDirtyBaseline(repo);
+    const created = wt.createWorktree({
+      taskId: "enumerated1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: true,
+    });
+
+    assert.deepEqual(baseline.untracked, ["scratch/visible.txt"]);
+    assert.equal(readFileSync(join(created.path, "scratch", "visible.txt"), "utf8"), "visible\n");
+    assert.equal(existsSync(join(created.path, "scratch", "ignored.key")), false);
+
+    wt.removeWorktree(created.id, { cwd: repo });
+  });
+
+  test("reproduces intent-to-add and exact NUL-delimited Git state", () => {
+    const repo = initRepo("intent-to-add");
+    writeFileSync(join(repo, "intent.txt"), "intent bytes\n");
+    git(repo, ["add", "-N", "--", "intent.txt"]);
+    writeFileSync(join(repo, "scratch.txt"), "untracked bytes\n");
+    const expected = observableState(repo);
+
+    const created = wt.createWorktree({
+      taskId: "intent1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: true,
+    });
+
+    assert.equal(created.seed.applied, true);
+    assert.deepEqual(observableState(created.path), expected);
+
+    wt.removeWorktree(created.id, { cwd: repo });
+  });
+
+  test("fails seeding when enumerated untracked bytes changed after capture", () => {
+    const repo = initRepo("untracked-race");
+    writeFileSync(join(repo, "scratch.txt"), "captured bytes\n");
+    const baseline = wt.captureDirtyBaseline(repo);
+    baseline.sourceCwd = repo;
+    const created = wt.createWorktree({
+      taskId: "race1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    writeFileSync(join(repo, "scratch.txt"), "changed bytes\n");
+
+    try {
+      const result = wt.seedWorktreeFromBaseline(baseline, created.path);
+      assert.equal(result.applied, false);
+      assert.match(result.errors.join("\n"), /untracked.*mismatch/i);
+    } finally {
+      wt.removeWorktree(created.id, { cwd: repo });
+    }
+  });
+
   test("does not overwrite a tracked patch-name collision while seeding", () => {
     const repo = initRepo("patch-collision");
     writeFileSync(join(repo, ".alloy-staged.patch"), "tracked-content\n");
@@ -288,30 +371,23 @@ describe("worktrees", () => {
     wt.removeWorktree(created.id, { cwd: repo });
   });
 
-  test("fails closed and removes the worktree when dirty seeding fails", () => {
-    const repo = initRepo("failed-seed");
+  test("seeds dangling untracked symlinks with byte-exact targets", () => {
+    const repo = initRepo("dangling-symlink");
     symlinkSync("missing-target", join(repo, "dangling-link"));
 
-    let created = null;
-    let error = null;
+    const created = wt.createWorktree({
+      taskId: "dangling1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: true,
+    });
     try {
-      created = wt.createWorktree({
-        taskId: "failed1",
-        role: "builder",
-        cwd: repo,
-        seedDirty: true,
-      });
-    } catch (err) {
-      error = err;
+      assert.equal(created.seed.applied, true);
+      assert.equal(lstatSync(join(created.path, "dangling-link")).isSymbolicLink(), true);
+      assert.equal(readlinkSync(join(created.path, "dangling-link")), "missing-target");
     } finally {
-      if (created) wt.removeWorktree(created.id, { cwd: repo });
+      wt.removeWorktree(created.id, { cwd: repo });
     }
-
-    assert.match(String(error?.message || ""), /failed to seed dirty baseline/i);
-    assert.equal(
-      git(repo, ["branch", "--list", "alloy/builder-failed1"]).stdout.trim(),
-      "",
-    );
   });
 
   test("cleanup", () => {

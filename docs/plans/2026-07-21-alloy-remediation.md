@@ -19,19 +19,39 @@ same staged, unstaged, and untracked baseline the planner observed.
    seed.
 6. Existing untracked-file preservation and no-`git clean` guarantees remain
    green.
+7. Checkpoint and worktree capture enumerate every untracked path with NUL-safe
+   porcelain output and never copy ignored descendants hidden inside an
+   untracked directory.
+8. Restore preflights the checkpoint object or patches and every untracked
+   destination before mutating the repository; invalid inputs, existing
+   destinations, and symlink ancestors leave the current index, worktree, and
+   porcelain status byte-for-byte unchanged.
+9. Checkpoint stash objects remain reachable after reflog expiry and pruning,
+   while untracked restore never runs `git clean`, recursively removes a user
+   path, follows a destination symlink, or overwrites a collision.
+10. Worktree seeding reproduces the captured NUL-delimited porcelain status,
+    logical index entries including intent-to-add, staged patch, unstaged patch,
+    untracked bytes, and symlink targets exactly; any mismatch is a failed seed.
+11. Dangling untracked symlinks round-trip through checkpoint restore and
+    worktree seeding without dereferencing their targets.
+12. Final `warning` and `recoverable` values are present and identical in both
+    checkpoint metadata files.
 
 ## Plan
 
-1. Add focused staged-only checkpoint and staged/combined worktree tests. Done
-   when they fail on `5cb8df3` for the reproduced causes.
-2. Fix untracked-store selection and staged patch application with the smallest
-   changes. Done when focused tests pass under Node 22.19.0.
-3. Make seeding fail closed when a captured baseline cannot be reproduced.
-   Done when an adversarial failed-apply test passes and no caller reports a
-   successful dirty seed.
-4. Run the complete unit and integration suite, CLI smoke, and package dry run
+1. Add one focused adversarial test per strengthened behavior and observe each
+   fail for the expected reason before implementation changes.
+2. Replace directory-level untracked capture with Git-enumerated path copies,
+   using lstat-based existence and verbatim symlink handling in both modules.
+3. Anchor checkpoint stash objects and preflight restore objects, patch
+   applicability, containment, ancestors, and collisions before target-tree
+   mutation.
+4. Capture canonical porcelain/index/worktree state, reproduce intent-to-add,
+   and reject a seed whose resulting state differs.
+5. Persist metadata only after final warning and recovery fields are known.
+6. Run the complete unit and integration suite, CLI smoke, and package dry run
    through `npm run ci:local` under Node 22.19.0.
-5. Review the exact diff adversarially, then create one focused local commit if
+7. Review the exact diff adversarially, then create one focused local commit if
    every gate is green.
 
 ## Exclusions

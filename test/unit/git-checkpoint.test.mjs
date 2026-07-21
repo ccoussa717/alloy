@@ -8,11 +8,12 @@ import {
   existsSync,
   mkdirSync,
   chmodSync,
+  lstatSync,
   readlinkSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -27,6 +28,30 @@ const git = await import(
 
 function run(cwd, args) {
   return spawnSync("git", args, { cwd, encoding: "utf8" });
+}
+
+function raw(cwd, args) {
+  return spawnSync("git", args, {
+    cwd,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  }).stdout;
+}
+
+function snapshot(repo, paths = []) {
+  const indexPath = run(repo, ["rev-parse", "--git-path", "index"]).stdout.trim();
+  return {
+    status: raw(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    index: readFileSync(resolve(repo, indexPath)),
+    files: paths.map((path) => readFileSync(join(repo, path))),
+  };
+}
+
+function overwriteMetadata(cp, update) {
+  const metadata = update(JSON.parse(readFileSync(cp.path, "utf8")));
+  const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+  for (const path of [cp.path, rootPath]) {
+    writeFileSync(path, `${JSON.stringify(metadata, null, 2)}\n`);
+  }
 }
 
 function initRepo(name) {
@@ -109,6 +134,24 @@ describe("P0.4 safe checkpoints", () => {
     );
   });
 
+  test("copies only Git-enumerated files from an untracked directory", () => {
+    const repo = initRepo("untracked-enumerated");
+    writeFileSync(join(repo, ".gitignore"), "scratch/ignored.key\n");
+    run(repo, ["add", ".gitignore"]);
+    run(repo, ["commit", "-m", "ignore nested secret"]);
+    mkdirSync(join(repo, "scratch"));
+    writeFileSync(join(repo, "scratch", "visible.txt"), "visible\n");
+    writeFileSync(join(repo, "scratch", "ignored.key"), "credential\n");
+
+    const cp = git.createCheckpoint("enumerated-only", repo);
+
+    assert.deepEqual(cp.untracked, ["scratch/visible.txt"]);
+    assert.equal(
+      existsSync(join(cp.storeDir, "untracked", "scratch", "ignored.key")),
+      false,
+    );
+  });
+
   test("untracked symlinks preserve their relative target", () => {
     const repo = initRepo("untracked-symlink");
     symlinkSync("a.txt", join(repo, "relative-link"));
@@ -117,6 +160,136 @@ describe("P0.4 safe checkpoints", () => {
     rmSync(join(repo, "relative-link"));
     git.restoreCheckpoint(cp.id, repo);
     assert.equal(readlinkSync(join(repo, "relative-link")), "a.txt");
+  });
+
+  test("dangling untracked symlinks restore byte-exact targets", () => {
+    const repo = initRepo("dangling-untracked-symlink");
+    symlinkSync("missing target with spaces", join(repo, "dangling-link"));
+    const cp = git.createCheckpoint("dangling-symlink", repo);
+
+    assert.equal(cp.complete, true);
+    rmSync(join(repo, "dangling-link"));
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.equal(lstatSync(join(repo, "dangling-link")).isSymbolicLink(), true);
+    assert.equal(readlinkSync(join(repo, "dangling-link")), "missing target with spaces");
+  });
+
+  test("refuses an existing untracked destination without mutating current state", () => {
+    const repo = initRepo("restore-collision");
+    writeFileSync(join(repo, "collision.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("collision", repo);
+    rmSync(join(repo, "collision.txt"));
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    writeFileSync(join(repo, "collision.txt"), "newer bytes\n");
+    const before = snapshot(repo, ["a.txt", "collision.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /collision|exists/i);
+    assert.deepEqual(snapshot(repo, ["a.txt", "collision.txt"]), before);
+  });
+
+  test("refuses tracked restore paths that would overwrite current untracked data", () => {
+    const repo = initRepo("tracked-untracked-collision");
+    writeFileSync(join(repo, "owned-at-checkpoint.txt"), "tracked checkpoint bytes\n");
+    run(repo, ["add", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "track collision path"]);
+    const cp = git.createCheckpoint("tracked-collision", repo);
+    run(repo, ["rm", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "remove collision path"]);
+    writeFileSync(join(repo, "owned-at-checkpoint.txt"), "new untracked bytes\n");
+    const before = snapshot(repo, ["owned-at-checkpoint.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /collision|untracked/i);
+    assert.deepEqual(snapshot(repo, ["owned-at-checkpoint.txt"]), before);
+  });
+
+  test("refuses tracked restore paths that would overwrite current ignored data", () => {
+    const repo = initRepo("tracked-ignored-collision");
+    writeFileSync(join(repo, ".gitignore"), "owned-at-checkpoint.txt\n");
+    writeFileSync(join(repo, "owned-at-checkpoint.txt"), "tracked checkpoint bytes\n");
+    run(repo, ["add", ".gitignore"]);
+    run(repo, ["add", "-f", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "track ignored collision path"]);
+    const cp = git.createCheckpoint("ignored-collision", repo);
+    run(repo, ["rm", "owned-at-checkpoint.txt"]);
+    run(repo, ["commit", "-m", "remove ignored collision path"]);
+    writeFileSync(join(repo, "owned-at-checkpoint.txt"), "new ignored bytes\n");
+    const before = snapshot(repo, ["owned-at-checkpoint.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /collision|ignored/i);
+    assert.deepEqual(snapshot(repo, ["owned-at-checkpoint.txt"]), before);
+  });
+
+  test("refuses a symlink destination ancestor without writing outside the repo", () => {
+    const repo = initRepo("restore-ancestor-symlink");
+    mkdirSync(join(repo, "nested"));
+    writeFileSync(join(repo, "nested", "value.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("ancestor-symlink", repo);
+    rmSync(join(repo, "nested"), { recursive: true });
+    const outside = join(tmp, "outside-restore");
+    mkdirSync(outside);
+    symlinkSync(outside, join(repo, "nested"));
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /symlink|ancestor/i);
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(existsSync(join(outside, "value.txt")), false);
+  });
+
+  test("anchored tracked state survives reflog expiry and prune", () => {
+    const repo = initRepo("durable-stash");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("durable", repo);
+    run(repo, ["reflog", "expire", "--expire=now", "--all"]);
+    run(repo, ["gc", "--prune=now"]);
+    run(repo, ["reset", "--hard", "HEAD"]);
+
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "checkpoint dirty bytes\n");
+  });
+
+  test("invalid checkpoint refs fail before mutating current state", () => {
+    const repo = initRepo("invalid-ref-atomic");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("invalid-ref", repo);
+    overwriteMetadata(cp, (metadata) => ({
+      ...metadata,
+      ref: "refs/alloy/checkpoints/does-not-exist",
+    }));
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    writeFileSync(join(repo, "current.txt"), "current untracked bytes\n");
+    const before = snapshot(repo, ["a.txt", "current.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /invalid|reference|object/i);
+    assert.deepEqual(snapshot(repo, ["a.txt", "current.txt"]), before);
+  });
+
+  test("invalid fallback patches fail before mutating current state", () => {
+    const repo = initRepo("invalid-patch-atomic");
+    writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
+    const cp = git.createCheckpoint("invalid-patch", repo);
+    overwriteMetadata(cp, (metadata) => ({ ...metadata, ref: null }));
+    writeFileSync(join(cp.storeDir, "worktree.patch"), "not a patch\n");
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(() => git.restoreCheckpoint(cp.id, repo), /patch|apply/i);
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("persists final recovery metadata in both metadata files", () => {
+    const repo = initRepo("persisted-recovery");
+    writeFileSync(join(repo, "untracked.txt"), "recoverable\n");
+    const cp = git.createCheckpoint("metadata", repo);
+    const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+
+    for (const path of [cp.path, rootPath]) {
+      const persisted = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(persisted.recoverable, cp.recoverable);
+      assert.equal(persisted.warning, cp.warning);
+    }
   });
 
   test("checkpoint creation fails closed when Git cannot capture tracked state", () => {
@@ -162,10 +335,13 @@ describe("P0.4 safe checkpoints", () => {
   test("allowClean is rejected", () => {
     const repo = initRepo("allow-clean");
     const cp = git.createCheckpoint("x", repo);
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    const before = snapshot(repo, ["a.txt"]);
     assert.throws(
       () => git.restoreCheckpoint(cp.id, repo, { allowClean: true }),
       /disabled|clean/i,
     );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 
   test("parsePorcelain classifies untracked", () => {
