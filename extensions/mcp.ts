@@ -11,9 +11,12 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { listMcpServers, loadMcpConfig, ensureMcpConfig } = require(
-  join(root, "lib", "mcp-config.mjs"),
-);
+const {
+  listMcpServers,
+  loadMcpConfig,
+  ensureMcpConfig,
+  listAutoConnectServers,
+} = require(join(root, "lib", "mcp-config.mjs"));
 const { getAlloyMcpPath, getProjectMcpPath } = require(
   join(root, "lib", "paths.mjs"),
 );
@@ -23,7 +26,10 @@ const {
   isMcpToolName,
 } = require(join(root, "lib", "mcp-client.mjs"));
 const { setMcpStats } = require(join(root, "lib", "state.mjs"));
-const { loadConfig } = require(join(root, "lib", "config.mjs"));
+const { loadConfig, loadGlobalConfig } = require(join(root, "lib", "config.mjs"));
+const { setRuntimeProjectTrust, isProjectTrusted } = require(
+  join(root, "lib", "project-trust.mjs"),
+);
 
 type ServerRow = {
   name: string;
@@ -255,19 +261,57 @@ export function registerMcp(pi: ExtensionAPI) {
     },
   });
 
+  // Sync Alloy trust with Pi's authoritative project trust
+  pi.on("project_trust", async (event) => {
+    // Do not own the decision — only observe if Pi already resolved later.
+    // Returning undecided lets Pi / other handlers decide.
+    try {
+      // event.cwd available; trust not yet final. Leave undecided.
+      void event;
+    } catch {
+      // ignore
+    }
+    return { trusted: "undecided" as const };
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     try {
-      const servers: ServerRow[] = listMcpServers(process.cwd());
+      // Authoritative trust from Pi session
+      try {
+        const trusted =
+          typeof ctx.isProjectTrusted === "function"
+            ? Boolean(ctx.isProjectTrusted())
+            : isProjectTrusted(ctx.cwd || process.cwd());
+        setRuntimeProjectTrust(ctx.cwd || process.cwd(), trusted);
+      } catch {
+        // fail closed remains default
+      }
+
+      const cwd = process.cwd();
+      const servers: ServerRow[] = listMcpServers(cwd);
       const enabled = servers.filter((s) => s.enabled).length;
       if (servers.length) {
         ctx.ui.setStatus("alloy-mcp", `mcp:cfg ${enabled}/${servers.length}`);
       }
-      loadMcpConfig(process.cwd());
+      loadMcpConfig(cwd);
 
-      const cfg = loadConfig();
-      if (cfg.mcp?.connectOnStart && enabled > 0) {
-        ctx.ui.notify("Auto-connecting MCP servers…", "info");
-        await connectAll(pi, ctx);
+      // connectOnStart: GLOBAL servers only (operator config). Never project MCP.
+      const globalCfg = loadGlobalConfig();
+      if (globalCfg.mcp?.connectOnStart) {
+        const auto = listAutoConnectServers(cwd);
+        if (auto.length > 0) {
+          ctx.ui.notify(
+            `Auto-connecting ${auto.length} global MCP server(s)…`,
+            "info",
+          );
+          const map = Object.fromEntries(auto.map((a: { name: string; spec: object }) => [a.name, a.spec]));
+          const results = await manager.connectEnabled(map, {
+            onProgress: (msg: string) => ctx.ui.notify?.(msg, "info"),
+          });
+          const reg = registerToolsFromManager(pi);
+          const ok = results.filter((r: { ok: boolean }) => r.ok).length;
+          ctx.ui.setStatus("alloy-mcp", `mcp:${ok}/${results.length} t:${reg.total}`);
+        }
       }
     } catch {
       // ignore
