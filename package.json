@@ -1,6 +1,6 @@
 {
   "name": "@kylaira/alloy",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
   "type": "module",
   "bin": {
@@ -43,12 +43,14 @@
     "start": "node ./bin/alloy.mjs",
     "alloy": "node ./bin/alloy.mjs",
     "test": "node --test test/unit/*.test.mjs",
+    "test:integration": "node --test --test-force-exit test/integration/*.e2e.test.mjs",
+    "test:all": "npm test && npm run test:integration",
     "doctor": "node -e \"import('./lib/providers.mjs').then(m=>console.log(m.formatFullDoctorReport()))\"",
     "setup": "bash ./install.sh",
     "install-cli": "bash ./scripts/install-cli.sh",
     "bootstrap": "bash ./install.sh",
     "version:print": "node ./bin/alloy.mjs --version",
-    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm test && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null"
+    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm run test:all && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",

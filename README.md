@@ -37,12 +37,23 @@ GitLab CI (`.gitlab-ci.yml`) on Node 22.19:
 Local smoke:
 
 ```bash
-npm run ci:local
+npm run ci:local          # unit + integration + version + pack
+npm run test:integration  # fake MCP, isolated startup, Docker e2e (skips if no Docker)
 ```
+
+Integration coverage (Ava P1 verification):
+
+| Suite | What it proves |
+|-------|----------------|
+| `mcp-fake.e2e` | Real stdio MCP process: connect, list/call tools, env scrub (no host secrets) |
+| `pi-startup.e2e` | Isolated `HOME` / `PI_CODING_AGENT_DIR`: `alloy --version`, `--help`, doctor |
+| `docker-sandbox.e2e` | Live Docker: container start/reuse, bind-mount exec, `network=none` inspect; **skips** if no daemon |
+
+CI: `integration-mcp-pi` always runs; `integration-docker` uses Docker-in-Docker (`allow_failure: true` if runner has no dind).
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.8.1) |
+| **Status** | MVP active development (v0.8.2) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 · Node **≥22.19** |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
