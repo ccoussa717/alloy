@@ -7,6 +7,9 @@ import {
   rmSync,
   existsSync,
   mkdirSync,
+  chmodSync,
+  readlinkSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +55,24 @@ describe("P0.4 safe checkpoints", () => {
     assert.match(body, /v2-dirty/);
   });
 
+  test("staged-only checkpoint restores the index without leaking store files", () => {
+    const repo = initRepo("staged");
+    writeFileSync(join(repo, "a.txt"), "v2-staged\n");
+    run(repo, ["add", "a.txt"]);
+    const cp = git.createCheckpoint("staged-only", repo);
+
+    run(repo, ["reset", "--hard", "HEAD"]);
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "v2-staged\n");
+    assert.equal(run(repo, ["show", ":a.txt"]).stdout, "v2-staged\n");
+    assert.equal(run(repo, ["diff"]).stdout, "");
+    assert.equal(run(repo, ["status", "--porcelain"]).stdout.trim(), "M  a.txt");
+    assert.equal(existsSync(join(repo, "index.patch")), false);
+    assert.equal(existsSync(join(repo, "worktree.patch")), false);
+    assert.equal(existsSync(join(repo, "meta.json")), false);
+  });
+
   test("untracked files survive checkpoint round-trip (byte-for-byte)", () => {
     const repo = initRepo("untracked");
     writeFileSync(join(repo, "untracked.txt"), "secret-untracked-bytes\n");
@@ -71,6 +92,60 @@ describe("P0.4 safe checkpoints", () => {
       readFileSync(join(repo, "untracked.txt"), "utf8"),
       "secret-untracked-bytes\n",
     );
+  });
+
+  test("untracked paths with spaces restore exactly", () => {
+    const repo = initRepo("untracked-space");
+    writeFileSync(join(repo, "space file.bin"), "spaced-bytes\n");
+    const cp = git.createCheckpoint("space-path", repo);
+
+    assert.equal(cp.complete, true);
+    assert.deepEqual(cp.untracked, ["space file.bin"]);
+    rmSync(join(repo, "space file.bin"));
+    git.restoreCheckpoint(cp.id, repo);
+    assert.equal(
+      readFileSync(join(repo, "space file.bin"), "utf8"),
+      "spaced-bytes\n",
+    );
+  });
+
+  test("untracked symlinks preserve their relative target", () => {
+    const repo = initRepo("untracked-symlink");
+    symlinkSync("a.txt", join(repo, "relative-link"));
+    const cp = git.createCheckpoint("symlink", repo);
+
+    rmSync(join(repo, "relative-link"));
+    git.restoreCheckpoint(cp.id, repo);
+    assert.equal(readlinkSync(join(repo, "relative-link")), "a.txt");
+  });
+
+  test("checkpoint creation fails closed when Git cannot capture tracked state", () => {
+    const repo = initRepo("capture-failure");
+    writeFileSync(join(repo, "a.txt"), "dirty\n");
+    const bin = join(tmp, "fake-checkpoint-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "stash" ] || [ "$1" = "diff" ]; then exit 71; fi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.REAL_GIT = realGit;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.createCheckpoint("capture-failure", repo),
+        /capture|diff|stash/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+    }
   });
 
   test("restore never git cleans new untracked files", () => {
