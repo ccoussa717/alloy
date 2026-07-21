@@ -26,6 +26,10 @@ Checkpoint restore and dirty worktree seeding enumerate Git-visible untracked
 entries, preserve symlinks without dereferencing them, retain regular-file mode
 bits through `0o7777`, and reject containment escapes, state mismatches,
 pre-existing symlink ancestors, and destination collisions they observe.
+Checkpoint operations first resolve `git rev-parse --show-toplevel`; Git paths,
+payload capture, project identity, metadata storage, restore, listing, and
+deletion are repository-root relative even when invoked from a subdirectory.
+The caller directory is recorded only as provenance.
 Restore snapshots symbolic HEAD identity as well as HEAD object,
 tracked/index/worktree state, enumerates the actual checkpoint target's tracked
 paths, and rechecks restore-relevant ignored files and directories immediately
@@ -33,6 +37,13 @@ before mutation. Direct filesystem checks also catch empty untracked or ignored
 directories that Git status does not report. Restore performs an actual
 temporary create/write/unlink probe for each untracked destination. Those
 checks fail closed for detected changes and capability failures.
+
+Creation rejects any unmerged index entries before claiming a checkpoint ID or
+ref. Restore preflight initializes an isolated temporary Git directory whose
+detached HEAD is the authenticated checkpoint HEAD and whose object lookup uses
+the source repository only as an alternate. Stash, patch, index, and
+intent-to-add application are therefore exercised in the same reset context as
+the real restore without consulting live HEAD or mutating the live repository.
 
 Checkpoint creation claims its generated store ID before creating a durable
 ref. New-format canonical refs point to an immutable anchor commit whose

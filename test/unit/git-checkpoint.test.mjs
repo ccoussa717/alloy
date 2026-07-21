@@ -102,6 +102,19 @@ function checkpointRootPath(repo) {
   );
 }
 
+function assertNoCheckpointArtifacts(repo) {
+  const root = checkpointRootPath(repo);
+  if (existsSync(root)) assert.deepEqual(readdirSync(root), []);
+  assert.equal(
+    run(repo, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/alloy/checkpoints/",
+    ]).stdout.trim(),
+    "",
+  );
+}
+
 function initRepo(name) {
   const repo = join(tmp, name);
   mkdirSync(repo, { recursive: true });
@@ -144,6 +157,131 @@ describe("P0.4 safe checkpoints", () => {
     assert.equal(existsSync(join(repo, "index.patch")), false);
     assert.equal(existsSync(join(repo, "worktree.patch")), false);
     assert.equal(existsSync(join(repo, "meta.json")), false);
+  });
+
+  test("staged deletion restores after live HEAD advances with the same deletion", () => {
+    const repo = initRepo("staged-delete-advanced-head");
+    writeFileSync(join(repo, "delete-me.txt"), "tracked bytes\n");
+    run(repo, ["add", "delete-me.txt"]);
+    run(repo, ["commit", "-m", "track deletion target"]);
+    run(repo, ["rm", "delete-me.txt"]);
+    const expected = observableGitState(repo);
+    const cp = git.createCheckpoint("staged-delete", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    run(repo, ["rm", "delete-me.txt"]);
+    run(repo, ["commit", "-m", "advance with same deletion"]);
+
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.deepEqual(observableGitState(repo), expected);
+    assert.equal(existsSync(join(repo, "delete-me.txt")), false);
+    assert.equal(run(repo, ["rev-parse", "HEAD"]).stdout.trim(), cp.head);
+  });
+
+  test("checkpoint creation rejects a UU conflict without artifacts or mutation", () => {
+    const repo = initRepo("unmerged-uu");
+    const baseBranch = run(repo, ["branch", "--show-current"]).stdout.trim();
+    run(repo, ["switch", "-c", "conflict-side"]);
+    writeFileSync(join(repo, "a.txt"), "side bytes\n");
+    run(repo, ["add", "a.txt"]);
+    run(repo, ["commit", "-m", "side update"]);
+    run(repo, ["switch", baseBranch]);
+    writeFileSync(join(repo, "a.txt"), "main bytes\n");
+    run(repo, ["add", "a.txt"]);
+    run(repo, ["commit", "-m", "main update"]);
+    assert.notEqual(run(repo, ["merge", "conflict-side"]).status, 0);
+    const before = snapshot(repo, ["a.txt"]);
+    const unmerged = raw(repo, ["ls-files", "-u", "-z"]);
+    assert.ok(unmerged.length > 0);
+
+    assert.throws(
+      () => git.createCheckpoint("reject-uu", repo),
+      /unmerged|conflict|index/i,
+    );
+
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.deepEqual(raw(repo, ["ls-files", "-u", "-z"]), unmerged);
+    assertNoCheckpointArtifacts(repo);
+  });
+
+  test("checkpoint creation rejects an AA conflict without artifacts or mutation", () => {
+    const repo = initRepo("unmerged-aa");
+    const baseBranch = run(repo, ["branch", "--show-current"]).stdout.trim();
+    run(repo, ["switch", "-c", "conflict-side"]);
+    writeFileSync(join(repo, "added.txt"), "side bytes\n");
+    run(repo, ["add", "added.txt"]);
+    run(repo, ["commit", "-m", "side add"]);
+    run(repo, ["switch", baseBranch]);
+    writeFileSync(join(repo, "added.txt"), "main bytes\n");
+    run(repo, ["add", "added.txt"]);
+    run(repo, ["commit", "-m", "main add"]);
+    assert.notEqual(run(repo, ["merge", "conflict-side"]).status, 0);
+    const before = snapshot(repo, ["added.txt"]);
+    const unmerged = raw(repo, ["ls-files", "-u", "-z"]);
+    assert.ok(unmerged.length > 0);
+
+    assert.throws(
+      () => git.createCheckpoint("reject-aa", repo),
+      /unmerged|conflict|index/i,
+    );
+
+    assert.deepEqual(snapshot(repo, ["added.txt"]), before);
+    assert.deepEqual(raw(repo, ["ls-files", "-u", "-z"]), unmerged);
+    assertNoCheckpointArtifacts(repo);
+  });
+
+  test("checkpoint operations from a repository subdirectory use the repository root", () => {
+    const repo = initRepo("subdirectory-invocation");
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    writeFileSync(join(sub, "tracked.txt"), "tracked base\n");
+    run(repo, ["add", "sub/tracked.txt"]);
+    run(repo, ["commit", "-m", "add subdirectory"]);
+    writeFileSync(join(repo, "root-untracked.txt"), "root payload\n");
+    writeFileSync(join(sub, "nested-untracked.txt"), "nested payload\n");
+
+    const cp = git.createCheckpoint("from-subdirectory", sub);
+
+    assert.deepEqual([...cp.untracked].sort(), [
+      "root-untracked.txt",
+      "sub/nested-untracked.txt",
+    ]);
+    assert.equal(cp.cwd, resolve(sub));
+    assert.equal(cp.repoRoot, resolve(repo));
+    assert.equal(
+      git.listCheckpoints(repo).some((item) => item.id === cp.id),
+      true,
+    );
+    assert.equal(
+      git.listCheckpoints(sub).some((item) => item.id === cp.id),
+      true,
+    );
+
+    for (const path of ["root-untracked.txt", "sub/nested-untracked.txt"]) {
+      rmSync(join(repo, path));
+    }
+    git.restoreCheckpoint(cp.id, repo);
+    assert.equal(readFileSync(join(repo, "root-untracked.txt"), "utf8"), "root payload\n");
+    assert.equal(
+      readFileSync(join(sub, "nested-untracked.txt"), "utf8"),
+      "nested payload\n",
+    );
+
+    for (const path of ["root-untracked.txt", "sub/nested-untracked.txt"]) {
+      rmSync(join(repo, path));
+    }
+    git.restoreCheckpoint(cp.id, sub);
+    assert.equal(readFileSync(join(repo, "root-untracked.txt"), "utf8"), "root payload\n");
+    assert.equal(
+      readFileSync(join(sub, "nested-untracked.txt"), "utf8"),
+      "nested payload\n",
+    );
+
+    assert.equal(git.deleteCheckpoint(cp.id, sub), true);
+    assert.equal(
+      git.listCheckpoints(repo).some((item) => item.id === cp.id),
+      false,
+    );
   });
 
   test("untracked files survive checkpoint round-trip (byte-for-byte)", () => {

@@ -84,6 +84,15 @@ same staged, unstaged, and untracked baseline the planner observed.
 27. Ignored directory entries and the authenticated checkpoint target's actual
     tracked paths participate in final collision checks, including target paths
     absent from the current index and empty directories invisible to status.
+28. Restore preflight uses an isolated temporary Git directory with detached
+    HEAD set to checkpoint HEAD, so staged deletion and other stash/index state
+    are tested in the exact context established by the real reset.
+29. Checkpoint creation rejects `UU`, `AA`, and all other unmerged index stages
+    before creating metadata, store artifacts, or refs, without changing the
+    conflict state.
+30. Create, list, restore, and delete resolve the repository top level first;
+    payload paths, project identity, and storage are root-relative regardless of
+    the caller subdirectory, which remains provenance only.
 
 ## Plan
 
@@ -120,7 +129,9 @@ same staged, unstaged, and untracked baseline the planner observed.
     in collision preflight.
 16. Run the complete unit and integration suite, CLI smoke, and package dry run
     through `npm run ci:local` under Node 22.19.0.
-17. Review the exact diff adversarially, then create one focused local commit if
+17. Isolate restore preflight at checkpoint HEAD, reject unmerged indexes before
+    allocation, and make repository top level authoritative for every operation.
+18. Review the exact diff adversarially, then create one focused local commit if
     every gate is green.
 
 ## Exclusions
