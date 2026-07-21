@@ -1,0 +1,422 @@
+# Alloy
+
+**Alloy** is a multi-provider coding agent harness built on [Pi](https://pi.dev).  
+One terminal command. Three subscriptions you actually use. Durable memory, skills that improve with approval, and MCP — without forking Pi or reinventing OAuth.
+
+```bash
+alloy
+```
+
+| | |
+|---|---|
+| **Status** | MVP scaffold (v0.1.0) |
+| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
+| **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
+| **Package** | `@kylaira/alloy` |
+| **CLI** | `alloy` |
+
+---
+
+## What Alloy is
+
+Alloy is the **product layer** on top of Pi’s minimal coding agent:
+
+- **Pi** owns the TUI, model registry, authentication, sessions, context compaction, tools, and extension lifecycle.
+- **Alloy** owns the product: subscription-focused first-run, durable memory across sessions, skill capture/promote, MCP config, and safe-by-default policy.
+
+We do **not** fork Pi. We do **not** reimplement provider OAuth. We ship a thin `alloy` executable that launches native Pi with the Alloy package injected.
+
+> **Name:** multi-model and multi-skill work is *alloyed* into one stronger daily harness — not a pile of disconnected tools.
+
+---
+
+## What it tries to replace
+
+Day-to-day, Alloy aims to be the single terminal agent you open instead of juggling several product CLIs.
+
+```mermaid
+flowchart LR
+  subgraph before["Before: context-switch tax"]
+    CC["Claude Code"]
+    CX["OpenAI Codex"]
+    GB["Grok / other agents"]
+    CC --- CX --- GB
+  end
+
+  subgraph after["After: one harness"]
+    A["alloy"]
+    A --> P1["Claude sub"]
+    A --> P2["Codex sub"]
+    A --> P3["Grok sub"]
+    A --> M["Durable memory"]
+    A --> S["Skills + MCP"]
+  end
+
+  before -->|"consolidate"| after
+```
+
+| You might use today | Alloy’s stance |
+|---|---|
+| **Claude Code** | Same subscription path; Alloy is provider-neutral and Pi-native |
+| **OpenAI Codex CLI / ChatGPT coding agent** | Codex subscription via Pi `/login` |
+| **Grok / xAI coding flows** | Grok subscription via `/login xai` |
+| **Bare Pi** | Alloy is Pi with a product layer (memory, skills workflow, MCP, policy, doctor) |
+| **Heavy multi-agent IDEs** | Not yet — MVP is the *daily* harness, not a swarm factory |
+
+Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the **agent shell** you live in while coding.
+
+---
+
+## MVP scope (first go-round)
+
+### In
+
+| Pillar | Behavior |
+|---|---|
+| **Subscriptions** | Claude (Anthropic), Codex/ChatGPT (OpenAI), Grok (xAI) via Pi `/login` |
+| **Durable memory** | Facts survive `/new` and new days (`/remember`, `/memory`) |
+| **Skills** | Create, compose (skills using skills), capture + promote with approval |
+| **MCP** | Server config + discovery; live stdio tool bridge next |
+| **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
+| **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
+
+### Out (for now)
+
+- Multi-agent `/auto` factory (scout → plan → build → review fleet)
+- Fusion / parallel multi-model writers
+- Micro-VM sandbox product
+- Every OpenRouter model and a provider marketplace
+- GUI / hosted control plane
+
+---
+
+## How it works
+
+```mermaid
+flowchart TB
+  User["You"] --> CLI["alloy CLI"]
+  CLI --> Pi["Native Pi runtime<br/>TUI · auth · models · tools · sessions"]
+  Pi --> Ext["Alloy extension package"]
+
+  Ext --> Prov["providers<br/>/doctor /providers"]
+  Ext --> Mem["memory<br/>/remember /memory"]
+  Ext --> Sk["skills-improve<br/>/skill-capture /skill-promote"]
+  Ext --> Mcp["mcp<br/>/mcp"]
+  Ext --> Pol["policy<br/>/permissions"]
+  Ext --> Ui["ui<br/>/alloy"]
+
+  Prov --> Auth["~/.pi/agent/auth.json<br/>Pi /login only"]
+  Mem --> Disk["~/.pi/alloy/memory/"]
+  Sk --> Skills["~/.pi/agent/skills/ + drafts"]
+  Mcp --> McpCfg["~/.pi/alloy/mcp.json"]
+```
+
+### Runtime boundaries
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant A as alloy launcher
+  participant P as Pi
+  participant E as Alloy extensions
+  participant FS as ~/.pi/alloy
+
+  U->>A: alloy
+  A->>P: spawn pi -e extensions --skill --theme ...
+  P->>E: load ExtensionAPI
+  E->>FS: ensure config, memory, mcp layout
+  P->>U: interactive TUI
+  U->>P: /login (Claude / Codex / Grok)
+  U->>E: /remember, /skill-capture, /mcp, /doctor
+  E->>P: inject memory into system prompt (before_agent_start)
+  E->>P: tool_call policy gate
+```
+
+---
+
+## Quick start
+
+### Prerequisites
+
+- **Node.js 20+**
+- Network access for model providers
+- GitLab SSH key (for this repo)
+
+### Install Pi + Alloy
+
+```bash
+# Pi (global)
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+# Alloy (from this repo)
+git clone git@gitlab.com:kylaira/infrastructure/alloy.git
+cd alloy
+npm install
+chmod +x bin/alloy.mjs
+npm link          # puts `alloy` on your PATH
+```
+
+### First run
+
+```bash
+cd your-project
+alloy
+```
+
+Inside the TUI:
+
+```text
+/login                 # Claude Pro/Max and/or ChatGPT Codex subscription
+/login xai             # Grok → "Use a subscription"
+/doctor                # green/red for the three providers (never prints secrets)
+/model                 # pick a connected model
+/remember project uses pnpm
+```
+
+API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`), but the **MVP target is subscriptions**.
+
+---
+
+## Commands
+
+### Alloy-added
+
+| Command | Purpose |
+|---|---|
+| `/alloy` | Help + version |
+| `/doctor` | Provider + path diagnostics |
+| `/providers` | Quick status for Claude · Codex · Grok |
+| `/remember [user:] <fact>` | Save durable memory (project default, or `user:`) |
+| `/memory list` | Browse durable memory |
+| `/memory search <q>` | Search memory |
+| `/memory forget <id>` | Delete a memory entry |
+| `/skill-capture <name> [desc]` | Draft a skill from a workflow |
+| `/skill-promote <name>` | **Approve** and install draft → `~/.pi/agent/skills/<name>/` |
+| `/skill-drafts` | List drafts awaiting approval |
+| `/mcp list\|status\|reload\|path` | MCP configuration |
+| `/permissions [readonly\|safe\|workspace]` | Permission profile |
+
+### Still Pi (unchanged)
+
+`/login` · `/logout` · `/model` · `/settings` · `/resume` · `/new` · `/tree` · `/fork` · `/clone` · `/compact` · `/export` · `/reload` · `/quit`
+
+Prompt templates shipped with Alloy: `/plan`, `/review`.
+
+---
+
+## Durable memory
+
+Pi already persists **session trees** (resume, branch, compact). Alloy adds **durable memory** that survives a brand-new session.
+
+```mermaid
+flowchart LR
+  subgraph session["Session memory (Pi)"]
+    JSONL["JSONL session tree<br/>~/.pi/agent/sessions/"]
+  end
+
+  subgraph durable["Durable memory (Alloy)"]
+    User["user facts<br/>~/.pi/alloy/memory/user/"]
+    Proj["project facts<br/>~/.pi/alloy/memory/projects/&lt;id&gt;/"]
+  end
+
+  JSONL -->|"this conversation"| Turn["Current turn"]
+  User -->|"injected every turn"| Turn
+  Proj -->|"injected every turn"| Turn
+```
+
+- `/remember` or tool `alloy_remember` writes a fact
+- On each agent turn, Alloy injects a bounded memory block into the system prompt
+- **Never** store API keys or secrets in memory
+
+---
+
+## Skills and self-improve
+
+```mermaid
+stateDiagram-v2
+  [*] --> Working: do real work
+  Working --> Draft: /skill-capture name
+  Draft --> Review: human reads draft
+  Review --> Installed: /skill-promote name
+  Review --> Draft: edit draft
+  Installed --> Working: /skill:name or auto-load
+  Working --> Draft: self-improve proposal
+```
+
+| Rule | Detail |
+|---|---|
+| **Create** | `/skill-capture` writes `~/.pi/alloy/skills-drafts/<name>.md` |
+| **Approve** | `/skill-promote` is the only write into user skills |
+| **Compose** | Skills may load other skills; max depth 3 (documented in skill-capture skill) |
+| **No silent mutation** | Self-improve is always propose → approve → promote |
+
+Starter skills in the package: `testing`, `git-hygiene`, `skill-capture`.
+
+---
+
+## MCP
+
+Pi core does **not** ship MCP. Alloy owns MCP as a product concern.
+
+**Now (v0.1):**
+
+- Global config: `~/.pi/alloy/mcp.json`
+- Project config: `.pi/alloy-mcp.json` (trusted projects)
+- `/mcp list|status|reload|path`
+- Tool `alloy_mcp_list` for the model
+
+**Next:**
+
+- stdio MCP client
+- Tools registered behind the same approval/path policy as native tools
+
+Example config (see `config/mcp.example.json`):
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "enabled": false,
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+---
+
+## Permission profiles
+
+| Profile | Behavior |
+|---|---|
+| `readonly` | Blocks write/edit and non-inspection bash |
+| `safe` (default) | Normal work; dangerous bash asks approval (fail-closed headless) |
+| `workspace` | Full host autonomy in the project (still no secret printing) |
+
+```text
+/permissions safe
+```
+
+---
+
+## On-disk layout
+
+```text
+~/.pi/alloy/
+  config.json              # Alloy settings
+  mcp.json                 # MCP servers
+  memory/user/             # cross-project facts
+  memory/projects/<id>/    # per-repo facts
+  skills-drafts/           # unapproved skill drafts
+  runs/                    # reserved for workflow artifacts
+
+~/.pi/agent/               # Pi home
+  auth.json                # credentials (Pi-managed; mode 0600)
+  sessions/                # session trees
+  skills/                  # promoted skills land here
+```
+
+---
+
+## Repository layout
+
+```text
+alloy/
+├── bin/alloy.mjs              # launcher only — no agent logic
+├── extensions/                # Pi ExtensionAPI modules
+│   ├── index.ts
+│   ├── memory.ts
+│   ├── providers.ts
+│   ├── skills-improve.ts
+│   ├── mcp.ts
+│   ├── policy.ts
+│   └── ui.ts
+├── lib/                       # pure Node helpers (.mjs)
+├── skills/                    # package starter skills
+├── prompts/                   # /plan /review templates
+├── themes/alloy-dark.json
+├── config/*.example.json
+├── docs/
+│   ├── MVP.md
+│   └── ARCHITECTURE.md
+└── test/unit/
+```
+
+---
+
+## Development
+
+```bash
+git clone git@gitlab.com:kylaira/infrastructure/alloy.git
+cd alloy
+npm install
+npm test
+npm link
+alloy --help
+```
+
+### Scripts
+
+| Script | Action |
+|---|---|
+| `npm test` | Unit tests (memory + provider doctor) |
+| `npm link` | Install `alloy` onto your PATH |
+| `alloy --no-inject ...` | Raw Pi passthrough (debug) |
+
+### Design rules
+
+1. Do not fork Pi.
+2. Do not implement provider OAuth — use Pi `/login`.
+3. Never log or artifact credential values.
+4. Self-improve skills only after explicit approval.
+5. MCP tools must share native policy when the bridge lands.
+6. Security and recovery before multi-agent autonomy.
+
+---
+
+## Roadmap
+
+```mermaid
+flowchart LR
+  MVP["v0.1 MVP<br/>subs · memory · skills · MCP config"]
+  B1["Live MCP stdio bridge"]
+  B2["Plan / build / review modes"]
+  B3["Git checkpoints + worktrees"]
+  B4["Multi-agent /auto factory"]
+  MVP --> B1 --> B2 --> B3 --> B4
+```
+
+The longer architect plan (independent reviewer, fusion, sandbox profiles, acceptance contracts) remains valid as **post-MVP** product work. This repo’s job first is: **something Chris can use every day on Claude, Codex, and Grok.**
+
+---
+
+## Troubleshooting
+
+| Symptom | What to try |
+|---|---|
+| `could not find the Pi CLI` | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent` or set `ALLOY_PI_BIN` |
+| `/doctor` shows missing providers | Run `/login` / `/login xai` for subscriptions |
+| Memory not sticking after `/new` | Confirm `~/.pi/alloy/memory/` files exist; `/memory list` |
+| Extension not loading | Run from a linked install; check `alloy` injects `-e` (omit `--no-inject`) |
+| Dangerous command blocked | Expected under `safe`; `/permissions workspace` only if you mean it |
+
+---
+
+## Related Kylaira context
+
+Alloy is infrastructure for the Kylaira agent stack (Pi-based coding harness). It sits alongside products like KylairaOS, Conclave, and Sphere — those coordinate businesses and multi-agent orgs; **Alloy is the engineer’s daily terminal agent.**
+
+---
+
+## License
+
+MIT
+
+---
+
+## Maintainers
+
+Kylaira · Founder: Chris Coussa

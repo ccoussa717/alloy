@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "defaultMode": "build",
+  "permissionProfile": "safe",
+  "providers": {
+    "allow": ["anthropic", "openai", "openai-codex", "xai"],
+    "favorites": [
+      "anthropic/claude-sonnet-4-5",
+      "openai-codex/gpt-5.1",
+      "xai/grok-3"
+    ]
+  },
+  "memory": {
+    "enabled": true,
+    "maxInjectChars": 6000,
+    "autoLoad": true
+  },
+  "skills": {
+    "selfImprove": "approve",
+    "maxComposeDepth": 3
+  },
+  "mcp": {
+    "enabled": true,
+    "connectOnStart": false
+  }
+}

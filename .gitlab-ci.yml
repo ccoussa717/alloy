@@ -1,0 +1,19 @@
+# Alloy CI — lint-light + unit tests on Node 22
+image: node:22-bookworm
+
+stages:
+  - test
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+
+unit:
+  stage: test
+  script:
+    - npm ci
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
