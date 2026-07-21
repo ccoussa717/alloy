@@ -9,7 +9,7 @@ alloy
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.3.0) |
+| **Status** | MVP active development (v0.4.0) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -81,7 +81,9 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Checkpoints** | `/checkpoint` · `/undo` for recoverable git snapshots |
 | **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
 | **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
-| **Auto** | `/auto <request>` — scout → plan → build → check → review |
+| **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
+| **Fusion** | `/fusion [plan\|build]` — independent workers + attributed merger |
+| **Agent panel** | Live widget below the editor during auto/fusion |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
 | **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
 
@@ -206,7 +208,9 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/undo [id]` | Restore checkpoint (confirms) |
 | `/worktree create\|list\|remove\|diff` | Isolated git worktrees |
 | `/diagnose` | Run project diagnostics |
-| `/auto <request>` | Multi-agent pipeline |
+| `/auto <request>` | Multi-agent pipeline + fix loops |
+| `/fusion [plan\|build] <request>` | Multi-model fusion |
+| `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
 | `/permissions [readonly\|safe\|workspace]` | Permission profile |
 
@@ -397,18 +401,47 @@ alloy --help
 
 ```mermaid
 flowchart LR
-  V01["v0.1 scaffold"]
-  V02["v0.2 MCP · modes · checkpoints"]
-  V03["v0.3 worktrees · diagnostics · /auto"]
-  B4["Fix loops · fusion · sandbox"]
-  V01 --> V02 --> V03 --> B4
+  V01["v0.1"] --> V02["v0.2"] --> V03["v0.3"] --> V04["v0.4 fix loops · fusion · panel"]
+  V04 --> B5["Docker sandbox profile"]
 ```
 
 ### Auto pipeline
 
 ```mermaid
 flowchart LR
-  A[scout] --> B[plan] --> C[checkpoint] --> D[build in worktree] --> E[diagnostics] --> F[review] --> G[artifacts]
+  A[scout] --> B[plan] --> C[checkpoint] --> D[build] --> E[diagnostics] --> F[review]
+  F -->|FAIL or diag fail| G[fixer]
+  G --> E
+  F -->|PASS| H[artifacts]
+```
+
+### Fusion
+
+```mermaid
+flowchart TB
+  R[request] --> W1[worker 1 model A]
+  R --> W2[worker 2 model B]
+  R --> W3[worker 3 model C]
+  W1 --> M[merger]
+  W2 --> M
+  W3 --> M
+  M --> O[consensus · unique · conflicts · decision]
+```
+
+Configure workers in `~/.pi/alloy/config.json`:
+
+```json
+{
+  "fusion": {
+    "models": [
+      "anthropic/claude-sonnet-4-5",
+      "openai-codex/gpt-5.1",
+      "xai/grok-3"
+    ],
+    "mergerModel": "anthropic/claude-sonnet-4-5"
+  },
+  "budgets": { "maxFixRounds": 2 }
+}
 ```
 
 The longer architect plan (independent reviewer, fusion, sandbox profiles, acceptance contracts) remains valid as **post-MVP** product work. This repo’s job first is: **something Chris can use every day on Claude, Codex, and Grok.**
