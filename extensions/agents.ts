@@ -200,6 +200,7 @@ export function registerAgents(pi: ExtensionAPI) {
       try {
         const { getState } = require(join(root, "lib", "state.mjs"));
         const parent = getState();
+        const parentSbx = parent.permissionProfile === "sandbox";
         const result = await spawnAgent({
           name: p.name,
           task: p.task,
@@ -210,8 +211,10 @@ export function registerAgents(pi: ExtensionAPI) {
           cwd: process.cwd(),
           background: p.background,
           permissionProfile: parent.permissionProfile,
+          parentPermissionProfile: parent.permissionProfile,
           mode: parent.mode === "plan" || parent.mode === "review" ? parent.mode : "build",
-          sandbox: parent.permissionProfile === "sandbox",
+          sandbox: parentSbx,
+          parentSandbox: parentSbx,
         });
 
         if (p.background) {
@@ -379,6 +382,9 @@ export function registerAgents(pi: ExtensionAPI) {
         cwd: process.cwd(),
       });
       try {
+        const { getState } = require(join(root, "lib", "state.mjs"));
+        const parent = getState();
+        const parentSbx = parent.permissionProfile === "sandbox";
         const result = await spawnAgent({
           name: params.name,
           task: params.task,
@@ -389,6 +395,14 @@ export function registerAgents(pi: ExtensionAPI) {
           cwd: process.cwd(),
           background: Boolean(params.background),
           signal,
+          permissionProfile: parent.permissionProfile,
+          parentPermissionProfile: parent.permissionProfile,
+          mode:
+            parent.mode === "plan" || parent.mode === "review"
+              ? parent.mode
+              : "build",
+          sandbox: parentSbx,
+          parentSandbox: parentSbx,
         });
         if (params.background) {
           return {

@@ -87,9 +87,16 @@ export function registerAuto(pi: ExtensionAPI) {
       ctx.ui.setWorkingMessage?.("Alloy auto running…");
 
       try {
+        const { getState } = require(join(root, "lib", "state.mjs"));
+        const parent = getState();
+        const parentSbx = parent.permissionProfile === "sandbox";
         const summary = await runAutoWorkflow({
           request,
           cwd: process.cwd(),
+          permissionProfile: parent.permissionProfile,
+          parentPermissionProfile: parent.permissionProfile,
+          sandbox: parentSbx,
+          parentSandbox: parentSbx,
           onProgress: (msg: string) => {
             try {
               ctx.ui.notify(msg, "info");
@@ -179,10 +186,17 @@ export function registerAuto(pi: ExtensionAPI) {
       panelUi = ctx.ui;
       ctx.ui.setWorkingMessage?.("Alloy fusion running…");
       try {
+        const { getState } = require(join(root, "lib", "state.mjs"));
+        const parent = getState();
+        const parentSbx = parent.permissionProfile === "sandbox";
         const summary = await runFusion({
           request: raw,
           mode,
           cwd: process.cwd(),
+          permissionProfile: parent.permissionProfile,
+          parentPermissionProfile: parent.permissionProfile,
+          sandbox: parentSbx,
+          parentSandbox: parentSbx,
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
           onProgress: (msg: string) => {
             try {

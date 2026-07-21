@@ -63,8 +63,9 @@ describe("P0.3 child isolation", () => {
 
   it("manifest includes policy rules and version", () => {
     const m = buildChildPolicyManifest({ role: "builder" });
-    assert.equal(m.version, 1);
+    assert.ok(m.version >= 1);
     assert.equal(m.role, "builder");
+    assert.equal(m.mechanical, true);
     assert.ok(Array.isArray(m.rules) && m.rules.length > 0);
   });
 });

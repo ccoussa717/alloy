@@ -210,13 +210,13 @@ export function registerPolicy(pi: ExtensionAPI) {
     const name = event.toolName;
     const input = event.input || {};
 
-    // Sandbox: docker must be available for bash
+    // Sandbox: docker must be available for bash — fail closed, never host bash
     if (profile === "sandbox" && name === "bash") {
       const d = diagnoseDocker(process.cwd());
       if (!d.daemon) {
         return {
           block: true,
-          reason: `Sandbox profile but Docker unavailable: ${d.detail}`,
+          reason: `Sandbox profile but Docker unavailable: ${d.detail}. Host bash is blocked.`,
         };
       }
     }
