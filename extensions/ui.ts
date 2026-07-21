@@ -1,10 +1,23 @@
 /**
- * Alloy chrome — OpenCode-inspired window feel, Kylaira green (#1FE07A).
- * Custom header "window", status footer, welcome strip.
+ * Alloy chrome — OpenCode-inspired chat-window layout, Alloy identity.
+ *
+ * Layout (top → bottom):
+ *   green ALLOY wordmark + white status strip
+ *   white transcript body (theme)
+ *   bordered chat-box editor (model / tokens / cwd on borders)
+ *   dim key-hint footer
+ *
+ * Accent: Kylaira #1FE07A. Not an OpenCode clone.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  CustomEditor,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { Key, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 import { dirname, join, basename } from "node:path";
@@ -18,168 +31,373 @@ const { getAgent, getAgentTranscript, listAgents } = require(
   join(root, "lib", "agent-registry.mjs"),
 );
 
-const VERSION = process.env.ALLOY_VERSION || "0.7.1";
+const VERSION = process.env.ALLOY_VERSION || "0.7.2";
 
-function boxLine(theme: { fg: (c: string, t: string) => string }, width: number, content: string) {
-  const inner = Math.max(10, width - 2);
-  const body = truncateToWidth(content, inner);
-  const pad = " ".repeat(Math.max(0, inner - visibleWidth(body)));
-  return (
-    theme.fg("borderAccent", "│") +
-    body +
-    pad +
-    theme.fg("borderAccent", "│")
+// ---------------------------------------------------------------------------
+// Border helpers (from Pi border-status-editor pattern)
+// ---------------------------------------------------------------------------
+
+function fitBorder(
+  left: string,
+  right: string,
+  width: number,
+  border: (text: string) => string,
+  fill: (text: string) => string = border,
+): string {
+  if (width <= 0) return "";
+  if (width === 1) return border("─");
+
+  let leftText = left;
+  let rightText = right;
+  const fixedWidth = 2;
+  const minimumGap = 3;
+
+  while (
+    fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width &&
+    visibleWidth(rightText) > 0
+  ) {
+    rightText = truncateToWidth(rightText, Math.max(0, visibleWidth(rightText) - 1), "");
+  }
+  while (
+    fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width &&
+    visibleWidth(leftText) > 0
+  ) {
+    leftText = truncateToWidth(leftText, Math.max(0, visibleWidth(leftText) - 1), "");
+  }
+
+  const gapWidth = Math.max(
+    0,
+    width - fixedWidth - visibleWidth(leftText) - visibleWidth(rightText),
   );
+  return `${border("─")}${leftText}${fill("─".repeat(gapWidth))}${rightText}${border("─")}`;
 }
 
-function buildHeaderLines(theme: { fg: (c: string, t: string) => string }, width: number): string[] {
-  const w = Math.max(40, Math.min(width, 88));
-  const inner = w - 2;
-  const top =
-    theme.fg("borderAccent", "╭") +
-    theme.fg("borderAccent", "─".repeat(inner)) +
-    theme.fg("borderAccent", "╮");
-  const bot =
-    theme.fg("borderAccent", "╰") +
-    theme.fg("borderAccent", "─".repeat(inner)) +
-    theme.fg("borderAccent", "╯");
+function formatCwd(cwd: string): string {
+  const home = process.env.HOME;
+  if (home && cwd.startsWith(home)) {
+    return `~${cwd.slice(home.length)}`;
+  }
+  return cwd;
+}
 
-  const brand = theme.fg("accent", " ALLOY");
-  const tag = theme.fg("dim", "  multi-model coding harness");
-  const ver = theme.fg("dim", `v${VERSION}`);
-  const titleCore = ` ALLOY` + `  multi-model coding harness`;
-  // build colored title row
-  const titlePlain = ` ALLOY  multi-model coding harness`;
-  const right = `v${VERSION} `;
-  const midPad = Math.max(1, inner - visibleWidth(titlePlain) - visibleWidth(right));
-  const titleRow =
-    theme.fg("borderAccent", "│") +
-    theme.fg("accent", " ALLOY") +
-    theme.fg("dim", "  multi-model coding harness") +
-    " ".repeat(midPad) +
-    theme.fg("dim", right) +
-    theme.fg("borderAccent", "│");
+function formatContext(ctx: ExtensionContext): string {
+  try {
+    const usage = ctx.getContextUsage?.();
+    const contextWindow = usage?.contextWindow ?? ctx.model?.contextWindow;
+    if (!contextWindow || !usage || usage.percent === null || usage.percent === undefined) {
+      return "";
+    }
+    return `ctx ${Math.round(usage.percent)}%`;
+  } catch {
+    return "";
+  }
+}
+
+function sessionTokenBits(ctx: ExtensionContext): { input: number; output: number; cost: number } {
+  let input = 0;
+  let output = 0;
+  let cost = 0;
+  try {
+    for (const e of ctx.sessionManager.getBranch()) {
+      if (e.type === "message" && e.message?.role === "assistant") {
+        const m = e.message as AssistantMessage;
+        input += m.usage?.input || 0;
+        output += m.usage?.output || 0;
+        cost += m.usage?.cost?.total || 0;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { input, output, cost };
+}
+
+function fmtCount(n: number): string {
+  if (n < 1000) return `${n}`;
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
+// ---------------------------------------------------------------------------
+// Compact header — green ALLOY, white/muted chrome (no green window box)
+// ---------------------------------------------------------------------------
+
+function buildHeaderLines(
+  theme: { fg: (c: string, t: string) => string },
+  width: number,
+  ctx: ExtensionContext,
+): string[] {
+  const w = Math.max(20, width);
+  const brand = theme.fg("accent", "ALLOY");
+  const tag = theme.fg("dim", " multi-model");
+  const ver = theme.fg("dim", ` v${VERSION}`);
+
+  const { input, output, cost } = sessionTokenBits(ctx);
+  const statsPlain = `↑${fmtCount(input)} ↓${fmtCount(output)} $${cost.toFixed(2)}`;
+  const stats = theme.fg("muted", statsPlain);
+
+  const leftPlain = `ALLOY multi-model v${VERSION}`;
+  const pad = Math.max(1, w - visibleWidth(leftPlain) - visibleWidth(statsPlain));
+  const topRow = brand + tag + ver + " ".repeat(pad) + stats;
 
   const cwd = basename(process.cwd());
   const perm = permissionStatusText(getState().permissionProfile);
-  const hints = theme.fg(
-    "muted",
-    ` /help  /agent  /agents  Shift+Tab ${perm}  /effort  Ctrl+Shift+A`,
-  );
-  const proj = theme.fg("dim", ` project `) + theme.fg("text", cwd);
-  const emptyHintPad = Math.max(0, inner - visibleWidth(` /help  /agent  /agents  Shift+Tab ${perm}  /effort  Ctrl+Shift+A`));
-  const hintRow =
-    theme.fg("borderAccent", "│") +
-    theme.fg("muted", ` /help  /agent  /agents  Shift+Tab ${perm}  /effort  Ctrl+Shift+A`) +
-    " ".repeat(emptyHintPad) +
-    theme.fg("borderAccent", "│");
+  const agents = listAgents(process.cwd(), { limit: 20 });
+  const running = agents.filter((a: { status: string }) => a.status === "running").length;
+  const agentBit =
+    running > 0
+      ? theme.fg("warning", ` agents:${running}`)
+      : agents.length
+        ? theme.fg("dim", ` agents:${agents.length}`)
+        : "";
 
-  const projPad = Math.max(0, inner - visibleWidth(` project ${cwd}`));
-  const projRow =
-    theme.fg("borderAccent", "│") +
-    theme.fg("dim", " project ") +
+  const subLeft =
     theme.fg("text", cwd) +
-    " ".repeat(projPad) +
-    theme.fg("borderAccent", "│");
+    theme.fg("dim", " · ") +
+    theme.fg("muted", perm) +
+    agentBit;
+  const subPlain =
+    `${cwd} · ${perm}` +
+    (running > 0 ? ` agents:${running}` : agents.length ? ` agents:${agents.length}` : "");
+  const rule = theme.fg("borderMuted", "─".repeat(w));
 
-  return ["", top, titleRow, hintRow, projRow, bot, ""];
+  return [
+    "",
+    truncateToWidth(topRow, w),
+    truncateToWidth(subLeft + " ".repeat(Math.max(0, w - visibleWidth(subPlain))), w),
+    rule,
+  ];
 }
 
-export function registerUi(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
-    if (ctx.mode !== "tui" && ctx.mode !== "interactive") {
-      // still set statuses in non-tui when possible
-    }
+// ---------------------------------------------------------------------------
+// Empty footer component
+// ---------------------------------------------------------------------------
 
+class KeyHintFooter implements Component {
+  constructor(
+    private theme: { fg: (c: string, t: string) => string },
+    private getRunning: () => number,
+  ) {}
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    const th = this.theme;
+    const running = this.getRunning();
+    const left =
+      th.fg("dim", " esc") +
+      th.fg("muted", " interrupt") +
+      th.fg("dim", "  /help") +
+      th.fg("dim", "  Shift+Tab") +
+      th.fg("muted", " ask") +
+      th.fg("dim", "  /agent") +
+      th.fg("dim", "  Ctrl+Shift+A");
+    const right =
+      running > 0
+        ? th.fg("warning", `live agents:${running}`)
+        : th.fg("dim", "/effort  /agents");
+    const pad = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
+    return [truncateToWidth(left + " ".repeat(pad) + right, width)];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Register
+// ---------------------------------------------------------------------------
+
+export function registerUi(pi: ExtensionAPI) {
+  let isWorking = false;
+  let spinnerIndex = 0;
+  let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+  let activeTui: TUI | undefined;
+  let branch: string | undefined;
+  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+  const stopSpinner = () => {
+    if (spinnerTimer) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = undefined;
+    }
+  };
+
+  pi.on("agent_start", () => {
+    isWorking = true;
+    stopSpinner();
+    spinnerTimer = setInterval(() => {
+      spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+      activeTui?.requestRender();
+    }, 80);
+    activeTui?.requestRender();
+  });
+
+  pi.on("agent_end", () => {
+    isWorking = false;
+    stopSpinner();
+    activeTui?.requestRender();
+  });
+
+  pi.on("session_shutdown", () => {
+    stopSpinner();
+    activeTui = undefined;
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
     try {
       ctx.ui.setTheme?.("alloy-dark");
     } catch {
       // theme may already be loaded via launcher --theme
     }
 
+    // Green brand in status strip
     ctx.ui.setStatus(
       "alloy",
       ctx.ui.theme?.fg ? ctx.ui.theme.fg("accent", "ALLOY") : "ALLOY",
     );
 
-    // Window-style header (OpenCode-inspired chrome, Kylaira green)
+    // Compact header: green ALLOY + white project strip
     try {
       ctx.ui.setHeader((_tui, theme) => ({
         invalidate() {},
         render(width: number) {
-          return buildHeaderLines(theme, width);
+          return buildHeaderLines(theme, width, ctx);
         },
       }));
     } catch {
       // ignore
     }
 
-    // Status footer: tokens · model · perm · branch
+    // Key-hint footer (OpenCode-style bottom chrome) — not a heavy status bar
     try {
       ctx.ui.setFooter((tui, theme, footerData) => {
-        const unsub = footerData.onBranchChange?.(() => tui.requestRender());
+        const unsub = footerData.onBranchChange?.(() => {
+          branch = footerData.getGitBranch?.() || branch;
+          tui.requestRender();
+        });
+        // seed branch
+        branch = footerData.getGitBranch?.() || branch;
         return {
           dispose: unsub || (() => {}),
           invalidate() {},
           render(width: number): string[] {
-            let input = 0;
-            let output = 0;
-            let cost = 0;
-            try {
-              for (const e of ctx.sessionManager.getBranch()) {
-                if (e.type === "message" && e.message?.role === "assistant") {
-                  const m = e.message as AssistantMessage;
-                  input += m.usage?.input || 0;
-                  output += m.usage?.output || 0;
-                  cost += m.usage?.cost?.total || 0;
-                }
-              }
-            } catch {
-              // ignore
-            }
-            const fmt = (n: number) =>
-              n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`;
-            const branch = footerData.getGitBranch?.() || "";
-            const model = ctx.model?.id || "no-model";
-            const perm = permissionStatusText(getState().permissionProfile);
-            const agents = listAgents(process.cwd(), { limit: 20 });
-            const running = agents.filter((a: { status: string }) => a.status === "running").length;
-
-            const left = theme.fg(
-              "dim",
-              `↑${fmt(input)} ↓${fmt(output)} $${cost.toFixed(3)}`,
-            );
-            const mid = theme.fg("accent", ` ${perm} `);
-            const agentBit =
-              running > 0
-                ? theme.fg("warning", ` agents:${running}`)
-                : theme.fg("dim", agents.length ? ` agents:${agents.length}` : "");
-            const right = theme.fg(
-              "dim",
-              `${model}${branch ? " · " + branch : ""}`,
-            );
-
-            const rule = theme.fg("borderMuted", "─".repeat(Math.max(10, width)));
-            const row = left + mid + agentBit;
-            const pad = " ".repeat(
-              Math.max(1, width - visibleWidth(row) - visibleWidth(right)),
-            );
-            return [
-              rule,
-              truncateToWidth(row + pad + right, width),
-            ];
+            const running = listAgents(process.cwd(), { limit: 20 }).filter(
+              (a: { status: string }) => a.status === "running",
+            ).length;
+            return new KeyHintFooter(theme, () => running).render(width);
           },
         };
       });
     } catch {
-      // ignore footer failures
+      // ignore
     }
 
-    // Subtle welcome strip once
+    // Hide built-in working row; spinner lives in chat-box top border
+    try {
+      ctx.ui.setWorkingVisible?.(false);
+    } catch {
+      // ignore
+    }
+
+    // Chat-box editor (OpenCode-style bordered input)
+    try {
+      const refreshBranch = async () => {
+        try {
+          const result = await pi.exec("git", ["branch", "--show-current"], {
+            cwd: ctx.cwd,
+          });
+          const stdout = result?.stdout?.trim?.() || "";
+          branch = stdout.length > 0 ? stdout : undefined;
+          activeTui?.requestRender();
+        } catch {
+          // ignore
+        }
+      };
+      void refreshBranch();
+
+      class AlloyChatEditor extends CustomEditor {
+        constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+          // paddingX 0 keeps the box tight like OpenCode's input pane
+          super(tui, theme, keybindings, { paddingX: 0 });
+          activeTui = tui;
+          // Prefer green accent border for the chat box
+          try {
+            const th = ctx.ui.theme;
+            if (th?.fg) {
+              this.borderColor = (s: string) => th.fg("borderAccent", s);
+            }
+          } catch {
+            // keep default
+          }
+        }
+
+        render(width: number): string[] {
+          const lines = super.render(width);
+          if (lines.length < 2) return lines;
+
+          const thm = ctx.ui.theme;
+          const model = ctx.model
+            ? `${ctx.model.provider}/${ctx.model.id}`
+            : "no model";
+          let thinking = "off";
+          try {
+            thinking = pi.getThinkingLevel?.() || "off";
+          } catch {
+            // ignore
+          }
+          const thinkLabel = thinking === "off" ? "" : ` · ${thinking}`;
+          const perm = permissionStatusText(getState().permissionProfile);
+          const { input, output, cost } = sessionTokenBits(ctx);
+          const ctxBit = formatContext(ctx);
+          const cwdShort = formatCwd(ctx.cwd || process.cwd());
+          const branchBit = branch ? ` (${branch})` : "";
+
+          // Top border: working spinner (green) or quiet brand tick
+          const topLeft = isWorking
+            ? thm.fg("accent", ` ${spinnerFrames[spinnerIndex]} working `)
+            : thm.fg("dim", " ");
+          const topRight = thm.fg("dim", ` ${perm} `);
+
+          // Bottom border: model · effort · tokens · path (white/muted)
+          const bottomLeft = thm.fg(
+            "text",
+            ` ${model}${thinkLabel} `,
+          );
+          const tokenPart =
+            input || output
+              ? `↑${fmtCount(input)} ↓${fmtCount(output)} $${cost.toFixed(2)}`
+              : "";
+          const bottomRightParts = [
+            tokenPart,
+            ctxBit,
+            `${cwdShort}${branchBit}`,
+          ].filter(Boolean);
+          const bottomRight = thm.fg(
+            "muted",
+            ` ${bottomRightParts.join(" · ")} `,
+          );
+
+          const borderColor = (text: string) => this.borderColor(text);
+          lines[0] = fitBorder(topLeft, topRight, width, borderColor);
+          lines[lines.length - 1] = fitBorder(
+            bottomLeft,
+            bottomRight,
+            width,
+            borderColor,
+          );
+          return lines;
+        }
+      }
+
+      ctx.ui.setEditorComponent(
+        (tui, theme, keybindings) => new AlloyChatEditor(tui, theme, keybindings),
+      );
+    } catch {
+      // Custom editor optional if older Pi
+    }
+
+    // One-shot welcome under the chat box, then clear on first turn
     try {
       ctx.ui.setWidget(
         "alloy-welcome",
-        (tui, theme) => ({
+        (_tui, theme) => ({
           invalidate() {},
           render(width: number) {
             const line = theme.fg(
@@ -191,7 +409,6 @@ export function registerUi(pi: ExtensionAPI) {
         }),
         { placement: "belowEditor" },
       );
-      // Clear welcome on first agent turn so the strip does not stick
       let cleared = false;
       pi.on("agent_start", () => {
         if (cleared) return;
@@ -229,7 +446,7 @@ export function registerUi(pi: ExtensionAPI) {
         `Alloy v${VERSION}`,
         "Kylaira multi-model coding harness",
         "",
-        "UI:      OpenCode-inspired chrome · accent #1FE07A",
+        "UI:      chat-window chrome · green ALLOY · accent #1FE07A",
         "Agents:  /agent  /agents  /profiles  Ctrl+Shift+A",
         "Auto:    /auto  /fusion",
         "Perms:   Shift+Tab ask-levels",
@@ -242,11 +459,20 @@ export function registerUi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("chrome", {
-    description: "Reset Alloy header/footer chrome",
+    description: "Reset Alloy header/footer/editor chrome",
     handler: async (_args, ctx) => {
       ctx.ui.setHeader(undefined);
       ctx.ui.setFooter(undefined);
-      ctx.ui.notify("Chrome cleared. /reload or restart to restore Alloy chrome.", "info");
+      try {
+        ctx.ui.setEditorComponent?.(undefined);
+        ctx.ui.setWorkingVisible?.(true);
+      } catch {
+        // ignore
+      }
+      ctx.ui.notify(
+        "Chrome cleared. /reload or restart to restore Alloy chrome.",
+        "info",
+      );
     },
   });
 }
@@ -263,7 +489,6 @@ async function openLastAgent(ctx: {
     ctx.ui.notify("No agents yet. Spawn with /agent <name> <task>", "info");
     return;
   }
-  // Prefer most recently ended, else most recently started
   const sorted = [...list].sort((a: any, b: any) => {
     const ta = a.endedAt || a.startedAt || 0;
     const tb = b.endedAt || b.startedAt || 0;
@@ -280,12 +505,13 @@ async function openLastAgent(ctx: {
     .slice(0, 100);
   if (lines.length >= 100) lines.push("… truncated — full file in ~/.pi/alloy/agents/");
   if (ctx.hasUI !== false) {
-    await ctx.ui.select(`Last agent · ${last.name} · ${last.model || "default"}`, lines);
+    await ctx.ui.select(
+      `Last agent · ${last.name} · ${last.model || "default"}`,
+      lines,
+    );
   } else {
     console.log(t.markdown);
   }
 }
 
-// silence unused helpers if tree-shaken
-void boxLine;
 void getAgent;
