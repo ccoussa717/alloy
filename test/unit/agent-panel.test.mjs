@@ -16,12 +16,21 @@ test("render panel shows agent statuses", () => {
   const lines = panel.renderPanelLines(p);
   assert.ok(lines[0].includes("ALLOY AUTO"));
   assert.ok(lines.some((l) => l.includes("scout") && l.includes("✓")));
-  assert.ok(lines.some((l) => l.includes("builder") && l.includes("◐")));
+  assert.ok(lines.some((l) => l.includes("builder") && l.includes("●")));
 });
 
 test("themed render falls back without theme", () => {
   const p = panel.createPanelState({ title: "X" });
   panel.upsertAgent(p, { role: "reviewer", status: "fail", detail: "FAIL" });
   const lines = panel.renderPanelThemed(p, null);
-  assert.ok(lines.some((l) => l.startsWith("✗")));
+  assert.ok(lines.some((l) => l.includes("✗")));
+});
+
+test("ticker lines appear in panel", () => {
+  panel.clearTicker();
+  panel.pushTickerEvent({ agent: "coder", tool: "bash", detail: "npm test" });
+  const p = panel.createPanelState({ title: "ALLOY" });
+  const lines = panel.renderPanelLines(p);
+  assert.ok(lines.some((l) => l.includes("live")));
+  assert.ok(lines.some((l) => l.includes("coder") && l.includes("bash")));
 });

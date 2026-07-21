@@ -249,6 +249,8 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/diagnose` | Run project diagnostics |
 | `/agent [bg] <name> [profile=\|model=] <task>` | Spawn multi-model sub-agent |
 | `/agents` / `/agents view <id>` | List / view sub-agent transcripts |
+| **Ctrl+Shift+A** | Open last sub-agent transcript |
+| Live panel ticker | Streaming tool lines while agents run |
 | `/profiles` | Multi-model profile map |
 | `/auto <request>` | Multi-agent pipeline + fix loops |
 | `/fusion [plan\|build] <request>` | Multi-model fusion |
