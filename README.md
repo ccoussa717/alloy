@@ -91,7 +91,9 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
 | **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
 | **Fusion** | `/fusion [plan\|build]` — independent workers + attributed merger |
-| **Agent panel** | Live widget below the editor during auto/fusion |
+| **Sub-agents** | `/agent` free-form multi-model agents · `/agents` browser · `alloy_task` |
+| **Profiles** | research=Grok · code=Codex · review=Opus · plan=Sonnet (configurable) |
+| **Agent panel** | Live widget below the editor during agents / auto / fusion |
 | **Docker sandbox** | `/permissions sandbox` — bash in `node:22-bookworm`, **network none** |
 | **Help** | `/help`, `/help <topic>`, `/help search <query>` |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
@@ -245,6 +247,9 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/undo [id]` | Restore checkpoint (confirms) |
 | `/worktree create\|list\|remove\|diff` | Isolated git worktrees |
 | `/diagnose` | Run project diagnostics |
+| `/agent [bg] <name> [profile=\|model=] <task>` | Spawn multi-model sub-agent |
+| `/agents` / `/agents view <id>` | List / view sub-agent transcripts |
+| `/profiles` | Multi-model profile map |
 | `/auto <request>` | Multi-agent pipeline + fix loops |
 | `/fusion [plan\|build] <request>` | Multi-model fusion |
 | `/panel` | Clear agent panel widget |
@@ -455,6 +460,19 @@ flowchart LR
 
 Defaults: **image `node:22-bookworm`**, **network `none`**, project mounted at `/workspace`, 2g/2cpu, cap-drop ALL.  
 `/auto` does **not** force sandbox — set the profile first (safest).
+
+### Free-form multi-model agents
+
+```bash
+/agent scout profile=research Map the auth module
+/agent coder profile=code Implement token refresh
+/agent critic model=anthropic/claude-opus-4-6 Review the diff
+/agents
+/agents view <id>
+/profiles
+```
+
+Configure models in `~/.pi/alloy/config.json` → `profiles` (Grok + Claude + Codex after each `/login`).
 
 ### Auto pipeline
 

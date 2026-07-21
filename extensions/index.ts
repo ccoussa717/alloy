@@ -21,6 +21,7 @@ import { registerAuto } from "./auto.ts";
 import { registerSandbox } from "./sandbox.ts";
 import { registerHelp } from "./help.ts";
 import { registerEffort } from "./effort.ts";
+import { registerAgents } from "./agents.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -51,4 +52,5 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerWorktree(pi);
   registerDiagnostics(pi);
   registerAuto(pi);
+  registerAgents(pi); // /agent /agents /profiles · multi-model sub-agents
 }
