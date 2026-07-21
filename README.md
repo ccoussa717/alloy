@@ -7,9 +7,17 @@ One terminal command. Three subscriptions you actually use. Durable memory, skil
 alloy
 ```
 
+### Install (Linux / macOS)
+
+```bash
+curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
+```
+
+Then run `alloy`.
+
 | | |
 |---|---|
-| **Status** | MVP active development (v0.6.0) |
+| **Status** | MVP active development (v0.6.3) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -153,11 +161,11 @@ sequenceDiagram
 
 ### One-command install (Linux / macOS)
 
-Needs **git**, **Node 20+**, and GitLab access (SSH key recommended):
-
 ```bash
 curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
 ```
+
+Needs **git**, **Node 20+**, and GitLab access (SSH key recommended for private repos).
 
 If the raw URL is private or blocked, use:
 
