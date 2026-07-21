@@ -151,42 +151,45 @@ sequenceDiagram
 - Network access for model providers
 - GitLab SSH key (for this repo)
 
-### Install Pi + Alloy
+### One-command install (Linux / macOS)
 
-`npm install` alone does **not** put `alloy` on your PATH. You must link (or run via `node` / `npm start`).
+Needs **git**, **Node 20+**, and GitLab access (SSH key recommended):
 
 ```bash
-# 1) Node 20+ required (nvm works fine)
-node -v
+curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
+```
 
-# 2) Alloy (from this repo)
-git clone git@gitlab.com:kylaira/infrastructure/alloy.git
-cd alloy
-npm install
-chmod +x bin/alloy.mjs
+If the raw URL is private or blocked, use:
 
-# 3) Install the `alloy` command (required once per machine / after clone)
-npm run install-cli
-# or everything in one go:
-# npm run setup
+```bash
+git clone git@gitlab.com:kylaira/infrastructure/alloy.git ~/dev/alloy \
+  && bash ~/dev/alloy/install.sh
+```
 
+That single script will:
+
+1. Clone or update `~/dev/alloy` (override with `ALLOY_DIR=…`)  
+2. `npm install` (pulls Pi and deps)  
+3. Install the `alloy` command on PATH (next to `node` + `~/.local/bin`)  
+4. Patch shell rc files if needed  
+5. Smoke-test `alloy --help`  
+
+Then:
+
+```bash
 alloy
 ```
 
-`npm run install-cli` will:
+Optional env vars: `ALLOY_DIR`, `ALLOY_REPO`, `ALLOY_BRANCH`, `ALLOY_NODE_MIN`.
 
-1. Ensure dependencies (including Pi) are installed  
-2. Write an `alloy` launcher **next to `node`** (already on your PATH with nvm)  
-3. Also install to `~/.local/bin/alloy`  
-4. Add `~/.local/bin` to `~/.bashrc` / `~/.zshrc` / `~/.profile` if needed  
-
-After that, `alloy` should work in the same terminal (and new ones).
-
-Without installing the CLI command you can still run:
+### Manual install (already cloned)
 
 ```bash
-npm start
-./bin/alloy.mjs
+cd ~/dev/alloy
+git pull
+bash install.sh
+# or only refresh the CLI shim:
+npm run install-cli
 ```
 
 ### First run
