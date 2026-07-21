@@ -233,6 +233,15 @@ const args = buildArgs(process.argv.slice(2));
 // Hide Pi startup resource dump so the empty state matches OpenCode's clean field
 ensureQuietStartup();
 
+// Full terminal clear before Pi draws — empty black field like OpenCode
+if (process.stdout.isTTY && !process.env.ALLOY_NO_CLEAR) {
+  try {
+    process.stdout.write("\x1b[2J\x1b[H\x1b[3J");
+  } catch {
+    // ignore
+  }
+}
+
 const isNodeEntry = piBin.endsWith(".js") || piBin.endsWith(".mjs");
 const command = isNodeEntry ? process.execPath : piBin;
 const finalArgs = isNodeEntry ? [piBin, ...args] : args;
@@ -242,7 +251,7 @@ const child = spawn(command, finalArgs, {
   env: {
     ...process.env,
     ALLOY_ROOT,
-    ALLOY_VERSION: "0.7.4",
+    ALLOY_VERSION: "0.7.5",
   },
   windowsHide: true,
 });
