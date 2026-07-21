@@ -1,6 +1,5 @@
 /**
  * Alloy — root extension.
- * Wires: ui, providers, memory, skills, mcp, modes, policy, git.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,6 +15,9 @@ import { registerPolicy } from "./policy.ts";
 import { registerUi } from "./ui.ts";
 import { registerModes } from "./modes.ts";
 import { registerGit } from "./git.ts";
+import { registerWorktree } from "./worktree.ts";
+import { registerDiagnostics } from "./diagnostics.ts";
+import { registerAuto } from "./auto.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,7 +34,6 @@ export default function alloyExtension(pi: ExtensionAPI) {
     console.error("Alloy: failed to init home:", err);
   }
 
-  // Order matters: modes/policy before tools fire; mcp after policy handlers registered
   registerUi(pi);
   registerProviders(pi);
   registerModes(pi);
@@ -41,4 +42,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerSkillsImprove(pi);
   registerMcp(pi);
   registerGit(pi);
+  registerWorktree(pi);
+  registerDiagnostics(pi);
+  registerAuto(pi);
 }

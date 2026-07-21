@@ -9,7 +9,7 @@ alloy
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.2.0) |
+| **Status** | MVP active development (v0.3.0) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -79,6 +79,9 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **MCP** | Config + **live stdio connect** (`/mcp connect`) — tools registered on the agent |
 | **Modes** | `chat` · `plan` · `build` · `review` with tool gating |
 | **Checkpoints** | `/checkpoint` · `/undo` for recoverable git snapshots |
+| **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
+| **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
+| **Auto** | `/auto <request>` — scout → plan → build → check → review |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
 | **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
 
@@ -201,6 +204,10 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/checkpoint [label]` | Create git checkpoint |
 | `/checkpoints` | List checkpoints |
 | `/undo [id]` | Restore checkpoint (confirms) |
+| `/worktree create\|list\|remove\|diff` | Isolated git worktrees |
+| `/diagnose` | Run project diagnostics |
+| `/auto <request>` | Multi-agent pipeline |
+| `/runs` | Show runs artifact directory |
 | `/permissions [readonly\|safe\|workspace]` | Permission profile |
 
 ### Still Pi (unchanged)
@@ -391,10 +398,17 @@ alloy --help
 ```mermaid
 flowchart LR
   V01["v0.1 scaffold"]
-  V02["v0.2 live MCP · modes · checkpoints"]
-  B3["Worktrees + richer diagnostics"]
-  B4["Multi-agent /auto factory"]
-  V01 --> V02 --> B3 --> B4
+  V02["v0.2 MCP · modes · checkpoints"]
+  V03["v0.3 worktrees · diagnostics · /auto"]
+  B4["Fix loops · fusion · sandbox"]
+  V01 --> V02 --> V03 --> B4
+```
+
+### Auto pipeline
+
+```mermaid
+flowchart LR
+  A[scout] --> B[plan] --> C[checkpoint] --> D[build in worktree] --> E[diagnostics] --> F[review] --> G[artifacts]
 ```
 
 The longer architect plan (independent reviewer, fusion, sandbox profiles, acceptance contracts) remains valid as **post-MVP** product work. This repo’s job first is: **something Chris can use every day on Claude, Codex, and Grok.**
