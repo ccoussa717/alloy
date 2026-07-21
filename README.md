@@ -17,7 +17,7 @@ Then run `alloy`.
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.7.5) |
+| **Status** | MVP active development (v0.7.6) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -293,6 +293,24 @@ flowchart LR
 - `/remember` or tool `alloy_remember` writes a fact
 - On each agent turn, Alloy injects a bounded memory block into the system prompt
 - **Never** store API keys or secrets in memory
+
+---
+
+## Honesty (anti-hallucination)
+
+Alloy injects a **mandatory honesty policy** every turn (and into child agents):
+
+- No fabrication of facts, files, command output, or model identity
+- No confident guessing — if unsure, say so and look it up with tools
+- Model identity is **harness-only** (`provider` + `id` from Pi). Never invent Composer/Cursor/etc.
+- Codebase claims need tool evidence when accuracy matters
+
+| Command | Purpose |
+|---|---|
+| `/whoami` | Authoritative Alloy version + active model (trust this over chat self-description) |
+| `/honesty` | Show the full policy text |
+
+Disable only if you must: `"honesty": { "enabled": false }` in `~/.pi/alloy/config.json`.
 
 ---
 

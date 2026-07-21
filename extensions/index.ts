@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { registerHonesty } from "./honesty.ts";
 import { registerMemory } from "./memory.ts";
 import { registerProviders } from "./providers.ts";
 import { registerSkillsImprove } from "./skills-improve.ts";
@@ -39,6 +40,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   }
 
   registerUi(pi);
+  registerHonesty(pi); // anti-hallucination + factual /whoami — before other prompt injectors
   registerHelp(pi);
   registerProviders(pi);
   registerModes(pi);
