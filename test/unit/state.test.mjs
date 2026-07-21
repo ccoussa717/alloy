@@ -30,3 +30,10 @@ test("setMode and isReadOnlyMode", () => {
 test("invalid mode throws", () => {
   assert.throws(() => state.setMode("fusion"));
 });
+
+test("sandbox profile is allowed", () => {
+  state.setPermissionProfile("sandbox");
+  assert.equal(state.isSandboxProfile(), true);
+  state.setPermissionProfile("safe");
+  assert.equal(state.isSandboxProfile(), false);
+});

@@ -9,7 +9,7 @@ alloy
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.4.0) |
+| **Status** | MVP active development (v0.5.0) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -84,6 +84,8 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
 | **Fusion** | `/fusion [plan\|build]` — independent workers + attributed merger |
 | **Agent panel** | Live widget below the editor during auto/fusion |
+| **Docker sandbox** | `/permissions sandbox` — bash in `node:22-bookworm`, **network none** |
+| **Help** | `/help`, `/help <topic>`, `/help search <query>` |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
 | **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
 
@@ -212,7 +214,9 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/fusion [plan\|build] <request>` | Multi-model fusion |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
-| `/permissions [readonly\|safe\|workspace]` | Permission profile |
+| `/permissions [readonly\|safe\|workspace\|sandbox]` | Permission profile |
+| `/sandbox [status\|start\|stop\|doctor]` | Docker sandbox controls |
+| `/help [topic\|search <q>]` | Feature help + search |
 
 ### Still Pi (unchanged)
 
@@ -401,9 +405,19 @@ alloy --help
 
 ```mermaid
 flowchart LR
-  V01["v0.1"] --> V02["v0.2"] --> V03["v0.3"] --> V04["v0.4 fix loops · fusion · panel"]
-  V04 --> B5["Docker sandbox profile"]
+  V01["v0.1"] --> V02["v0.2"] --> V03["v0.3"] --> V04["v0.4"] --> V05["v0.5 sandbox · /help"]
 ```
+
+### Docker sandbox
+
+```bash
+/permissions sandbox     # enable (requires Docker daemon)
+/sandbox status          # image, network none, container
+/sandbox start|stop
+```
+
+Defaults: **image `node:22-bookworm`**, **network `none`**, project mounted at `/workspace`, 2g/2cpu, cap-drop ALL.  
+`/auto` does **not** force sandbox — set the profile first (safest).
 
 ### Auto pipeline
 

@@ -1,7 +1,6 @@
 /**
- * Fail-closed policy for MVP.
- * Profiles: readonly | safe (default) | workspace
- * Modes plan/review also block mutations (including MCP tools).
+ * Permission profiles: readonly | safe | workspace | sandbox
+ * Modes plan/review also force read-only tool gating.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,8 +15,10 @@ const {
   getState,
   setPermissionProfile,
   isReadOnlyMode,
+  isSandboxProfile,
 } = require(join(root, "lib", "state.mjs"));
 const { isMcpToolName } = require(join(root, "lib", "mcp-client.mjs"));
+const { diagnoseDocker } = require(join(root, "lib", "docker-sandbox.mjs"));
 
 const DANGEROUS = [
   /\brm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r| --recursive| --force)/i,
@@ -33,7 +34,6 @@ const DANGEROUS = [
 
 const MUTATING_NATIVE = new Set(["write", "edit", "bash"]);
 
-/** MCP tools that look read-only by name (heuristic). */
 function mcpLooksReadOnly(toolName: string): boolean {
   return /_(get|list|read|search|find|query|fetch|describe|show|status)/i.test(
     toolName,
@@ -49,21 +49,54 @@ export function registerPolicy(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("permissions", {
-    description: "Show or set permission profile: /permissions [readonly|safe|workspace]",
+    description:
+      "Permission profile: /permissions [readonly|safe|workspace|sandbox]",
     handler: async (args, ctx) => {
       const next = (args || "").trim().toLowerCase();
       const cur = getState().permissionProfile;
       if (!next) {
         ctx.ui.notify(
-          `Permission profile: ${cur}\nMode: ${getState().mode}\nRead-only effective: ${isReadOnlyMode()}`,
+          [
+            `Permission profile: ${cur}`,
+            `Mode: ${getState().mode}`,
+            `Read-only effective: ${isReadOnlyMode()}`,
+            `Sandbox profile: ${isSandboxProfile()}`,
+            "",
+            "Profiles: readonly | safe | workspace | sandbox",
+            "Sandbox needs Docker. See /help sandbox",
+          ].join("\n"),
           "info",
         );
         return;
       }
       try {
+        if (next === "sandbox") {
+          const d = diagnoseDocker(process.cwd());
+          if (!d.daemon) {
+            ctx.ui.notify(
+              `Cannot enable sandbox: ${d.detail}\nInstall/start Docker, or use /permissions safe.`,
+              "error",
+            );
+            return;
+          }
+        }
         setPermissionProfile(next);
         ctx.ui.setStatus("alloy-policy", `perm:${next}`);
-        ctx.ui.notify(`Permission profile → ${next}`, "info");
+        if (next === "sandbox") {
+          ctx.ui.setStatus(
+            "alloy-sandbox",
+            ctx.ui.theme?.fg
+              ? ctx.ui.theme.fg("accent", "🔒 sandbox")
+              : "🔒 sandbox",
+          );
+          ctx.ui.notify(
+            "Sandbox on — bash runs in Docker (node:22-bookworm, network none). /sandbox status",
+            "info",
+          );
+        } else {
+          ctx.ui.setStatus("alloy-sandbox", undefined);
+          ctx.ui.notify(`Permission profile → ${next}`, "info");
+        }
       } catch (err) {
         ctx.ui.notify(String((err as Error).message || err), "warning");
       }
@@ -74,7 +107,6 @@ export function registerPolicy(pi: ExtensionAPI) {
     const { permissionProfile: profile, mode } = getState();
     const name = event.toolName;
 
-    // --- Read-only effective (plan / review / readonly profile) ---
     if (isReadOnlyMode()) {
       if (MUTATING_NATIVE.has(name)) {
         if (name === "bash") {
@@ -95,15 +127,31 @@ export function registerPolicy(pi: ExtensionAPI) {
       if (isMcpToolName(name) && !mcpLooksReadOnly(name)) {
         return {
           block: true,
-          reason: `Alloy ${mode}: MCP tool "${name}" blocked (read-only mode). Switch /mode build to allow.`,
+          reason: `Alloy ${mode}: MCP tool "${name}" blocked (read-only mode).`,
         };
       }
       return undefined;
     }
 
-    if (profile === "workspace") return undefined;
+    // sandbox: still allow tools; bash is rewritten by sandbox extension.
+    // Fail closed if someone forced sandbox without docker mid-session.
+    if (profile === "sandbox" && name === "bash") {
+      const d = diagnoseDocker(process.cwd());
+      if (!d.daemon) {
+        return {
+          block: true,
+          reason: `Sandbox profile but Docker unavailable: ${d.detail}`,
+        };
+      }
+    }
 
-    // --- safe profile ---
+    if (profile === "workspace" || profile === "sandbox") {
+      // sandbox: no host dangerous-approval prompt — container is the boundary
+      // workspace: full autonomy
+      return undefined;
+    }
+
+    // safe profile
     if (name === "bash") {
       const command = String(
         (event.input as { command?: string }).command || "",

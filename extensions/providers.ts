@@ -13,6 +13,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { diagnoseProviders, formatDoctorReport, MVP_PROVIDERS } = require(
   join(root, "lib", "providers.mjs"),
 );
+const { diagnoseDocker, formatDockerDoctor } = require(
+  join(root, "lib", "docker-sandbox.mjs"),
+);
 
 export function registerProviders(pi: ExtensionAPI) {
   pi.registerCommand("doctor", {
@@ -20,18 +23,21 @@ export function registerProviders(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const results = diagnoseProviders();
       const report = formatDoctorReport(results);
+      const docker = diagnoseDocker(process.cwd());
 
-      // Append non-secret path checks
       const extra = [
         "",
-        "Subscriptions (preferred for MVP):",
+        formatDockerDoctor(docker),
+        "",
+        "Subscriptions (preferred):",
         "  Claude  →  /login  → Anthropic subscription",
         "  Codex   →  /login  → ChatGPT / Codex subscription",
         "  Grok    →  /login xai  → Use a subscription",
         "",
-        "API keys still work as a fallback; /doctor will show env/api_key status.",
+        "Sandbox: /permissions sandbox  (requires Docker; network none)",
+        "Help:    /help   /help search <query>",
         `ALLOY_ROOT=${process.env.ALLOY_ROOT || "(unset)"}`,
-        `ALLOY_VERSION=${process.env.ALLOY_VERSION || "0.1.0"}`,
+        `ALLOY_VERSION=${process.env.ALLOY_VERSION || "0.5.0"}`,
       ].join("\n");
 
       const full = report + extra;

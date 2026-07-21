@@ -18,6 +18,8 @@ import { registerGit } from "./git.ts";
 import { registerWorktree } from "./worktree.ts";
 import { registerDiagnostics } from "./diagnostics.ts";
 import { registerAuto } from "./auto.ts";
+import { registerSandbox } from "./sandbox.ts";
+import { registerHelp } from "./help.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,9 +37,11 @@ export default function alloyExtension(pi: ExtensionAPI) {
   }
 
   registerUi(pi);
+  registerHelp(pi);
   registerProviders(pi);
   registerModes(pi);
   registerPolicy(pi);
+  registerSandbox(pi); // overrides bash when profile=sandbox
   registerMemory(pi);
   registerSkillsImprove(pi);
   registerMcp(pi);

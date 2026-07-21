@@ -86,7 +86,7 @@ const child = spawn(command, finalArgs, {
   env: {
     ...process.env,
     ALLOY_ROOT,
-    ALLOY_VERSION: "0.4.0",
+    ALLOY_VERSION: "0.5.0",
   },
   windowsHide: true,
 });
