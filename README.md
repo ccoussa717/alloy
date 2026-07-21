@@ -9,16 +9,25 @@ alloy
 
 ### Install (Linux / macOS)
 
+Requires **Node.js ≥ 22.19** (Pi engine requirement).
+
 ```bash
 curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
 ```
 
-Then run `alloy`.
+Then:
+
+```bash
+alloy --version   # Alloy X.Y.Z · Pi · Node
+alloy
+```
+
+Inside a session: `/doctor` (providers, catalog defaults, Claude extra-usage economics — never prints secrets).
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.7.6) |
-| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
+| **Status** | MVP active development (v0.8.0) |
+| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 · Node **≥22.19** |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
 | **CLI** | `alloy` |

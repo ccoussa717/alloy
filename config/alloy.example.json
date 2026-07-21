@@ -5,9 +5,9 @@
   "providers": {
     "allow": ["anthropic", "openai", "openai-codex", "xai"],
     "favorites": [
-      "anthropic/claude-sonnet-4-5",
-      "openai-codex/gpt-5.1",
-      "xai/grok-3"
+      "anthropic/claude-sonnet-4-6",
+      "openai-codex/gpt-5.4",
+      "xai/grok-4.5"
     ]
   },
   "memory": {

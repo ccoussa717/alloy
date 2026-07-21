@@ -40,6 +40,9 @@ test("detects auth.json subscription-like credentials", () => {
   const report = mod.formatDoctorReport(results);
   assert.ok(!report.includes("redacted"));
   assert.ok(report.includes("[OK "));
+  const full = mod.formatFullDoctorReport({ results });
+  assert.ok(full.includes("extra usage") || full.includes("Claude"));
+  assert.ok(!full.includes("redacted"));
 });
 
 test("env key path", () => {

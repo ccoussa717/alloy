@@ -1,6 +1,6 @@
 {
   "name": "@kylaira/alloy",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
   "type": "module",
   "bin": {
@@ -23,7 +23,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "files": [
     "bin",
@@ -34,16 +34,20 @@
     "themes",
     "config",
     "docs",
-    "README.md"
+    "scripts",
+    "install.sh",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "start": "node ./bin/alloy.mjs",
     "alloy": "node ./bin/alloy.mjs",
     "test": "node --test test/unit/*.test.mjs",
-    "doctor": "node bin/alloy.mjs --help",
+    "doctor": "node -e \"import('./lib/providers.mjs').then(m=>console.log(m.formatFullDoctorReport()))\"",
     "setup": "bash ./install.sh",
     "install-cli": "bash ./scripts/install-cli.sh",
-    "bootstrap": "bash ./install.sh"
+    "bootstrap": "bash ./install.sh",
+    "version:print": "node ./bin/alloy.mjs --version"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",

@@ -71,7 +71,7 @@ if [[ ! -d "$ROOT/node_modules/@earendil-works/pi-coding-agent" ]]; then
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  err "node not found on PATH. Install Node 20+ first."
+  err "node not found on PATH. Install Node 22.19+ first."
   exit 1
 fi
 NODE_BIN_DIR="$(cd "$(dirname "$(command -v node)")" && pwd)"

@@ -30,6 +30,94 @@ function exists(p) {
   }
 }
 
+function readAlloyVersion() {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(ALLOY_ROOT, "package.json"), "utf8"),
+    );
+    return pkg.version || "0.0.0";
+  } catch {
+    return process.env.ALLOY_VERSION || "0.0.0";
+  }
+}
+
+function readPiVersion() {
+  const candidates = [
+    join(
+      ALLOY_ROOT,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "package.json",
+    ),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!exists(p)) continue;
+      const pkg = JSON.parse(readFileSync(p, "utf8"));
+      if (pkg.version) return pkg.version;
+    } catch {
+      // continue
+    }
+  }
+  return null;
+}
+
+function printVersionAndExit() {
+  const alloy = readAlloyVersion();
+  const pi = readPiVersion();
+  const node = process.version;
+  console.log(`Alloy ${alloy}`);
+  console.log(`Pi    ${pi || "(not found in alloy node_modules)"}`);
+  console.log(`Node  ${node}`);
+  process.exit(0);
+}
+
+function printHelpAndExit() {
+  const alloy = readAlloyVersion();
+  console.log(`Alloy ${alloy} — multi-provider coding harness on Pi
+
+Usage:
+  alloy [pi-args...]
+  alloy --version | -V
+  alloy --help | -h
+
+Alloy injects its extension, theme, skills, and prompts into Pi.
+All other flags are forwarded to Pi (e.g. -c, -p, --mode).
+
+Examples:
+  alloy
+  alloy --version
+  alloy -p "summarize this repo"
+
+Install CLI onto PATH:
+  bash scripts/install-cli.sh
+
+Doctor (inside a session): /doctor
+`);
+  process.exit(0);
+}
+
+// Handle Alloy meta flags before resolving/spawning Pi
+const userArgv = process.argv.slice(2);
+if (userArgv.includes("--version") || userArgv.includes("-V")) {
+  printVersionAndExit();
+}
+if (
+  userArgv.includes("--help") ||
+  userArgv.includes("-h") ||
+  userArgv[0] === "help"
+) {
+  // Only short-circuit plain help; allow `alloy --help` style. Pi also has --help —
+  // Alloy owns -h/--help at the launcher for version/identity clarity.
+  if (
+    userArgv.length === 1 ||
+    userArgv.every((a) => ["--help", "-h", "help"].includes(a))
+  ) {
+    printHelpAndExit();
+  }
+}
+
 /**
  * OpenCode-clean empty field: hide Pi's Skills/Prompts/Extensions/Themes dump.
  * Must be set before Pi boots (too late in session_start).
@@ -227,14 +315,34 @@ function buildArgs(userArgs) {
   return [...inject, ...userArgs];
 }
 
+const ALLOY_VERSION = readAlloyVersion();
+
+// Node engine gate (soft warn — install.sh hard-fails)
+const nodeParts = process.versions.node.split(".").map(Number);
+if (
+  nodeParts[0] < 22 ||
+  (nodeParts[0] === 22 && nodeParts[1] < 19)
+) {
+  console.error(
+    `warning: Alloy requires Node >=22.19.0 (found ${process.version}). Pi may refuse to start.`,
+  );
+}
+
 const piBin = findPiBin();
-const args = buildArgs(process.argv.slice(2));
+const args = buildArgs(userArgv);
 
 // Hide Pi startup resource dump so the empty state matches OpenCode's clean field
 ensureQuietStartup();
 
 // Full terminal clear before Pi draws — empty black field like OpenCode
-if (process.stdout.isTTY && !process.env.ALLOY_NO_CLEAR) {
+// Skip clear for non-interactive / print modes
+const skipClear =
+  !process.stdout.isTTY ||
+  process.env.ALLOY_NO_CLEAR ||
+  userArgv.includes("-p") ||
+  userArgv.includes("--mode") ||
+  userArgv.includes("--version");
+if (!skipClear) {
   try {
     process.stdout.write("\x1b[2J\x1b[H\x1b[3J");
   } catch {
@@ -251,7 +359,7 @@ const child = spawn(command, finalArgs, {
   env: {
     ...process.env,
     ALLOY_ROOT,
-    ALLOY_VERSION: "0.7.6",
+    ALLOY_VERSION,
   },
   windowsHide: true,
 });

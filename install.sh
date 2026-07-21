@@ -14,7 +14,7 @@
 #   ALLOY_DIR      Install location          (default: ~/dev/alloy)
 #   ALLOY_REPO     Git remote (SSH)          (default: git@gitlab.com:kylaira/infrastructure/alloy.git)
 #   ALLOY_BRANCH   Branch to use             (default: main)
-#   ALLOY_NODE_MIN Minimum Node major        (default: 20)
+#   ALLOY_NODE_MIN Minimum Node major.minor  (default: 22.19 — Pi requirement)
 #
 set -euo pipefail
 
@@ -22,7 +22,7 @@ ALLOY_DIR="${ALLOY_DIR:-$HOME/dev/alloy}"
 ALLOY_REPO="${ALLOY_REPO:-git@gitlab.com:kylaira/infrastructure/alloy.git}"
 ALLOY_REPO_HTTPS="${ALLOY_REPO_HTTPS:-https://gitlab.com/kylaira/infrastructure/alloy.git}"
 ALLOY_BRANCH="${ALLOY_BRANCH:-main}"
-ALLOY_NODE_MIN="${ALLOY_NODE_MIN:-20}"
+ALLOY_NODE_MIN="${ALLOY_NODE_MIN:-22.19}"
 
 log()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -48,14 +48,26 @@ if ! need_cmd git; then
   err "git is required. Install git, then re-run this installer."
 fi
 
+node_meets_min() {
+  # Compare installed Node to ALLOY_NODE_MIN (major or major.minor)
+  node -e "
+    const need = process.argv[1].split('.').map(Number);
+    const have = process.versions.node.split('.').map(Number);
+    const ok =
+      have[0] > need[0] ||
+      (have[0] === need[0] && (need[1] == null || have[1] > need[1] ||
+        (have[1] === need[1] && (need[2] == null || have[2] >= (need[2] || 0)))));
+    process.exit(ok ? 0 : 1);
+  " "$ALLOY_NODE_MIN" 2>/dev/null
+}
+
 ensure_node() {
-  if need_cmd node && need_cmd npm; then
-    local major
-    major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
-    if [[ "$major" -ge "$ALLOY_NODE_MIN" ]]; then
-      log "Node $(node -v) / npm $(npm -v)"
-      return 0
-    fi
+  if need_cmd node && need_cmd npm && node_meets_min; then
+    log "Node $(node -v) / npm $(npm -v)"
+    return 0
+  fi
+
+  if need_cmd node; then
     warn "Node $(node -v) is older than v${ALLOY_NODE_MIN}. Trying nvm upgrade path…"
   fi
 
@@ -65,26 +77,23 @@ ensure_node() {
     # shellcheck disable=SC1090
     . "$NVM_DIR/nvm.sh"
     if need_cmd nvm || type nvm >/dev/null 2>&1; then
-      nvm install "$ALLOY_NODE_MIN" >/dev/null
-      nvm use "$ALLOY_NODE_MIN" >/dev/null
+      nvm install 22 >/dev/null
+      nvm use 22 >/dev/null
     fi
   fi
 
-  if need_cmd node && need_cmd npm; then
-    local major
-    major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
-    if [[ "$major" -ge "$ALLOY_NODE_MIN" ]]; then
-      log "Node $(node -v) / npm $(npm -v)"
-      return 0
-    fi
+  if need_cmd node && need_cmd npm && node_meets_min; then
+    log "Node $(node -v) / npm $(npm -v)"
+    return 0
   fi
 
-  err "Node.js ${ALLOY_NODE_MIN}+ is required.
+  err "Node.js ${ALLOY_NODE_MIN}+ is required (Pi coding-agent engines).
   Install options:
     • nvm:  https://github.com/nvm-sh/nvm
             curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-            nvm install ${ALLOY_NODE_MIN}
-    • Or install Node from https://nodejs.org/
+            nvm install 22
+            nvm use 22
+    • Or install Node 22 LTS from https://nodejs.org/
   Then re-run this installer."
 }
 
@@ -101,9 +110,16 @@ clone_or_update() {
     # Prefer ff-only onto the requested branch
     if git -C "$dir" rev-parse --verify "origin/$ALLOY_BRANCH" >/dev/null 2>&1; then
       git -C "$dir" checkout "$ALLOY_BRANCH" 2>/dev/null || git -C "$dir" checkout -B "$ALLOY_BRANCH" "origin/$ALLOY_BRANCH"
-      git -C "$dir" pull --ff-only origin "$ALLOY_BRANCH" || git -C "$dir" reset --hard "origin/$ALLOY_BRANCH"
+      # Fast-forward only — never reset --hard (would destroy local work)
+      if ! git -C "$dir" pull --ff-only origin "$ALLOY_BRANCH"; then
+        warn "git pull --ff-only failed (local commits or dirty tree)."
+        warn "Leaving existing checkout unchanged. Resolve manually, then re-run."
+        warn "  cd $dir && git status"
+      fi
     else
-      git -C "$dir" pull --ff-only || warn "git pull failed; using existing tree"
+      if ! git -C "$dir" pull --ff-only; then
+        warn "git pull failed; using existing tree"
+      fi
     fi
     return 0
   fi
