@@ -19,3 +19,16 @@ alloy (bin)
 - Never log credential values.
 - Self-improve skills: propose → approve → write.
 - MCP tools must share native policy (when bridge lands).
+
+## Filesystem concurrency boundary
+
+Checkpoint restore and dirty worktree seeding enumerate Git-visible untracked
+entries, preserve symlinks without dereferencing them, and reject containment
+escapes, state mismatches, pre-existing symlink ancestors, and destination
+collisions they observe. Those checks fail closed for detected changes.
+
+They are not an OS security boundary against a malicious same-UID process that
+races an ancestor replacement between validation and filesystem use. Alloy does
+not currently claim TOCTOU-safe path operations. A native descriptor-relative
+`openat` helper is separate future hardening and is not part of the current
+implementation.

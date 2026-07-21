@@ -25,6 +25,11 @@ const git = await import(
     join(new URL("../..", import.meta.url).pathname, "lib", "git-checkpoint.mjs"),
   ).href
 );
+const { projectIdFromCwd } = await import(
+  pathToFileURL(
+    join(new URL("../..", import.meta.url).pathname, "lib", "paths.mjs"),
+  ).href
+);
 
 function run(cwd, args) {
   return spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -52,6 +57,15 @@ function overwriteMetadata(cp, update) {
   for (const path of [cp.path, rootPath]) {
     writeFileSync(path, `${JSON.stringify(metadata, null, 2)}\n`);
   }
+}
+
+function checkpointArtifactPaths(repo, id) {
+  const root = join(
+    process.env.ALLOY_HOME,
+    "checkpoints",
+    projectIdFromCwd(repo),
+  );
+  return [join(root, id), join(root, `${id}.json`)];
 }
 
 function initRepo(name) {
@@ -318,6 +332,109 @@ describe("P0.4 safe checkpoints", () => {
     } finally {
       process.env.PATH = oldPath;
       delete process.env.REAL_GIT;
+    }
+  });
+
+  test("post-anchor diff failure removes the exact durable ref and checkpoint artifacts", () => {
+    const repo = initRepo("post-anchor-diff-failure");
+    writeFileSync(join(repo, "a.txt"), "dirty\n");
+    const bin = join(tmp, "fake-post-anchor-git-bin");
+    const log = join(tmp, "post-anchor-git.log");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nif [ "$1" = "diff" ]; then exit 71; fi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.GIT_LOG = log;
+    process.env.REAL_GIT = realGit;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.createCheckpoint("post-anchor-failure", repo),
+        /worktree diff|capture/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.GIT_LOG;
+    }
+
+    const commands = readFileSync(log, "utf8").trim().split("\n");
+    const anchor = commands.find((line) =>
+      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+$/.test(line),
+    );
+    assert.ok(anchor, "expected durable ref creation");
+    const [, ref, object] = anchor.split(" ");
+    const id = ref.split("/").pop();
+    assert.equal(
+      run(repo, ["for-each-ref", "--format=%(refname)", ref]).stdout.trim(),
+      "",
+    );
+    assert.ok(
+      commands.includes(`update-ref -d ${ref} ${object}`),
+      "expected compare-and-swap ref deletion",
+    );
+    for (const path of checkpointArtifactPaths(repo, id)) {
+      assert.equal(existsSync(path), false, `unexpected checkpoint artifact: ${path}`);
+    }
+  });
+
+  test("ref cleanup failure reports the original failure and exact retained ref", () => {
+    const repo = initRepo("ref-cleanup-failure");
+    writeFileSync(join(repo, "a.txt"), "dirty\n");
+    const bin = join(tmp, "fake-ref-cleanup-git-bin");
+    const log = join(tmp, "ref-cleanup-git.log");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nif [ "$1" = "update-ref" ] && [ "$2" = "-d" ]; then exit 72; fi\nif [ "$1" = "diff" ]; then exit 71; fi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    let error = null;
+    process.env.GIT_LOG = log;
+    process.env.REAL_GIT = realGit;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      git.createCheckpoint("cleanup-failure", repo);
+    } catch (err) {
+      error = err;
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.GIT_LOG;
+    }
+
+    const commands = readFileSync(log, "utf8").trim().split("\n");
+    const anchor = commands.find((line) =>
+      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+$/.test(line),
+    );
+    assert.ok(anchor, "expected durable ref creation");
+    const [, ref, object] = anchor.split(" ");
+    const id = ref.split("/").pop();
+    assert.ok(error instanceof AggregateError);
+    assert.match(error.message, new RegExp(ref.replaceAll("/", "\\/")));
+    assert.match(error.errors.map((item) => item.message).join("\n"), /worktree diff/i);
+    assert.match(error.errors.map((item) => item.message).join("\n"), /ref.*remain/i);
+    assert.ok(commands.includes(`update-ref -d ${ref} ${object}`));
+    assert.equal(
+      run(repo, ["for-each-ref", "--format=%(refname)", ref]).stdout.trim(),
+      ref,
+    );
+    for (const path of checkpointArtifactPaths(repo, id)) {
+      assert.equal(existsSync(path), false, `unexpected checkpoint artifact: ${path}`);
     }
   });
 

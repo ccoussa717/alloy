@@ -23,9 +23,9 @@ same staged, unstaged, and untracked baseline the planner observed.
    porcelain output and never copy ignored descendants hidden inside an
    untracked directory.
 8. Restore preflights the checkpoint object or patches and every untracked
-   destination before mutating the repository; invalid inputs, existing
-   destinations, and symlink ancestors leave the current index, worktree, and
-   porcelain status byte-for-byte unchanged.
+   destination before mutating the repository; detected invalid inputs,
+   existing destinations, and pre-existing symlink ancestors leave the current
+   index, worktree, and porcelain status byte-for-byte unchanged.
 9. Checkpoint stash objects remain reachable after reflog expiry and pruning,
    while untracked restore never runs `git clean`, recursively removes a user
    path, follows a destination symlink, or overwrites a collision.
@@ -36,6 +36,14 @@ same staged, unstaged, and untracked baseline the planner observed.
     worktree seeding without dereferencing their targets.
 12. Final `warning` and `recoverable` values are present and identical in both
     checkpoint metadata files.
+13. Any failure after a durable checkpoint ref is anchored compensates by
+    removing the exact ref with compare-and-swap and deleting its partial store
+    and root index entry. Cleanup failure preserves the original error and names
+    any ref that may remain.
+14. Filesystem preservation is fail-closed for state changes it detects and for
+    pre-existing symlink/collision paths. It is not an OS security boundary
+    against a malicious same-UID process racing ancestor replacement between
+    validation and use, and does not claim TOCTOU safety.
 
 ## Plan
 
@@ -49,9 +57,13 @@ same staged, unstaged, and untracked baseline the planner observed.
 4. Capture canonical porcelain/index/worktree state, reproduce intent-to-add,
    and reject a seed whose resulting state differs.
 5. Persist metadata only after final warning and recovery fields are known.
-6. Run the complete unit and integration suite, CLI smoke, and package dry run
+6. Compensate failed checkpoint creation by deleting its exact durable ref with
+   compare-and-swap and removing partial store/index artifacts.
+7. Document the current concurrency boundary and defer a native
+   descriptor-relative `openat` helper as separate future hardening.
+8. Run the complete unit and integration suite, CLI smoke, and package dry run
    through `npm run ci:local` under Node 22.19.0.
-7. Review the exact diff adversarially, then create one focused local commit if
+9. Review the exact diff adversarially, then create one focused local commit if
    every gate is green.
 
 ## Exclusions
@@ -60,3 +72,4 @@ same staged, unstaged, and untracked baseline the planner observed.
   by Grok on `fix/alloy-grok-child-policy`.
 - No push, merge, deploy, production credentials, dependency upgrades, or
   unrelated release changes.
+- No native descriptor-relative `openat` helper in this release follow-up.
