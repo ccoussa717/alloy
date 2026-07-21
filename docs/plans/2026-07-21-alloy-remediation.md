@@ -63,15 +63,17 @@ same staged, unstaged, and untracked baseline the planner observed.
 21. Checkpoint creation claims a generated store ID before creating its durable
     ref and uses zero-old-object compare-and-swap, so duplicate IDs cannot alter
     an existing checkpoint's metadata, store, ref, or restore capability.
-22. Checkpoint deletion compare-and-swap deletes the recorded durable ref/object
-    before removing metadata or recovery data; ref deletion failure is reported
-    and leaves the checkpoint fully discoverable.
-23. Modern checkpoint restore and deletion require the canonical ref derived
+22. Authenticated v2 checkpoint deletion compare-and-swap deletes the recorded
+    durable ref/object before removing metadata or recovery data; ref deletion
+    failure is reported and leaves the checkpoint fully discoverable.
+23. Authenticated restore and deletion require the canonical direct ref derived
     from the checkpoint ID and require its live object to equal recorded
-    `refObject`; metadata substitution cannot target another checkpoint.
-24. Legacy metadata with a raw object ID and no `refObject` restores only after
-    stash-like validation and deletes only its own metadata/store/index without
-    treating the raw object as an owned named ref.
+    `refObject`; symbolic refs and metadata substitution cannot target another
+    ref. Every create, cleanup, and delete mutation uses `update-ref --no-deref`.
+24. Every unversioned legacy or prior-modern restore fails closed with explicit
+    export/migration guidance. Deletion removes only that record's
+    metadata/store/index and never treats unauthenticated metadata as ownership
+    of a named ref.
 25. Final restore revalidation includes symbolic HEAD identity and
     restore-relevant ignored collision state, so a same-object branch switch or
     late ignored destination fails before Alloy mutation.
@@ -79,10 +81,9 @@ same staged, unstaged, and untracked baseline the planner observed.
     checkpoint ID, canonical ref, HEAD, restore object, matching metadata
     copies, patches, and untracked payload bytes, symlink targets, and modes to
     a versioned SHA-256 manifest digest verified before restore and deletion.
-27. Legacy raw-object and immediately prior unanchored modern restore remains
-    available only for tracked state fully authenticated by a validated stash
-    object. Formats requiring unauthenticated external payloads fail closed with
-    export/migration guidance; deletion remains safe and scoped.
+27. Ignored directory entries and the authenticated checkpoint target's actual
+    tracked paths participate in final collision checks, including target paths
+    absent from the current index and empty directories invisible to status.
 
 ## Plan
 
@@ -106,17 +107,20 @@ same staged, unstaged, and untracked baseline the planner observed.
    collisions while compensating owned state.
 10. Establish create-only durable-ref ownership and make checkpoint deletion
     ref-first and compare-and-swap guarded.
-11. Enforce modern metadata/ref integrity while retaining raw-object legacy
-    restore and artifact-only deletion compatibility.
+11. Enforce modern metadata/ref integrity while retaining artifact-only deletion
+    for unauthenticated legacy records.
 12. Document synchronous cooperative serialization, the quiescent-workspace
     requirement, and the absence of atomic global exclusion for external writes.
 13. Bind checkpoint metadata and every stored payload to a versioned immutable
-    Git anchor while retaining only the safely derivable compatibility subset.
+    Git anchor while retaining only scoped artifact-cleanup compatibility.
 14. Revalidate symbolic HEAD and ignored restore collisions, and preserve
     untracked modes through `0o7777` in restore and worktree seeding.
-15. Run the complete unit and integration suite, CLI smoke, and package dry run
+15. Require direct canonical refs, use no-dereference ref mutations, reject all
+    unversioned restore, and include ignored directories and target-tree paths
+    in collision preflight.
+16. Run the complete unit and integration suite, CLI smoke, and package dry run
     through `npm run ci:local` under Node 22.19.0.
-16. Review the exact diff adversarially, then create one focused local commit if
+17. Review the exact diff adversarially, then create one focused local commit if
     every gate is green.
 
 ## Exclusions

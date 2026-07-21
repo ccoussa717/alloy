@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   rmSync,
   existsSync,
   mkdirSync,
@@ -267,6 +268,56 @@ describe("P0.4 safe checkpoints", () => {
     assert.deepEqual(snapshot(repo, ["owned-at-checkpoint.txt"]), before);
   });
 
+  test("refuses a current ignored empty directory at a tracked file destination", () => {
+    const repo = initRepo("tracked-ignored-empty-directory");
+    writeFileSync(join(repo, ".gitignore"), "owned-at-checkpoint/\n");
+    writeFileSync(join(repo, "owned-at-checkpoint"), "checkpoint tracked bytes\n");
+    run(repo, ["add", ".gitignore", "owned-at-checkpoint"]);
+    run(repo, ["commit", "-m", "track file destination"]);
+    const cp = git.createCheckpoint("ignored-empty-directory", repo);
+    run(repo, ["rm", "owned-at-checkpoint"]);
+    run(repo, ["commit", "-m", "remove tracked file destination"]);
+    mkdirSync(join(repo, "owned-at-checkpoint"));
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.equal(
+      run(repo, ["check-ignore", "owned-at-checkpoint/"]).status,
+      0,
+    );
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /collision|ignored|directory|preflight/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(lstatSync(join(repo, "owned-at-checkpoint")).isDirectory(), true);
+    assert.deepEqual(readdirSync(join(repo, "owned-at-checkpoint")), []);
+  });
+
+  test("refuses a current ignored file where checkpoint tracked paths need a directory", () => {
+    const repo = initRepo("tracked-directory-ignored-file");
+    writeFileSync(join(repo, ".gitignore"), "shape\n");
+    mkdirSync(join(repo, "shape"));
+    writeFileSync(join(repo, "shape", "value.txt"), "checkpoint tracked bytes\n");
+    run(repo, ["add", ".gitignore"]);
+    run(repo, ["add", "-f", "shape/value.txt"]);
+    run(repo, ["commit", "-m", "track directory shape"]);
+    const cp = git.createCheckpoint("tracked-directory-shape", repo);
+    run(repo, ["rm", "shape/value.txt"]);
+    run(repo, ["commit", "-m", "remove tracked directory shape"]);
+    writeFileSync(join(repo, "shape"), "current ignored file\n");
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt", "shape"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /collision|ignored|directory|preflight/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt", "shape"]), before);
+  });
+
   test("refuses a symlink destination ancestor without writing outside the repo", () => {
     const repo = initRepo("restore-ancestor-symlink");
     mkdirSync(join(repo, "nested"));
@@ -477,19 +528,24 @@ describe("P0.4 safe checkpoints", () => {
     assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 
-  test("prior unanchored modern tracked-only metadata restores from its validated stash", () => {
+  test("prior unanchored modern tracked-only metadata fails closed", () => {
     const repo = initRepo("prior-modern-tracked-only");
     writeFileSync(join(repo, "a.txt"), "prior checkpoint bytes\n");
     const cp = git.createCheckpoint("prior-modern-tracked", repo);
     convertToPriorModernMetadata(cp, repo);
     run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
 
-    git.restoreCheckpoint(cp.id, repo);
-
-    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "prior checkpoint bytes\n");
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /export|migrate|unauthenticated|legacy/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 
-  test("prior unanchored modern deletion remains canonical and scoped", () => {
+  test("prior unanchored modern deletion is artifact-only and leaves named refs", () => {
     const repo = initRepo("prior-modern-delete");
     writeFileSync(join(repo, "a.txt"), "prior checkpoint bytes\n");
     writeFileSync(join(repo, "legacy-untracked.txt"), "legacy payload\n");
@@ -501,9 +557,11 @@ describe("P0.4 safe checkpoints", () => {
     const unrelated = git.createCheckpoint("unrelated", repo);
 
     assert.equal(git.deleteCheckpoint(prior.id, repo), true);
-    assert.equal(run(repo, ["rev-parse", "--verify", prior.ref]).status, 128);
+    assert.equal(
+      run(repo, ["rev-parse", "--verify", prior.ref]).stdout.trim(),
+      priorObject,
+    );
     assert.equal(existsSync(prior.storeDir), false);
-    assert.equal(run(repo, ["cat-file", "-e", priorObject]).status, 0);
     assert.equal(run(repo, ["rev-parse", unrelated.ref]).stdout.trim(), unrelated.refObject);
     assert.equal(existsSync(unrelated.storeDir), true);
   });
@@ -639,7 +697,83 @@ describe("P0.4 safe checkpoints", () => {
     );
   });
 
-  test("legacy raw-object metadata restores after stash-like validation", () => {
+  test("restore rejects a symbolic canonical ref without touching its victim", () => {
+    const repo = initRepo("symbolic-checkpoint-restore");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("symbolic-restore", repo);
+    const victim = "refs/heads/checkpoint-victim";
+    run(repo, ["update-ref", victim, cp.refObject]);
+    run(repo, ["update-ref", "-d", cp.ref, cp.refObject]);
+    run(repo, ["symbolic-ref", cp.ref, victim]);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+    const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+
+    assert.throws(
+      () => git.restoreCheckpoint(cp.id, repo),
+      /symbolic|direct|reference|integrity/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(run(repo, ["rev-parse", victim]).stdout.trim(), cp.refObject);
+    assert.equal(run(repo, ["symbolic-ref", "-q", cp.ref]).stdout.trim(), victim);
+    assert.equal(existsSync(cp.storeDir), true);
+    assert.equal(existsSync(rootPath), true);
+  });
+
+  test("delete rejects a symbolic canonical ref without deleting victim or artifacts", () => {
+    const repo = initRepo("symbolic-checkpoint-delete");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("symbolic-delete", repo);
+    const victim = "refs/heads/checkpoint-victim";
+    run(repo, ["update-ref", victim, cp.refObject]);
+    run(repo, ["update-ref", "-d", cp.ref, cp.refObject]);
+    run(repo, ["symbolic-ref", cp.ref, victim]);
+    const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+
+    assert.throws(
+      () => git.deleteCheckpoint(cp.id, repo),
+      /symbolic|direct|reference|integrity/i,
+    );
+    assert.equal(run(repo, ["rev-parse", victim]).stdout.trim(), cp.refObject);
+    assert.equal(run(repo, ["symbolic-ref", "-q", cp.ref]).stdout.trim(), victim);
+    assert.equal(existsSync(cp.storeDir), true);
+    assert.equal(existsSync(rootPath), true);
+  });
+
+  test("checkpoint creation cannot follow a colliding symref into its target", () => {
+    const repo = initRepo("symbolic-checkpoint-create");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const fixedNow = 1_700_000_200_000;
+    const fixedRandom = 0.345678912;
+    const id = `${fixedNow.toString(36)}-${fixedRandom.toString(36).slice(2, 7)}`;
+    const ref = `refs/alloy/checkpoints/${id}`;
+    const victim = "refs/heads/unborn-checkpoint-victim";
+    run(repo, ["symbolic-ref", ref, victim]);
+    const oldNow = Date.now;
+    const oldRandom = Math.random;
+    Date.now = () => fixedNow;
+    Math.random = () => fixedRandom;
+
+    try {
+      assert.throws(
+        () => git.createCheckpoint("symbolic-create", repo),
+        /anchor|collision|reference|ref/i,
+      );
+    } finally {
+      Date.now = oldNow;
+      Math.random = oldRandom;
+    }
+
+    assert.equal(run(repo, ["symbolic-ref", "-q", ref]).stdout.trim(), victim);
+    assert.notEqual(run(repo, ["rev-parse", "--verify", victim]).status, 0);
+    for (const path of checkpointArtifactPaths(repo, id)) {
+      assert.equal(existsSync(path), false);
+    }
+  });
+
+  test("legacy raw-object metadata restore fails closed with migration guidance", () => {
     const repo = initRepo("legacy-raw-restore");
     writeFileSync(join(repo, "a.txt"), "legacy checkpoint bytes\n");
     const legacy = git.createCheckpoint("legacy", repo);
@@ -660,10 +794,15 @@ describe("P0.4 safe checkpoints", () => {
     const unrelated = git.createCheckpoint("unrelated", repo);
     const unrelatedObject = unrelated.refObject;
     run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
 
-    git.restoreCheckpoint(legacy.id, repo);
-
-    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "legacy checkpoint bytes\n");
+    assert.throws(
+      () => git.restoreCheckpoint(legacy.id, repo),
+      /export|migrate|unauthenticated|legacy/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
     assert.equal(
       run(repo, ["rev-parse", unrelated.ref]).stdout.trim(),
       unrelatedObject,
@@ -1150,17 +1289,17 @@ describe("P0.4 safe checkpoints", () => {
 
     const commands = readFileSync(log, "utf8").trim().split("\n");
     const anchor = commands.find((line) =>
-      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
+      /^update-ref --no-deref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
     );
     assert.ok(anchor, "expected durable ref creation");
-    const [, ref, object] = anchor.split(" ");
+    const [, , ref, object] = anchor.split(" ");
     const id = ref.split("/").pop();
     assert.equal(
       run(repo, ["for-each-ref", "--format=%(refname)", ref]).stdout.trim(),
       "",
     );
     assert.ok(
-      commands.includes(`update-ref -d ${ref} ${object}`),
+      commands.includes(`update-ref --no-deref -d ${ref} ${object}`),
       "expected compare-and-swap ref deletion",
     );
     for (const path of checkpointArtifactPaths(repo, id)) {
@@ -1177,7 +1316,7 @@ describe("P0.4 safe checkpoints", () => {
     const wrapper = join(bin, "git");
     writeFileSync(
       wrapper,
-      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nif [ "$1" = "update-ref" ] && [ "$2" = "-d" ]; then exit 72; fi\nif [ "$1" = "diff" ]; then exit 71; fi\nexec "$REAL_GIT" "$@"\n',
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nif [ "$1" = "update-ref" ] && [ "$2" = "--no-deref" ] && [ "$3" = "-d" ]; then exit 72; fi\nif [ "$1" = "diff" ]; then exit 71; fi\nexec "$REAL_GIT" "$@"\n',
     );
     chmodSync(wrapper, 0o755);
     const oldPath = process.env.PATH;
@@ -1201,16 +1340,16 @@ describe("P0.4 safe checkpoints", () => {
 
     const commands = readFileSync(log, "utf8").trim().split("\n");
     const anchor = commands.find((line) =>
-      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
+      /^update-ref --no-deref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
     );
     assert.ok(anchor, "expected durable ref creation");
-    const [, ref, object] = anchor.split(" ");
+    const [, , ref, object] = anchor.split(" ");
     const id = ref.split("/").pop();
     assert.ok(error instanceof AggregateError);
     assert.match(error.message, new RegExp(ref.replaceAll("/", "\\/")));
     assert.match(error.errors.map((item) => item.message).join("\n"), /worktree diff/i);
     assert.match(error.errors.map((item) => item.message).join("\n"), /ref.*remain/i);
-    assert.ok(commands.includes(`update-ref -d ${ref} ${object}`));
+    assert.ok(commands.includes(`update-ref --no-deref -d ${ref} ${object}`));
     assert.equal(
       run(repo, ["for-each-ref", "--format=%(refname)", ref]).stdout.trim(),
       ref,
@@ -1239,7 +1378,7 @@ describe("P0.4 safe checkpoints", () => {
     const wrapper = join(bin, "git");
     writeFileSync(
       wrapper,
-      '#!/bin/sh\nif [ "$1" = "update-ref" ] && [ "$2" = "-d" ]; then exit 73; fi\nexec "$REAL_GIT" "$@"\n',
+      '#!/bin/sh\nif [ "$1" = "update-ref" ] && [ "$2" = "--no-deref" ] && [ "$3" = "-d" ]; then exit 73; fi\nexec "$REAL_GIT" "$@"\n',
     );
     chmodSync(wrapper, 0o755);
     const oldPath = process.env.PATH;
