@@ -13,7 +13,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -58,6 +58,17 @@ function initRepo(name) {
   return repo;
 }
 
+function rewriteWorktreeMeta(created, update) {
+  const path = join(dirname(created.path), "index.json");
+  const original = readFileSync(path, "utf8");
+  const metadata = JSON.parse(original);
+  metadata.worktrees = metadata.worktrees.map((entry) =>
+    entry.id === created.id ? update(entry) : entry,
+  );
+  writeFileSync(path, `${JSON.stringify(metadata, null, 2)}\n`);
+  return { path, original };
+}
+
 describe("worktrees", () => {
   test("create list diff remove worktree", () => {
     const repo = initRepo("basic");
@@ -81,6 +92,175 @@ describe("worktrees", () => {
     const removed = wt.removeWorktree(created.id, { cwd: repo });
     assert.equal(removed.id, created.id);
     assert.equal(wt.listWorktrees(repo).length, 0);
+    assert.notEqual(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+  });
+
+  test("subdirectory create list diff and remove share repository-root authority", () => {
+    const repo = initRepo("subdirectory-authority");
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    writeFileSync(join(sub, "tracked.txt"), "tracked base\n");
+    git(repo, ["add", "sub/tracked.txt"]);
+    git(repo, ["commit", "-m", "add subdirectory"]);
+    writeFileSync(join(repo, "f.txt"), "dirty root tracked\n");
+    writeFileSync(join(repo, "root-untracked.txt"), "root payload\n");
+    writeFileSync(join(sub, "nested-untracked.txt"), "nested payload\n");
+
+    const baseline = wt.captureDirtyBaseline(sub);
+    assert.equal(baseline.cwd, resolve(sub));
+    assert.equal(baseline.repoRoot, resolve(repo));
+    assert.equal(baseline.sourceCwd, resolve(repo));
+
+    const created = wt.createWorktree({
+      taskId: "subdir1",
+      role: "builder",
+      cwd: sub,
+      seedDirty: true,
+    });
+
+    try {
+      assert.equal(created.seed.applied, true);
+      assert.equal(created.cwd, resolve(sub));
+      assert.equal(created.repoRoot, resolve(repo));
+      assert.equal(readFileSync(join(created.path, "f.txt"), "utf8"), "dirty root tracked\n");
+      assert.equal(
+        readFileSync(join(created.path, "root-untracked.txt"), "utf8"),
+        "root payload\n",
+      );
+      assert.equal(
+        readFileSync(join(created.path, "sub", "nested-untracked.txt"), "utf8"),
+        "nested payload\n",
+      );
+      assert.ok(wt.listWorktrees(repo).some((entry) => entry.id === created.id));
+      assert.ok(wt.listWorktrees(sub).some((entry) => entry.id === created.id));
+      const diff = wt.worktreeDiff(created.id, sub);
+      assert.match(diff.diff || diff.stat, /f\.txt|dirty root tracked/i);
+    } finally {
+      wt.removeWorktree(created.id, { cwd: sub });
+    }
+
+    assert.equal(wt.listWorktrees(repo).length, 0);
+  });
+
+  test("create rejects a role-derived path outside the managed worktree root", () => {
+    const repo = initRepo("create-path-escape");
+
+    assert.throws(
+      () =>
+        wt.createWorktree({
+          taskId: "escape1",
+          role: "../victim",
+          cwd: repo,
+          seedDirty: false,
+        }),
+      /invalid worktree role or path/i,
+    );
+  });
+
+  test("remove rejects an external metadata path and preserves the victim", () => {
+    const repo = initRepo("remove-external-victim");
+    const created = wt.createWorktree({
+      taskId: "external1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const victim = join(tmp, "external-worktree-victim");
+    mkdirSync(victim);
+    writeFileSync(join(victim, "sentinel.txt"), "preserve me\n");
+    const metadata = rewriteWorktreeMeta(created, (entry) => ({
+      ...entry,
+      path: victim,
+    }));
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /contain|outside|metadata|registered|path/i,
+      );
+      assert.equal(readFileSync(join(victim, "sentinel.txt"), "utf8"), "preserve me\n");
+      assert.equal(existsSync(created.path), true);
+    } finally {
+      writeFileSync(metadata.path, metadata.original);
+      if (existsSync(created.path)) wt.removeWorktree(created.id, { cwd: repo });
+      rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test("remove rejects an inside-root unregistered path and preserves it", () => {
+    const repo = initRepo("remove-unregistered-victim");
+    const created = wt.createWorktree({
+      taskId: "unregistered1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    assert.equal(git(repo, ["worktree", "remove", "--force", created.path]).status, 0);
+    mkdirSync(created.path);
+    writeFileSync(join(created.path, "sentinel.txt"), "preserve me\n");
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /metadata|registered|worktree|path/i,
+      );
+      assert.equal(readFileSync(join(created.path, "sentinel.txt"), "utf8"), "preserve me\n");
+      assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    } finally {
+      rmSync(created.path, { recursive: true, force: true });
+      git(repo, ["branch", "-D", created.branch]);
+    }
+  });
+
+  test("remove forgets an already absent and pruned worktree without deleting its branch", () => {
+    const repo = initRepo("remove-already-absent");
+    const created = wt.createWorktree({
+      taskId: "absent1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    assert.equal(git(repo, ["worktree", "remove", "--force", created.path]).status, 0);
+
+    const removed = wt.removeWorktree(created.id, { cwd: repo });
+
+    assert.equal(removed.id, created.id);
+    assert.equal(wt.listWorktrees(repo).some((entry) => entry.id === created.id), false);
+    assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    git(repo, ["branch", "-D", created.branch]);
+  });
+
+  test("remove rejects a branch mismatch without deleting worktree or branches", () => {
+    const repo = initRepo("remove-branch-mismatch");
+    const created = wt.createWorktree({
+      taskId: "branch-mismatch1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    git(repo, ["branch", "metadata-victim", "HEAD"]);
+    const metadata = rewriteWorktreeMeta(created, (entry) => ({
+      ...entry,
+      branch: "metadata-victim",
+    }));
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /branch|metadata|registered|mismatch/i,
+      );
+      assert.equal(existsSync(created.path), true);
+      assert.equal(git(repo, ["show-ref", "--verify", "refs/heads/metadata-victim"]).status, 0);
+      assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    } finally {
+      if (existsSync(created.path)) {
+        writeFileSync(metadata.path, metadata.original);
+        wt.removeWorktree(created.id, { cwd: repo });
+      } else {
+        git(repo, ["branch", "-D", created.branch]);
+      }
+      git(repo, ["branch", "-D", "metadata-victim"]);
+    }
   });
 
   test("seeds dirty tracked + untracked baseline into worktree", () => {
