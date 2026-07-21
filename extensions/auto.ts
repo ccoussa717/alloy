@@ -17,6 +17,9 @@ const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
 const { renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
 );
+const { resolveParentChildSpawnOpts } = require(
+  join(root, "lib", "parent-policy.mjs"),
+);
 
 /** Keep last UI ctx for panel refresh during long runs */
 let panelUi: ExtensionContext["ui"] | null = null;
@@ -87,16 +90,11 @@ export function registerAuto(pi: ExtensionAPI) {
       ctx.ui.setWorkingMessage?.("Alloy auto running…");
 
       try {
-        const { getState } = require(join(root, "lib", "state.mjs"));
-        const parent = getState();
-        const parentSbx = parent.permissionProfile === "sandbox";
+        const parentOpts = resolveParentChildSpawnOpts();
         const summary = await runAutoWorkflow({
           request,
           cwd: process.cwd(),
-          permissionProfile: parent.permissionProfile,
-          parentPermissionProfile: parent.permissionProfile,
-          sandbox: parentSbx,
-          parentSandbox: parentSbx,
+          ...parentOpts,
           onProgress: (msg: string) => {
             try {
               ctx.ui.notify(msg, "info");
@@ -186,17 +184,12 @@ export function registerAuto(pi: ExtensionAPI) {
       panelUi = ctx.ui;
       ctx.ui.setWorkingMessage?.("Alloy fusion running…");
       try {
-        const { getState } = require(join(root, "lib", "state.mjs"));
-        const parent = getState();
-        const parentSbx = parent.permissionProfile === "sandbox";
+        const parentOpts = resolveParentChildSpawnOpts();
         const summary = await runFusion({
           request: raw,
           mode,
           cwd: process.cwd(),
-          permissionProfile: parent.permissionProfile,
-          parentPermissionProfile: parent.permissionProfile,
-          sandbox: parentSbx,
-          parentSandbox: parentSbx,
+          ...parentOpts,
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
           onProgress: (msg: string) => {
             try {
@@ -260,12 +253,14 @@ export function registerAuto(pi: ExtensionAPI) {
     }),
     async execute(_id, params, signal) {
       try {
+        const parentOpts = resolveParentChildSpawnOpts();
         const summary = await runAutoWorkflow({
           request: params.request,
           cwd: process.cwd(),
           useWorktree: params.useWorktree !== false,
           maxFixRounds: params.maxFixRounds,
           signal,
+          ...parentOpts,
           onPanel: (panel: unknown) => paintPanel(panel),
         });
         return {
@@ -306,11 +301,13 @@ export function registerAuto(pi: ExtensionAPI) {
     }),
     async execute(_id, params, signal) {
       try {
+        const parentOpts = resolveParentChildSpawnOpts();
         const summary = await runFusion({
           request: params.request,
           mode: params.mode === "build" ? "build" : "plan",
           cwd: process.cwd(),
           signal,
+          ...parentOpts,
           onPanel: (panel: unknown) => paintPanel(panel),
         });
         return {

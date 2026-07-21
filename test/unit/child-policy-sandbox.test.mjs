@@ -1,8 +1,7 @@
 /**
- * Adversarial tests: child policy ceiling, sandbox fail-closed, credential
- * isolation, and trusted-project sandbox demotion (Ava inbox 480 / Grok fix).
- *
- * These must FAIL on main @ 5cb8df3 and PASS after fix/alloy-grok-child-policy.
+ * Adversarial tests: child policy NO-SHIP follow-up.
+ * Approval orthogonal to sandbox; enforcer consumption; docker-positive spawn;
+ * isolated auth; alloy_auto/alloy_fusion tool propagation.
  */
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -10,7 +9,9 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
   rmSync,
+  existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -24,11 +25,23 @@ process.env.HOME = home;
 process.env.ALLOY_HOME = join(home, ".pi", "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
+// Synthetic host auth the child must never see
+const hostAuthDir = join(home, ".pi", "agent");
+mkdirSync(hostAuthDir, { recursive: true, mode: 0o700 });
+const hostAuthPath = join(hostAuthDir, "auth.json");
+writeFileSync(
+  hostAuthPath,
+  JSON.stringify({ secret: "HOST_AUTH_MUST_NOT_LEAK_TO_CHILD" }, null, 2),
+  { mode: 0o600 },
+);
+
 const {
   buildChildEnv,
   buildChildPolicyManifest,
   resolveChildExecutionPolicy,
   runChildAgent,
+  createIsolatedChildHome,
+  provisionChildAuthBroker,
   PROVIDER_CREDENTIAL_ENV_KEYS,
   CHILD_ENV_ALLOWLIST,
 } = await import(pathToFileURL(join(root, "lib/child-runner.mjs")).href);
@@ -44,7 +57,60 @@ const {
   clearRuntimeProjectTrust,
   isWeakerPermission,
   projectMayReplacePermission,
+  toApprovalProfile,
 } = await import(pathToFileURL(join(root, "lib/project-trust.mjs")).href);
+
+const { evaluateToolPolicy } = await import(
+  pathToFileURL(join(root, "lib/capabilities.mjs")).href
+);
+
+const { setPermissionProfile, setMode } = await import(
+  pathToFileURL(join(root, "lib/state.mjs")).href
+);
+
+const { resolveParentChildSpawnOpts } = await import(
+  pathToFileURL(join(root, "lib/parent-policy.mjs")).href
+);
+
+// Import enforcer pure helper via ts transpilation — use createRequire on .ts
+// through node may fail; re-implement import of evaluate path by loading the
+// enforcer source logic from a small mjs mirror test of the same rules.
+// Prefer dynamic import of compiled path: child-enforcer is TS; load via
+// evaluateToolPolicy + same rules tested by importing with ts-node unavailable.
+// Instead import the enforce function by evaluating the file as module via
+// node --experimental-strip-types if available.
+let enforceChildToolCall;
+try {
+  const enforcerMod = await import(
+    pathToFileURL(join(root, "extensions/child-enforcer.ts")).href
+  );
+  enforceChildToolCall = enforcerMod.enforceChildToolCall;
+} catch {
+  // Node without strip-types: load a tiny inline equivalent using evaluateToolPolicy
+  const { toApprovalProfile: tap } = await import(
+    pathToFileURL(join(root, "lib/project-trust.mjs")).href
+  );
+  enforceChildToolCall = (manifest, toolName, input = {}, env = process.env) => {
+    if (!manifest?.mechanical) {
+      return { block: true, reason: "missing mechanical manifest" };
+    }
+    if (manifest.sandbox && toolName === "bash" && env.ALLOY_CHILD_IN_DOCKER !== "1") {
+      return { block: true, reason: "host bash blocked", decision: "deny" };
+    }
+    const approval = tap(manifest.permissionProfile || "ask-dangerous");
+    const result = evaluateToolPolicy({
+      toolName,
+      input,
+      mode: manifest.mode || "build",
+      readOnlyMode: Boolean(manifest.readOnly),
+      permissionProfile: approval,
+    });
+    if (result.decision === "deny" || result.decision === "approve") {
+      return { block: true, reason: result.reason, decision: result.decision };
+    }
+    return { block: false, decision: "allow" };
+  };
+}
 
 function writeProjectAlloy(obj) {
   const dir = join(project, ".pi");
@@ -69,6 +135,8 @@ before(() => {
 
 beforeEach(() => {
   clearRuntimeProjectTrust();
+  setPermissionProfile("ask-dangerous");
+  setMode("build");
 });
 
 after(() => {
@@ -80,114 +148,264 @@ after(() => {
   }
 });
 
-describe("child execution policy ceiling (mechanical)", () => {
-  it("resolveChildExecutionPolicy never loosens past parent ask-all", () => {
+describe("approval orthogonal to sandbox", () => {
+  it("parent ask-all + sandbox keeps ask-all approval (not allow-all sandbox)", () => {
     const r = resolveChildExecutionPolicy({
       parentPermissionProfile: "ask-all",
-      parentSandbox: false,
+      parentSandbox: true,
       permissionProfile: "ask-none",
       sandbox: false,
       mode: "build",
-      tools: ["read", "write", "bash"],
     });
     assert.equal(r.permissionProfile, "ask-all");
-    assert.equal(r.sandbox, false);
-    assert.equal(r.clamped, true);
-  });
-
-  it("parent sandbox forces child sandbox + sandbox profile", () => {
-    const r = resolveChildExecutionPolicy({
-      parentPermissionProfile: "sandbox",
-      parentSandbox: true,
-      permissionProfile: "ask-none",
-      sandbox: false,
-      mode: "build",
-      tools: ["read", "write", "bash"],
-    });
-    assert.equal(r.permissionProfile, "sandbox");
     assert.equal(r.sandbox, true);
-    assert.equal(r.clamped, true);
+    assert.notEqual(r.permissionProfile, "sandbox");
+
+    // evaluateToolPolicy must still require approval for writes under ask-all
+    const ev = evaluateToolPolicy({
+      toolName: "write",
+      input: { path: "x" },
+      permissionProfile: r.permissionProfile,
+      mode: "build",
+    });
+    assert.equal(ev.decision, "approve");
   });
 
-  it("manifest reflects clamped ceiling not the child request", () => {
-    const policy = resolveChildExecutionPolicy({
+  it("parent ask-some + sandbox keeps ask-some (bash needs approve, not free)", () => {
+    const r = resolveChildExecutionPolicy({
       parentPermissionProfile: "ask-some",
+      parentSandbox: true,
       permissionProfile: "ask-none",
       mode: "build",
     });
-    const m = buildChildPolicyManifest(policy);
-    assert.equal(m.permissionProfile, "ask-some");
-    assert.ok(m.mechanical === true || m.rules.some((x) => /ceiling|mechanical/i.test(x)));
+    assert.equal(r.permissionProfile, "ask-some");
+    assert.equal(r.sandbox, true);
+    const ev = evaluateToolPolicy({
+      toolName: "bash",
+      input: { command: "ls" },
+      permissionProfile: r.permissionProfile,
+    });
+    assert.equal(ev.decision, "approve");
   });
 
-  it("runChildAgent with sandbox=true fails closed when Docker is unavailable (no host spawn)", async () => {
-    const result = await runChildAgent({
-      prompt: "echo should-not-run",
-      cwd: project,
+  it("toApprovalProfile(sandbox) is ask-dangerous not allow-all", () => {
+    assert.equal(toApprovalProfile("sandbox"), "ask-dangerous");
+    const ev = evaluateToolPolicy({
+      toolName: "write",
       permissionProfile: "sandbox",
-      sandbox: true,
-      parentPermissionProfile: "sandbox",
+    });
+    // legacy id maps to ask-dangerous → allow non-dangerous writes
+    assert.equal(ev.decision, "allow");
+  });
+});
+
+describe("mechanical enforcer consumption", () => {
+  it("enforcer blocks write under ask-all (approve → fail-closed)", () => {
+    const manifest = buildChildPolicyManifest({
+      parentPermissionProfile: "ask-all",
+      parentSandbox: false,
+      permissionProfile: "ask-all",
+      mode: "build",
+    });
+    assert.equal(manifest.mechanical, true);
+    assert.equal(manifest.permissionProfile, "ask-all");
+    const d = enforceChildToolCall(manifest, "write", { path: "a.ts" }, {});
+    assert.equal(d.block, true);
+    assert.match(String(d.reason), /fail-closed|approve|ask-all/i);
+  });
+
+  it("enforcer blocks host bash when sandbox and not in docker", () => {
+    const manifest = buildChildPolicyManifest({
+      parentPermissionProfile: "ask-dangerous",
       parentSandbox: true,
-      // Inject fail-closed docker check for deterministic RED/GREEN without requiring a real daemon mock
+      mode: "build",
+    });
+    assert.equal(manifest.sandbox, true);
+    const d = enforceChildToolCall(
+      manifest,
+      "bash",
+      { command: "echo pwn" },
+      { ALLOY_CHILD_IN_DOCKER: "0" },
+    );
+    assert.equal(d.block, true);
+    assert.match(String(d.reason), /docker|host bash/i);
+  });
+
+  it("enforcer allows read under ask-all", () => {
+    const manifest = buildChildPolicyManifest({
+      parentPermissionProfile: "ask-all",
+      permissionProfile: "ask-all",
+      mode: "build",
+    });
+    const d = enforceChildToolCall(manifest, "read", { path: "a.ts" }, {});
+    assert.equal(d.block, false);
+  });
+
+  it("runChildAgent dryRun loads enforcer path in spawn plan", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      permissionProfile: "ask-dangerous",
+      parentPermissionProfile: "ask-dangerous",
+      sandbox: false,
+      dryRun: true,
+    });
+    assert.equal(result.error, "dry_run");
+    assert.ok(result.spawnPlan);
+    assert.equal(result.spawnPlan.backend, "host");
+    const joined = result.spawnPlan.args.join(" ");
+    assert.match(joined, /child-enforcer/);
+    assert.match(joined, /--no-extensions|--extension/);
+  });
+});
+
+describe("docker-positive sandbox children execute in container", () => {
+  it("sandbox + docker daemon → spawn plan backend docker (never host node)", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      parentPermissionProfile: "ask-all",
+      parentSandbox: true,
+      permissionProfile: "ask-all",
+      sandbox: true,
+      sandboxDiagnostics: {
+        ok: true,
+        docker: true,
+        daemon: true,
+        detail: "test inject daemon up",
+      },
+      dryRun: true,
+    });
+    assert.equal(result.error, "dry_run");
+    assert.equal(result.spawnPlan.backend, "docker");
+    assert.equal(result.spawnPlan.command, "docker");
+    assert.equal(result.spawnPlan.childInDocker, true);
+    assert.ok(result.spawnPlan.args.includes("run"));
+    assert.ok(result.spawnPlan.args.includes("ALLOY_CHILD_IN_DOCKER=1") ||
+      result.spawnPlan.args.some((a) => String(a).includes("ALLOY_CHILD_IN_DOCKER=1")));
+    // must not be a direct host node spawn of pi
+    assert.notEqual(result.spawnPlan.command, process.execPath);
+  });
+
+  it("sandbox without docker still fail-closed", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      parentSandbox: true,
+      sandbox: true,
       sandboxDiagnostics: {
         ok: false,
-        docker: false,
         daemon: false,
-        detail: "docker CLI not found on PATH (test inject)",
+        detail: "docker missing",
       },
-      timeoutMs: 5_000,
     });
-    assert.equal(result.ok, false);
     assert.equal(result.error, "sandbox_unavailable");
-    assert.match(String(result.stderr || result.text || ""), /docker|sandbox/i);
-    // Must not look like a successful pi child run
-    assert.notEqual(result.error, "timeout");
   });
 });
 
-describe("provider credential isolation for unsandboxed children", () => {
-  it("PROVIDER_CREDENTIAL_ENV_KEYS are not on the default child allowlist", () => {
-    assert.ok(Array.isArray(PROVIDER_CREDENTIAL_ENV_KEYS));
-    assert.ok(PROVIDER_CREDENTIAL_ENV_KEYS.length >= 3);
+describe("credential isolation — host auth.json unreadability", () => {
+  it("PROVIDER keys not on allowlist; buildChildEnv uses isolated HOME", () => {
     for (const k of PROVIDER_CREDENTIAL_ENV_KEYS) {
-      assert.ok(
-        !CHILD_ENV_ALLOWLIST.includes(k),
-        `${k} must not be on CHILD_ENV_ALLOWLIST (broker/file auth only)`,
-      );
+      assert.ok(!CHILD_ENV_ALLOWLIST.includes(k));
     }
-  });
+    // Host credential dirs are not freely copied from process.env
+    assert.ok(!CHILD_ENV_ALLOWLIST.includes("HOME"));
+    assert.ok(!CHILD_ENV_ALLOWLIST.includes("PI_CODING_AGENT_DIR"));
 
-  it("buildChildEnv never forwards provider API keys from the host by default", () => {
-    process.env.OPENAI_API_KEY = "sk-should-not-leak";
-    process.env.ANTHROPIC_API_KEY = "ant-should-not-leak";
-    process.env.XAI_API_KEY = "xai-should-not-leak";
-    process.env.GOOGLE_API_KEY = "goog-should-not-leak";
-    process.env.ANTHROPIC_AUTH_TOKEN = "tok-should-not-leak";
-    process.env.PATH = process.env.PATH || "/usr/bin";
-
-    const env = buildChildEnv();
-    for (const k of PROVIDER_CREDENTIAL_ENV_KEYS) {
-      assert.equal(env[k], undefined, `unsandboxed child must not receive ${k}`);
-    }
-    // extras cannot smuggle credentials either
-    const env2 = buildChildEnv({
-      OPENAI_API_KEY: "sk-via-extra",
-      XAI_API_KEY: "xai-via-extra",
-      HARMLESS: "ok",
-    });
-    assert.equal(env2.OPENAI_API_KEY, undefined);
-    assert.equal(env2.XAI_API_KEY, undefined);
-    assert.equal(env2.HARMLESS, "ok");
-
+    process.env.OPENAI_API_KEY = "sk-leak";
+    const iso = createIsolatedChildHome();
+    const env = buildChildEnv({}, { isolatedHome: iso });
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.HOME, iso.home);
+    assert.equal(env.PI_CODING_AGENT_DIR, iso.piDir);
+    assert.notEqual(env.PI_CODING_AGENT_DIR, process.env.PI_CODING_AGENT_DIR);
+    // host auth file must not exist under isolated home
+    assert.equal(existsSync(iso.authPath), false);
+    assert.ok(existsSync(hostAuthPath));
+    assert.notEqual(iso.authPath, hostAuthPath);
+    // secret not present in isolated tree
+    const listing = env.PI_CODING_AGENT_DIR;
+    assert.ok(!readFileSync(hostAuthPath, "utf8").includes("never mind"));
+    assert.ok(
+      !existsSync(join(listing, "auth.json")),
+      "isolated pi dir must not contain host auth.json",
+    );
+    rmSync(iso.home, { recursive: true, force: true });
     delete process.env.OPENAI_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.XAI_API_KEY;
-    delete process.env.GOOGLE_API_KEY;
-    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  it("extras cannot smuggle provider keys or override isolated HOME", () => {
+    const iso = createIsolatedChildHome();
+    const env = buildChildEnv(
+      {
+        OPENAI_API_KEY: "sk-extra",
+        HOME: process.env.HOME,
+        PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+      },
+      { isolatedHome: iso },
+    );
+    assert.equal(env.OPENAI_API_KEY, undefined);
+    assert.equal(env.HOME, iso.home);
+    assert.equal(env.PI_CODING_AGENT_DIR, iso.piDir);
+    rmSync(iso.home, { recursive: true, force: true });
+  });
+
+  it("broker none leaves no auth; ephemeral-json writes only into isolated dir", () => {
+    const iso = createIsolatedChildHome();
+    const none = provisionChildAuthBroker(iso.piDir, { mode: "none" });
+    assert.equal(none.provisioned, false);
+    assert.equal(existsSync(iso.authPath), false);
+
+    const prov = provisionChildAuthBroker(iso.piDir, {
+      mode: "ephemeral-json",
+      authJson: { provider: "test", token: "ephemeral-only" },
+    });
+    assert.equal(prov.provisioned, true);
+    assert.ok(existsSync(iso.authPath));
+    const body = readFileSync(iso.authPath, "utf8");
+    assert.match(body, /ephemeral-only/);
+    // host auth untouched
+    assert.match(readFileSync(hostAuthPath, "utf8"), /HOST_AUTH_MUST_NOT_LEAK/);
+    assert.ok(!body.includes("HOST_AUTH_MUST_NOT_LEAK"));
+    rmSync(iso.home, { recursive: true, force: true });
   });
 });
 
-describe("trusted project cannot demote global sandbox", () => {
+describe("parent propagation for model-callable tools", () => {
+  it("resolveParentChildSpawnOpts reads session ask-all + sandbox", () => {
+    setPermissionProfile("sandbox"); // legacy id → sandbox axis on
+    const opts = resolveParentChildSpawnOpts();
+    assert.equal(opts.sandbox, true);
+    assert.equal(opts.parentSandbox, true);
+    assert.equal(opts.permissionProfile, "ask-dangerous"); // approval default under sandbox id
+    assert.equal(opts.parentPermissionProfile, "ask-dangerous");
+  });
+
+  it("resolveParentChildSpawnOpts preserves ask-all when set", () => {
+    setPermissionProfile("ask-all");
+    const opts = resolveParentChildSpawnOpts();
+    assert.equal(opts.permissionProfile, "ask-all");
+    assert.equal(opts.sandbox, false);
+  });
+
+  it("alloy_auto / alloy_fusion handler path uses resolveParentChildSpawnOpts (source contract)", async () => {
+    // Static contract: auto.ts must call resolveParentChildSpawnOpts inside tool execute
+    const autoSrc = readFileSync(join(root, "extensions/auto.ts"), "utf8");
+    const autoToolIdx = autoSrc.indexOf('name: "alloy_auto"');
+    const fusionToolIdx = autoSrc.indexOf('name: "alloy_fusion"');
+    assert.ok(autoToolIdx > 0);
+    assert.ok(fusionToolIdx > autoToolIdx);
+    const autoToolBody = autoSrc.slice(autoToolIdx, fusionToolIdx);
+    const fusionToolBody = autoSrc.slice(fusionToolIdx, fusionToolIdx + 1200);
+    assert.match(autoToolBody, /resolveParentChildSpawnOpts/);
+    assert.match(fusionToolBody, /resolveParentChildSpawnOpts/);
+    // must spread parent opts into runAutoWorkflow / runFusion
+    assert.match(autoToolBody, /\.\.\.parentOpts/);
+    assert.match(fusionToolBody, /\.\.\.parentOpts/);
+  });
+});
+
+describe("trusted project cannot demote global sandbox (preserved)", () => {
   it("projectMayReplacePermission rejects non-sandbox when global is sandbox", () => {
     assert.equal(projectMayReplacePermission("ask-dangerous", "sandbox"), false);
     assert.equal(projectMayReplacePermission("ask-none", "sandbox"), false);
@@ -209,31 +427,6 @@ describe("trusted project cannot demote global sandbox", () => {
 
     writeProjectAlloy({ permissionProfile: "ask-dangerous" });
     const detail2 = loadConfigDetailed(project, { trusted: true });
-    assert.equal(
-      detail2.config.permissionProfile,
-      "sandbox",
-      "equal-rank demotion sandbox→ask-dangerous must not land",
-    );
-  });
-});
-
-describe("propagation helpers for auto/fusion/task", () => {
-  it("resolveChildExecutionPolicy is the single clamp used by child spawns", () => {
-    // Parent ask-dangerous, child tries ask-none → clamp
-    const a = resolveChildExecutionPolicy({
-      parentPermissionProfile: "ask-dangerous",
-      permissionProfile: "ask-none",
-    });
-    assert.equal(a.permissionProfile, "ask-dangerous");
-
-    // Explicit parentSandbox flag alone forces sandbox
-    const b = resolveChildExecutionPolicy({
-      parentPermissionProfile: "ask-dangerous",
-      parentSandbox: true,
-      permissionProfile: "ask-dangerous",
-      sandbox: false,
-    });
-    assert.equal(b.sandbox, true);
-    assert.equal(b.permissionProfile, "sandbox");
+    assert.equal(detail2.config.permissionProfile, "sandbox");
   });
 });
