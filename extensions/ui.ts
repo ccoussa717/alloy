@@ -22,20 +22,19 @@ export function registerUi(pi: ExtensionAPI) {
     description: "Alloy help and version",
     handler: async (_args, ctx) => {
       const lines = [
-        `Alloy v${process.env.ALLOY_VERSION || "0.5.0"}`,
-        "Harness on Pi · sandbox · help · auto · fusion · memory · MCP",
+        `Alloy v${process.env.ALLOY_VERSION || "0.6.0"}`,
+        "Harness on Pi · Shift+Tab permissions · /effort thinking",
         "",
         "Help:     /help   /help <topic>   /help search <query>",
         "Auth:     /login   /providers   /doctor",
+        "Effort:   /effort [off|low|medium|high|xhigh|max]",
+        "Perms:    Shift+Tab cycle  ·  /permissions ask-all|ask-some|ask-dangerous|ask-none",
+        "Sandbox:  /sandbox  or  /permissions sandbox  (Docker)",
         "Modes:    /mode chat|plan|build|review",
         "Auto:     /auto <request>   /fusion [plan|build] <request>",
-        "Safety:   /permissions readonly|safe|workspace|sandbox",
-        "Sandbox:  /sandbox status|start|stop   (Docker, network none)",
         "Memory:   /remember   /memory   /mcp   /worktree   /diagnose",
-        "Git:      /checkpoint   /undo",
         "",
         "Subscriptions: Claude · Codex/ChatGPT · Grok",
-        "Pi native: /model /resume /tree /compact /settings",
       ];
       await ctx.ui.select("Alloy", lines);
     },

@@ -9,7 +9,7 @@ alloy
 
 | | |
 |---|---|
-| **Status** | MVP active development (v0.5.0) |
+| **Status** | MVP active development (v0.6.0) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -240,7 +240,9 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/fusion [plan\|build] <request>` | Multi-model fusion |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
-| `/permissions [readonly\|safe\|workspace\|sandbox]` | Permission profile |
+| **`Shift+Tab`** | Cycle permission ask-levels |
+| `/permissions [ask-all\|ask-some\|ask-dangerous\|ask-none\|sandbox]` | Set permission level |
+| `/effort [off\|…\|max]` | Thinking / reasoning effort |
 | `/sandbox [status\|start\|stop\|doctor]` | Docker sandbox controls |
 | `/help [topic\|search <q>]` | Feature help + search |
 

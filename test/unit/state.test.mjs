@@ -9,17 +9,17 @@ const state = await import(
 
 test("setMode and isReadOnlyMode", () => {
   state.setMode("build");
-  state.setPermissionProfile("safe");
+  state.setPermissionProfile("ask-dangerous");
   assert.equal(state.isReadOnlyMode(), false);
 
   state.setMode("plan");
   assert.equal(state.isReadOnlyMode(), true);
 
   state.setMode("build");
-  state.setPermissionProfile("readonly");
-  assert.equal(state.isReadOnlyMode(), true);
+  // ask-all is NOT hard-readonly; plan/review modes are
+  state.setPermissionProfile("ask-all");
+  assert.equal(state.isReadOnlyMode(), false);
 
-  state.setPermissionProfile("safe");
   state.setMode("review");
   assert.equal(state.isReadOnlyMode(), true);
 
@@ -34,6 +34,13 @@ test("invalid mode throws", () => {
 test("sandbox profile is allowed", () => {
   state.setPermissionProfile("sandbox");
   assert.equal(state.isSandboxProfile(), true);
-  state.setPermissionProfile("safe");
+  state.setPermissionProfile("ask-dangerous");
   assert.equal(state.isSandboxProfile(), false);
+});
+
+test("legacy safe/workspace map on set", () => {
+  state.setPermissionProfile("safe");
+  assert.equal(state.getState().permissionProfile, "ask-dangerous");
+  state.setPermissionProfile("workspace");
+  assert.equal(state.getState().permissionProfile, "ask-none");
 });
