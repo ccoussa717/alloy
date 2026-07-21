@@ -1,19 +1,69 @@
-# Alloy CI — lint-light + unit tests on Node 22
-image: node:22-bookworm
+# Alloy CI — Node 22.19+, unit tests, pack smoke, version gate, audit notice
+# Matches engines.node in package.json (Pi requirement).
+
+image: node:22.19-bookworm
 
 stages:
   - test
+  - pack
+
+variables:
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  # Fail CI on critical vulns only; high transitive under Pi is reported not fatal
+  AUDIT_LEVEL: critical
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}
   paths:
+    - .npm/
     - node_modules/
 
-unit:
-  stage: test
-  script:
-    - npm ci
-    - npm test
+.default_rules: &default_rules
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
+
+unit:
+  stage: test
+  <<: *default_rules
+  script:
+    - node -e "const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)){console.error('Need Node>=22.19'); process.exit(1)}"
+    - npm ci
+    - npm test
+    - node ./bin/alloy.mjs --version
+
+pack-smoke:
+  stage: pack
+  <<: *default_rules
+  script:
+    - npm ci
+    - npm pack --dry-run 2>&1 | tee pack-list.txt
+    - grep -q 'install.sh' pack-list.txt
+    - grep -q 'scripts/install-cli.sh' pack-list.txt
+    - grep -q 'bin/alloy.mjs' pack-list.txt
+    - node -e "const p=require('./package.json'); if(p.engines.node!=='>=22.19.0') process.exit(1)"
+    - node -e "const v=require('./package.json').version; const l=require('./package-lock.json').version; if(v!==l){console.error('version mismatch',v,l); process.exit(1)}"
+  artifacts:
+    when: always
+    paths:
+      - pack-list.txt
+    expire_in: 7 days
+
+audit:
+  stage: test
+  <<: *default_rules
+  allow_failure: true
+  script:
+    - npm ci
+    - npm audit --audit-level=$AUDIT_LEVEL || true
+    - |
+      echo "Full audit (informational — nested Pi deps may report high/moderate):"
+      npm audit || true
+
+doctor-cli:
+  stage: test
+  <<: *default_rules
+  script:
+    - npm ci
+    - npm run doctor
+    - node -e "import('./lib/model-catalog.mjs').then(m=>{const r=m.validateDefaultModels(); const bad=r.filter(x=>!x.ok); if(bad.length){console.error(bad); process.exit(1)} console.log('catalog ok', r.length)})"

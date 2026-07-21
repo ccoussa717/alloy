@@ -24,9 +24,25 @@ alloy
 
 Inside a session: `/doctor` (providers, catalog defaults, Claude extra-usage economics — never prints secrets).
 
+### CI / verification
+
+GitLab CI (`.gitlab-ci.yml`) on Node 22.19:
+
+- `npm ci` + full unit tests + `alloy --version`
+- `npm pack --dry-run` must include `install.sh` and `scripts/install-cli.sh`
+- package / lockfile version alignment
+- catalog default model resolution
+- `npm audit` (informational; nested Pi deps may still report high/moderate)
+
+Local smoke:
+
+```bash
+npm run ci:local
+```
+
 | | |
 |---|---|
-| **Status** | MVP active development (v0.8.0) |
+| **Status** | MVP active development (v0.8.1) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 · Node **≥22.19** |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |

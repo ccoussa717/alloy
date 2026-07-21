@@ -1,6 +1,6 @@
 {
   "name": "@kylaira/alloy",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
   "type": "module",
   "bin": {
@@ -47,7 +47,8 @@
     "setup": "bash ./install.sh",
     "install-cli": "bash ./scripts/install-cli.sh",
     "bootstrap": "bash ./install.sh",
-    "version:print": "node ./bin/alloy.mjs --version"
+    "version:print": "node ./bin/alloy.mjs --version",
+    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm test && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",
