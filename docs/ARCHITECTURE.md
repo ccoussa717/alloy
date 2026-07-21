@@ -36,8 +36,12 @@ Deletion performs the inverse ownership check: it compare-and-swap deletes the
 recorded ref/object before removing discoverable metadata or stored recovery
 data.
 
-They are not an OS security boundary against a malicious same-UID process that
-races an ancestor replacement between validation and filesystem use. Alloy does
-not currently claim TOCTOU-safe path operations. A native descriptor-relative
-`openat` helper is separate future hardening and is not part of the current
-implementation.
+Checkpoint restore is destructive and requires a quiescent workspace. The
+synchronous APIs serialize cooperative checkpoint operations within one Alloy
+process, and restore revalidates repository state immediately before its first
+mutation. Alloy does not hold an atomic global filesystem or Git lock that
+excludes an external editor, Git process, or second Alloy process after that
+validation. Both ordinary and malicious external mutation in the final window
+are outside the guarantee. Alloy does not claim globally atomic or TOCTOU-safe
+path operations; a native descriptor-relative `openat` helper remains separate
+future hardening.

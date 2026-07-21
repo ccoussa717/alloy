@@ -293,11 +293,173 @@ describe("P0.4 safe checkpoints", () => {
     assert.deepEqual(snapshot(repo, ["a.txt", "current.txt"]), before);
   });
 
+  test("restore rejects modern metadata that points at another checkpoint ref", () => {
+    const repo = initRepo("tampered-modern-restore");
+    writeFileSync(join(repo, "a.txt"), "checkpoint A bytes\n");
+    const checkpointA = git.createCheckpoint("checkpoint-a", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "checkpoint B bytes\n");
+    const checkpointB = git.createCheckpoint("checkpoint-b", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    overwriteMetadata(checkpointA, (metadata) => ({
+      ...metadata,
+      ref: checkpointB.ref,
+      refObject: checkpointB.refObject,
+    }));
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(checkpointA.id, repo),
+      /integrity|metadata|mismatch|reference/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(
+      run(repo, ["rev-parse", checkpointB.ref]).stdout.trim(),
+      checkpointB.refObject,
+    );
+  });
+
+  test("delete rejects modern metadata that points at another checkpoint ref", () => {
+    const repo = initRepo("tampered-modern-delete");
+    writeFileSync(join(repo, "a.txt"), "checkpoint A bytes\n");
+    const checkpointA = git.createCheckpoint("checkpoint-a", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "checkpoint B bytes\n");
+    const checkpointB = git.createCheckpoint("checkpoint-b", repo);
+    const rootA = join(dirname(dirname(checkpointA.path)), `${checkpointA.id}.json`);
+    const rootB = join(dirname(dirname(checkpointB.path)), `${checkpointB.id}.json`);
+    overwriteMetadata(checkpointA, (metadata) => ({
+      ...metadata,
+      ref: checkpointB.ref,
+      refObject: checkpointB.refObject,
+    }));
+    const before = {
+      aRoot: readFileSync(rootA),
+      aMeta: readFileSync(checkpointA.path),
+      bRoot: readFileSync(rootB),
+      bMeta: readFileSync(checkpointB.path),
+      bRef: run(repo, ["rev-parse", checkpointB.ref]).stdout.trim(),
+    };
+
+    assert.throws(
+      () => git.deleteCheckpoint(checkpointA.id, repo),
+      /integrity|metadata|mismatch|reference/i,
+    );
+    assert.deepEqual(readFileSync(rootA), before.aRoot);
+    assert.deepEqual(readFileSync(checkpointA.path), before.aMeta);
+    assert.deepEqual(readFileSync(rootB), before.bRoot);
+    assert.deepEqual(readFileSync(checkpointB.path), before.bMeta);
+    assert.equal(run(repo, ["rev-parse", checkpointB.ref]).stdout.trim(), before.bRef);
+    assert.ok(
+      git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === checkpointA.id),
+    );
+    assert.ok(
+      git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === checkpointB.id),
+    );
+  });
+
+  test("restore rejects a modern ref moved away from its recorded object", () => {
+    const repo = initRepo("moved-modern-ref");
+    writeFileSync(join(repo, "a.txt"), "checkpoint A bytes\n");
+    const checkpointA = git.createCheckpoint("checkpoint-a", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "checkpoint B bytes\n");
+    const checkpointB = git.createCheckpoint("checkpoint-b", repo);
+    run(repo, [
+      "update-ref",
+      checkpointA.ref,
+      checkpointB.refObject,
+      checkpointA.refObject,
+    ]);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    assert.throws(
+      () => git.restoreCheckpoint(checkpointA.id, repo),
+      /object|integrity|mismatch/i,
+    );
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    assert.equal(
+      run(repo, ["rev-parse", checkpointB.ref]).stdout.trim(),
+      checkpointB.refObject,
+    );
+  });
+
+  test("legacy raw-object metadata restores after stash-like validation", () => {
+    const repo = initRepo("legacy-raw-restore");
+    writeFileSync(join(repo, "a.txt"), "legacy checkpoint bytes\n");
+    const legacy = git.createCheckpoint("legacy", repo);
+    const legacyObject = legacy.refObject;
+    run(repo, ["update-ref", "-d", legacy.ref, legacyObject]);
+    overwriteMetadata(legacy, (metadata) => {
+      const { refObject: _refObject, ...rest } = metadata;
+      return { ...rest, ref: legacyObject };
+    });
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "unrelated checkpoint bytes\n");
+    const unrelated = git.createCheckpoint("unrelated", repo);
+    const unrelatedObject = unrelated.refObject;
+    run(repo, ["reset", "--hard", "HEAD"]);
+
+    git.restoreCheckpoint(legacy.id, repo);
+
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "legacy checkpoint bytes\n");
+    assert.equal(
+      run(repo, ["rev-parse", unrelated.ref]).stdout.trim(),
+      unrelatedObject,
+    );
+  });
+
+  test("legacy deletion removes only legacy artifacts and no unrelated ref", () => {
+    const repo = initRepo("legacy-raw-delete");
+    writeFileSync(join(repo, "a.txt"), "legacy checkpoint bytes\n");
+    const legacy = git.createCheckpoint("legacy", repo);
+    const legacyObject = legacy.refObject;
+    const legacyRoot = join(dirname(dirname(legacy.path)), `${legacy.id}.json`);
+    run(repo, ["update-ref", "-d", legacy.ref, legacyObject]);
+    overwriteMetadata(legacy, (metadata) => {
+      const { refObject: _refObject, ...rest } = metadata;
+      return { ...rest, ref: legacyObject };
+    });
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "unrelated checkpoint bytes\n");
+    const unrelated = git.createCheckpoint("unrelated", repo);
+    const unrelatedRoot = join(
+      dirname(dirname(unrelated.path)),
+      `${unrelated.id}.json`,
+    );
+    const unrelatedObject = unrelated.refObject;
+
+    assert.equal(git.deleteCheckpoint(legacy.id, repo), true);
+    assert.equal(existsSync(legacy.storeDir), false);
+    assert.equal(existsSync(legacyRoot), false);
+    assert.equal(existsSync(unrelated.storeDir), true);
+    assert.equal(existsSync(unrelatedRoot), true);
+    assert.equal(
+      run(repo, ["rev-parse", unrelated.ref]).stdout.trim(),
+      unrelatedObject,
+    );
+    assert.equal(
+      git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === legacy.id),
+      false,
+    );
+    assert.ok(
+      git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === unrelated.id),
+    );
+  });
+
   test("invalid fallback patches fail before mutating current state", () => {
     const repo = initRepo("invalid-patch-atomic");
     writeFileSync(join(repo, "a.txt"), "checkpoint dirty bytes\n");
     const cp = git.createCheckpoint("invalid-patch", repo);
-    overwriteMetadata(cp, (metadata) => ({ ...metadata, ref: null }));
+    overwriteMetadata(cp, (metadata) => {
+      const { refObject: _refObject, ...rest } = metadata;
+      return { ...rest, ref: null };
+    });
     writeFileSync(join(cp.storeDir, "worktree.patch"), "not a patch\n");
     writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
     const before = snapshot(repo, ["a.txt"]);

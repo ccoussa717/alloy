@@ -41,9 +41,10 @@ same staged, unstaged, and untracked baseline the planner observed.
     and root index entry. Cleanup failure preserves the original error and names
     any ref that may remain.
 14. Filesystem preservation is fail-closed for state changes it detects and for
-    pre-existing symlink/collision paths. It is not an OS security boundary
-    against a malicious same-UID process racing ancestor replacement between
-    validation and use, and does not claim TOCTOU safety.
+    pre-existing symlink/collision paths. Restore requires a quiescent workspace:
+    synchronous calls serialize cooperative operations within one Alloy process,
+    but no atomic global lock excludes ordinary or malicious external mutation
+    after final validation, and the implementation does not claim TOCTOU safety.
 15. Restore snapshots exact logical HEAD, NUL status, index entries, staged
     patch, and worktree patch state before preflight and rejects any observed
     change immediately before reset or apply.
@@ -64,6 +65,12 @@ same staged, unstaged, and untracked baseline the planner observed.
 22. Checkpoint deletion compare-and-swap deletes the recorded durable ref/object
     before removing metadata or recovery data; ref deletion failure is reported
     and leaves the checkpoint fully discoverable.
+23. Modern checkpoint restore and deletion require the canonical ref derived
+    from the checkpoint ID and require its live object to equal recorded
+    `refObject`; metadata substitution cannot target another checkpoint.
+24. Legacy metadata with a raw object ID and no `refObject` restores only after
+    stash-like validation and deletes only its own metadata/store/index without
+    treating the raw object as an owned named ref.
 
 ## Plan
 
@@ -87,9 +94,13 @@ same staged, unstaged, and untracked baseline the planner observed.
    collisions while compensating owned state.
 10. Establish create-only durable-ref ownership and make checkpoint deletion
     ref-first and compare-and-swap guarded.
-11. Run the complete unit and integration suite, CLI smoke, and package dry run
+11. Enforce modern metadata/ref integrity while retaining raw-object legacy
+    restore and artifact-only deletion compatibility.
+12. Document synchronous cooperative serialization, the quiescent-workspace
+    requirement, and the absence of atomic global exclusion for external writes.
+13. Run the complete unit and integration suite, CLI smoke, and package dry run
     through `npm run ci:local` under Node 22.19.0.
-12. Review the exact diff adversarially, then create one focused local commit if
+14. Review the exact diff adversarially, then create one focused local commit if
     every gate is green.
 
 ## Exclusions
