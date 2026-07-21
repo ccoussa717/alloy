@@ -44,6 +44,20 @@ same staged, unstaged, and untracked baseline the planner observed.
     pre-existing symlink/collision paths. It is not an OS security boundary
     against a malicious same-UID process racing ancestor replacement between
     validation and use, and does not claim TOCTOU safety.
+15. Restore snapshots exact logical HEAD, NUL status, index entries, staged
+    patch, and worktree patch state before preflight and rejects any observed
+    change immediately before reset or apply.
+16. Every untracked restore destination passes an actual temporary exclusive
+    create/write/unlink capability probe before tracked state can change.
+17. Checkpoint fallback capture and restore preserve intent-to-add NUL status,
+    logical index state, and worktree bytes when `git stash create` cannot
+    represent that valid state.
+18. A pre-existing root checkpoint index collision is never claimed or deleted;
+    the owned partial store and durable ref are still compensated.
+19. Regular untracked file modes are restored explicitly and are independent of
+    the restoring process umask.
+20. Exact checkpoint IDs take precedence, while non-exact prefixes matching
+    multiple checkpoints fail before repository mutation.
 
 ## Plan
 
@@ -61,9 +75,13 @@ same staged, unstaged, and untracked baseline the planner observed.
    compare-and-swap and removing partial store/index artifacts.
 7. Document the current concurrency boundary and defer a native
    descriptor-relative `openat` helper as separate future hardening.
-8. Run the complete unit and integration suite, CLI smoke, and package dry run
+8. Revalidate tracked/index/worktree state after preflight, probe destination
+   writability, and preserve intent-to-add and regular file modes exactly.
+9. Reject ambiguous checkpoint prefixes and preserve pre-existing root index
+   collisions while compensating owned state.
+10. Run the complete unit and integration suite, CLI smoke, and package dry run
    through `npm run ci:local` under Node 22.19.0.
-9. Review the exact diff adversarially, then create one focused local commit if
+11. Review the exact diff adversarially, then create one focused local commit if
    every gate is green.
 
 ## Exclusions

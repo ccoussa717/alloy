@@ -51,6 +51,15 @@ function snapshot(repo, paths = []) {
   };
 }
 
+function observableGitState(repo) {
+  return {
+    status: raw(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    index: raw(repo, ["ls-files", "--stage", "-z"]),
+    staged: raw(repo, ["diff", "--cached", "--binary"]),
+    unstaged: raw(repo, ["diff", "--binary"]),
+  };
+}
+
 function overwriteMetadata(cp, update) {
   const metadata = update(JSON.parse(readFileSync(cp.path, "utf8")));
   const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
@@ -60,12 +69,16 @@ function overwriteMetadata(cp, update) {
 }
 
 function checkpointArtifactPaths(repo, id) {
-  const root = join(
+  const root = checkpointRootPath(repo);
+  return [join(root, id), join(root, `${id}.json`)];
+}
+
+function checkpointRootPath(repo) {
+  return join(
     process.env.ALLOY_HOME,
     "checkpoints",
     projectIdFromCwd(repo),
   );
-  return [join(root, id), join(root, `${id}.json`)];
 }
 
 function initRepo(name) {
@@ -290,6 +303,157 @@ describe("P0.4 safe checkpoints", () => {
     const before = snapshot(repo, ["a.txt"]);
 
     assert.throws(() => git.restoreCheckpoint(cp.id, repo), /patch|apply/i);
+    assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+  });
+
+  test("restore rejects tracked and index changes made during preflight", () => {
+    const repo = initRepo("restore-concurrent-change");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("concurrent-change", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    const bin = join(tmp, "fake-concurrent-restore-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "stash" ] && [ "$2" = "apply" ] && [ -n "$GIT_INDEX_FILE" ]; then\n  printf \'concurrent bytes\\n\' > "$TEST_REPO/a.txt"\n  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE "$REAL_GIT" -C "$TEST_REPO" add a.txt\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.REAL_GIT = realGit;
+    process.env.TEST_REPO = repo;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.restoreCheckpoint(cp.id, repo),
+        /changed|concurrent|preflight/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.TEST_REPO;
+    }
+
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "concurrent bytes\n");
+    assert.equal(run(repo, ["show", ":a.txt"]).stdout, "concurrent bytes\n");
+    assert.equal(run(repo, ["status", "--porcelain"]).stdout.trim(), "M  a.txt");
+  });
+
+  test("restore preflights destination writability before tracked mutation", () => {
+    const repo = initRepo("restore-unwritable-parent");
+    mkdirSync(join(repo, "locked"));
+    writeFileSync(join(repo, "locked", "value.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("unwritable-parent", repo);
+    rmSync(join(repo, "locked", "value.txt"));
+    writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+    chmodSync(join(repo, "locked"), 0o500);
+
+    try {
+      assert.throws(
+        () => git.restoreCheckpoint(cp.id, repo),
+        /writ|EACCES|permission/i,
+      );
+      assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+    } finally {
+      chmodSync(join(repo, "locked"), 0o700);
+    }
+  });
+
+  test("checkpoint round-trips intent-to-add state exactly", () => {
+    const repo = initRepo("checkpoint-intent-to-add");
+    writeFileSync(join(repo, "intent.txt"), "intent bytes\n");
+    run(repo, ["add", "-N", "--", "intent.txt"]);
+    const expected = observableGitState(repo);
+
+    const cp = git.createCheckpoint("intent-to-add", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    rmSync(join(repo, "intent.txt"), { force: true });
+    git.restoreCheckpoint(cp.id, repo);
+
+    assert.deepEqual(observableGitState(repo), expected);
+  });
+
+  test("root index collision preserves pre-existing bytes and cleans owned state", () => {
+    const repo = initRepo("root-index-collision");
+    writeFileSync(join(repo, "a.txt"), "dirty\n");
+    const fixedNow = 1_700_000_000_000;
+    const fixedRandom = 0.123456789;
+    const id = `${fixedNow.toString(36)}-${fixedRandom.toString(36).slice(2, 7)}`;
+    const root = checkpointRootPath(repo);
+    const indexPath = join(root, `${id}.json`);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(indexPath, "pre-existing index bytes\n");
+    const oldNow = Date.now;
+    const oldRandom = Math.random;
+    let error = null;
+
+    Date.now = () => fixedNow;
+    Math.random = () => fixedRandom;
+    try {
+      git.createCheckpoint("index-collision", repo);
+    } catch (err) {
+      error = err;
+    } finally {
+      Date.now = oldNow;
+      Math.random = oldRandom;
+    }
+
+    assert.ok(error);
+    assert.equal(readFileSync(indexPath, "utf8"), "pre-existing index bytes\n");
+    assert.equal(existsSync(join(root, id)), false);
+    assert.equal(
+      run(repo, [
+        "for-each-ref",
+        "--format=%(refname)",
+        `refs/alloy/checkpoints/${id}`,
+      ]).stdout.trim(),
+      "",
+    );
+  });
+
+  test("regular untracked modes restore independently of process umask", () => {
+    const repo = initRepo("restore-untracked-mode");
+    writeFileSync(join(repo, "executable.sh"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(repo, "executable.sh"), 0o777);
+    const cp = git.createCheckpoint("untracked-mode", repo);
+    rmSync(join(repo, "executable.sh"));
+    const oldUmask = process.umask(0o077);
+
+    try {
+      git.restoreCheckpoint(cp.id, repo);
+    } finally {
+      process.umask(oldUmask);
+    }
+
+    assert.equal(lstatSync(join(repo, "executable.sh")).mode & 0o777, 0o777);
+  });
+
+  test("exact checkpoint ID wins and ambiguous prefixes fail without mutation", () => {
+    const repo = initRepo("ambiguous-prefix");
+    const cp = git.createCheckpoint("prefix-base", repo);
+    const metadata = JSON.parse(readFileSync(cp.path, "utf8"));
+    const otherId = `${cp.id}-other`;
+    writeFileSync(
+      join(checkpointRootPath(repo), `${otherId}.json`),
+      `${JSON.stringify({ ...metadata, id: otherId }, null, 2)}\n`,
+    );
+
+    writeFileSync(join(repo, "a.txt"), "exact lookup mutation\n");
+    git.restoreCheckpoint(cp.id, repo);
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "v1\n");
+
+    writeFileSync(join(repo, "a.txt"), "ambiguous prefix survivor\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+    const prefix = cp.id.slice(0, -1);
+
+    assert.throws(() => git.restoreCheckpoint(prefix, repo), /ambiguous|multiple/i);
     assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 

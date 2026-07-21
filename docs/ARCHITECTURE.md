@@ -25,7 +25,10 @@ alloy (bin)
 Checkpoint restore and dirty worktree seeding enumerate Git-visible untracked
 entries, preserve symlinks without dereferencing them, and reject containment
 escapes, state mismatches, pre-existing symlink ancestors, and destination
-collisions they observe. Those checks fail closed for detected changes.
+collisions they observe. Restore also snapshots tracked/index/worktree state,
+revalidates it immediately before mutation, and performs an actual temporary
+create/write/unlink probe for each untracked destination. Those checks fail
+closed for detected changes and capability failures.
 
 They are not an OS security boundary against a malicious same-UID process that
 races an ancestor replacement between validation and filesystem use. Alloy does
