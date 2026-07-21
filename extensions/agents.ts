@@ -198,6 +198,8 @@ export function registerAgents(pi: ExtensionAPI) {
       );
 
       try {
+        const { getState } = require(join(root, "lib", "state.mjs"));
+        const parent = getState();
         const result = await spawnAgent({
           name: p.name,
           task: p.task,
@@ -207,6 +209,9 @@ export function registerAgents(pi: ExtensionAPI) {
           systemPrompt: spec.systemPrompt,
           cwd: process.cwd(),
           background: p.background,
+          permissionProfile: parent.permissionProfile,
+          mode: parent.mode === "plan" || parent.mode === "review" ? parent.mode : "build",
+          sandbox: parent.permissionProfile === "sandbox",
         });
 
         if (p.background) {
