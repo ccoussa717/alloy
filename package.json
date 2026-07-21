@@ -41,7 +41,8 @@
     "alloy": "node ./bin/alloy.mjs",
     "test": "node --test test/unit/*.test.mjs",
     "doctor": "node bin/alloy.mjs --help",
-    "setup": "npm install && npm link"
+    "setup": "npm install && bash ./scripts/install-cli.sh",
+    "install-cli": "bash ./scripts/install-cli.sh"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",

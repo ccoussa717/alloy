@@ -165,27 +165,30 @@ cd alloy
 npm install
 chmod +x bin/alloy.mjs
 
-# 3) Put `alloy` on PATH (pick one)
-npm link                    # recommended — creates global `alloy` command
-# OR run without linking:
-npm start                   # same as: node ./bin/alloy.mjs
+# 3) Put `alloy` on PATH (recommended — uses ~/.local/bin)
+npm run install-cli
+# or:  npm run setup     # install + install-cli
+
+# Run without installing to PATH:
+npm start                   # node ./bin/alloy.mjs
 ./bin/alloy.mjs
 ```
 
-Pi is a dependency of this package. The launcher finds it under `node_modules` after `npm install`.  
-Optional global Pi (not required if deps are installed):
+Pi is a dependency of this package. The launcher finds it under `node_modules` after `npm install`.
+
+**If `alloy` is still “not found”:**
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
+# See where npm thinks global bins go (npm link uses this — often NOT on PATH)
+npm bin -g
+npm config get prefix
 
-**If `alloy` is still “not found” after `npm link`:** your npm global bin dir is not on `PATH`.
-
-```bash
-npm bin -g                  # e.g. ~/.npm-global/bin or ~/.nvm/.../bin
-# ensure that directory is in PATH, then open a new shell
+# Prefer the installer (writes ~/.local/bin/alloy):
+npm run install-cli
+export PATH="$HOME/.local/bin:$PATH"
 hash -r
 which alloy
+alloy
 ```
 
 ### First run
