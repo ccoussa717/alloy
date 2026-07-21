@@ -1,6 +1,6 @@
 /**
  * Permission levels (Grok Build style) + Shift+Tab cycle.
- * /effort handles thinking; Shift+Tab is permissions only.
+ * All tool_call decisions go through lib/capabilities.mjs (P0.2).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,7 +18,6 @@ const {
   isReadOnlyMode,
   isSandboxProfile,
 } = require(join(root, "lib", "state.mjs"));
-const { isMcpToolName } = require(join(root, "lib", "mcp-client.mjs"));
 const { diagnoseDocker } = require(join(root, "lib", "docker-sandbox.mjs"));
 const {
   normalizePermissionId,
@@ -26,21 +25,16 @@ const {
   nextPermissionLevel,
   permissionStatusText,
   formatPermissionMenu,
-  isInspectionBash,
-  isDangerousBash,
   listCycleLevels,
 } = require(join(root, "lib", "permissions.mjs"));
+const {
+  evaluateToolPolicy,
+  formatApprovalDetail,
+  capabilitiesForTool,
+} = require(join(root, "lib", "capabilities.mjs"));
 const { ensureAlloyKeybindings } = require(
   join(root, "lib", "keybindings-patch.mjs"),
 );
-
-const MUTATING_NATIVE = new Set(["write", "edit", "bash"]);
-
-function mcpLooksReadOnly(toolName: string): boolean {
-  return /_(get|list|read|search|find|query|fetch|describe|show|status)/i.test(
-    toolName,
-  );
-}
 
 function applyProfile(
   raw: string,
@@ -116,7 +110,6 @@ async function approve(
 }
 
 export function registerPolicy(pi: ExtensionAPI) {
-  // Free Shift+Tab from thinking cycle (thinking → /effort)
   try {
     ensureAlloyKeybindings();
   } catch {
@@ -132,15 +125,11 @@ export function registerPolicy(pi: ExtensionAPI) {
     setPermissionProfile("ask-dangerous");
   }
 
-  // Shift+Tab → cycle permission levels
   pi.registerShortcut(Key.shift("tab"), {
     description: "Cycle Alloy permission level (ask everything → … → ask nothing)",
     handler: async (ctx) => {
-      // Skip if in plan/review — those force read-only; still allow cycle for when user switches mode
       const cur = getState().permissionProfile;
-      // If currently sandbox, jump into the ask cycle at dangerous
-      const from =
-        cur === "sandbox" ? "ask-dangerous" : cur;
+      const from = cur === "sandbox" ? "ask-dangerous" : cur;
       const next = nextPermissionLevel(from);
       try {
         applyProfile(next.id, ctx);
@@ -167,6 +156,7 @@ export function registerPolicy(pi: ExtensionAPI) {
           "",
           "Shift+Tab cycles the four ask levels.",
           "Thinking/effort: /effort [off|minimal|low|medium|high|xhigh|max]",
+          "Policy: central capability gate (P0.2) — plan/review deny bash + non-read tools.",
         ];
         if (ctx.hasUI) await ctx.ui.select("Permissions", lines);
         else console.log(lines.join("\n"));
@@ -189,12 +179,10 @@ export function registerPolicy(pi: ExtensionAPI) {
     },
   });
 
-  // Friendly aliases
   for (const alias of ["ask", "permission"] as const) {
     pi.registerCommand(alias, {
       description: `Alias for /permissions (Shift+Tab cycles)`,
       handler: async (args, ctx) => {
-        // re-enter via same logic
         const next = (args || "").trim().toLowerCase();
         if (!next) {
           const cur = getState().permissionProfile;
@@ -202,7 +190,12 @@ export function registerPolicy(pi: ExtensionAPI) {
           return;
         }
         try {
-          applyProfile(next === "cycle" ? nextPermissionLevel(getState().permissionProfile).id : next, ctx);
+          applyProfile(
+            next === "cycle"
+              ? nextPermissionLevel(getState().permissionProfile).id
+              : next,
+            ctx,
+          );
         } catch (err) {
           ctx.ui.notify(String((err as Error).message || err), "warning");
         }
@@ -210,136 +203,58 @@ export function registerPolicy(pi: ExtensionAPI) {
     });
   }
 
+  // Single gate for native, alloy_*, and MCP tools
   pi.on("tool_call", async (event, ctx) => {
-    const profile = getState().permissionProfile;
+    const state = getState();
+    const profile = state.permissionProfile;
     const name = event.toolName;
+    const input = event.input || {};
 
-    // Plan/review modes: hard read-only
-    if (isReadOnlyMode()) {
-      if (MUTATING_NATIVE.has(name)) {
-        if (name === "bash" && isInspectionBash((event.input as { command?: string }).command)) {
-          return undefined;
-        }
+    // Sandbox: docker must be available for bash
+    if (profile === "sandbox" && name === "bash") {
+      const d = diagnoseDocker(process.cwd());
+      if (!d.daemon) {
         return {
           block: true,
-          reason: `Alloy ${getState().mode} mode is read-only. /mode build to mutate.`,
-        };
-      }
-      if (isMcpToolName(name) && !mcpLooksReadOnly(name)) {
-        return {
-          block: true,
-          reason: `Alloy ${getState().mode}: mutating MCP blocked.`,
-        };
-      }
-      return undefined;
-    }
-
-    // Sandbox: docker boundary; no host prompts
-    if (profile === "sandbox") {
-      if (name === "bash") {
-        const d = diagnoseDocker(process.cwd());
-        if (!d.daemon) {
-          return {
-            block: true,
-            reason: `Sandbox profile but Docker unavailable: ${d.detail}`,
-          };
-        }
-      }
-      return undefined;
-    }
-
-    // ask-none: never prompt
-    if (profile === "ask-none") return undefined;
-
-    // ask-all: approve every mutation
-    if (profile === "ask-all") {
-      if (MUTATING_NATIVE.has(name) || (isMcpToolName(name) && !mcpLooksReadOnly(name))) {
-        const detail =
-          name === "bash"
-            ? String((event.input as { command?: string }).command || "")
-            : JSON.stringify(event.input ?? {}).slice(0, 200);
-        const ok = await approve(
-          ctx,
-          `Ask everything — allow ${name}?\n\n  ${detail}`,
-        );
-        if (!ok) {
-          return {
-            block: true,
-            reason: ctx.hasUI
-              ? "Denied by user (ask-all)"
-              : "ask-all blocked in headless (fail-closed)",
-          };
-        }
-      }
-      return undefined;
-    }
-
-    // ask-some: approve writes/edits + non-inspection bash + mutating MCP
-    if (profile === "ask-some") {
-      if (name === "write" || name === "edit") {
-        const path =
-          (event.input as { path?: string; file_path?: string }).path ||
-          (event.input as { file_path?: string }).file_path ||
-          "";
-        const ok = await approve(ctx, `Ask some — allow ${name}?\n\n  ${path}`);
-        if (!ok) {
-          return {
-            block: true,
-            reason: ctx.hasUI
-              ? "Denied by user (ask-some)"
-              : "ask-some blocked in headless",
-          };
-        }
-        return undefined;
-      }
-      if (name === "bash") {
-        const command = String(
-          (event.input as { command?: string }).command || "",
-        );
-        if (isInspectionBash(command)) return undefined;
-        const ok = await approve(
-          ctx,
-          `Ask some — allow bash?\n\n  ${command}`,
-        );
-        if (!ok) {
-          return {
-            block: true,
-            reason: ctx.hasUI
-              ? "Denied by user (ask-some)"
-              : "ask-some blocked in headless",
-          };
-        }
-        return undefined;
-      }
-      if (isMcpToolName(name) && !mcpLooksReadOnly(name)) {
-        const ok = await approve(ctx, `Ask some — allow MCP ${name}?`);
-        if (!ok) {
-          return { block: true, reason: "Denied by user (ask-some)" };
-        }
-      }
-      return undefined;
-    }
-
-    // ask-dangerous (default): only dangerous bash
-    if (profile === "ask-dangerous" && name === "bash") {
-      const command = String(
-        (event.input as { command?: string }).command || "",
-      );
-      if (!isDangerousBash(command)) return undefined;
-      const ok = await approve(
-        ctx,
-        `Dangerous command — allow?\n\n  ${command}`,
-      );
-      if (!ok) {
-        return {
-          block: true,
-          reason: ctx.hasUI
-            ? "Denied by user (ask-dangerous)"
-            : "Dangerous command blocked headless (fail-closed)",
+          reason: `Sandbox profile but Docker unavailable: ${d.detail}`,
         };
       }
     }
 
+    const result = evaluateToolPolicy({
+      toolName: name,
+      input,
+      mode: state.mode,
+      readOnlyMode: isReadOnlyMode(),
+      permissionProfile: profile,
+    });
+
+    if (result.decision === "allow") {
+      return undefined;
+    }
+
+    if (result.decision === "deny") {
+      return {
+        block: true,
+        reason: result.reason || `Blocked ${name}`,
+      };
+    }
+
+    // approve
+    const detail = formatApprovalDetail(name, input);
+    const caps = (result.caps || capabilitiesForTool(name)).join(", ");
+    const ok = await approve(
+      ctx,
+      `${result.reason || "Approve tool?"}\n\n  tool: ${name}\n  caps: ${caps}\n  ${detail}`,
+    );
+    if (!ok) {
+      return {
+        block: true,
+        reason: ctx.hasUI
+          ? `Denied by user (${profile})`
+          : `${profile} blocked in headless (fail-closed)`,
+      };
+    }
     return undefined;
   });
 
@@ -359,6 +274,5 @@ export function registerPolicy(pi: ExtensionAPI) {
   });
 }
 
-// silence unused
 void listCycleLevels;
 void isSandboxProfile;
