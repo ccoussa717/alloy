@@ -34,8 +34,15 @@ test("runAutoWorkflow without auth still produces artifacts", async () => {
   assert.ok(existsSync(join(summary.runDir, "request.md")));
   const body = readFileSync(join(summary.runDir, "summary.json"), "utf8");
   assert.match(body, /runId|status/);
-  // Expect FAILED or COMPLETE with auth issues on agents
-  assert.ok(["COMPLETE", "FAILED", "ABORTED"].includes(summary.status));
+  // Truthful statuses: COMPLETE only if pass; often AUTH_REQUIRED/PARTIAL/FAILED without models
+  assert.ok(
+    ["COMPLETE", "FAILED", "ABORTED", "PARTIAL", "AUTH_REQUIRED"].includes(
+      summary.status,
+    ),
+    `unexpected status ${summary.status}`,
+  );
+  if (summary.status === "COMPLETE") assert.equal(summary.pass, true);
+  if (summary.pass) assert.equal(summary.status, "COMPLETE");
 });
 
 test("cleanup", () => {
