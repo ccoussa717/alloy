@@ -1,7 +1,7 @@
 /**
- * Minimal fail-closed policy for MVP.
+ * Fail-closed policy for MVP.
  * Profiles: readonly | safe (default) | workspace
- * Blocks obvious destructive bash in safe mode without approval.
+ * Modes plan/review also block mutations (including MCP tools).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -12,6 +12,12 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { loadConfig } = require(join(root, "lib", "config.mjs"));
+const {
+  getState,
+  setPermissionProfile,
+  isReadOnlyMode,
+} = require(join(root, "lib", "state.mjs"));
+const { isMcpToolName } = require(join(root, "lib", "mcp-client.mjs"));
 
 const DANGEROUS = [
   /\brm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r| --recursive| --force)/i,
@@ -25,66 +31,91 @@ const DANGEROUS = [
   /\bgit\s+reset\s+--hard\b/i,
 ];
 
-const WRITE_TOOLS = new Set(["write", "edit", "bash"]);
+const MUTATING_NATIVE = new Set(["write", "edit", "bash"]);
+
+/** MCP tools that look read-only by name (heuristic). */
+function mcpLooksReadOnly(toolName: string): boolean {
+  return /_(get|list|read|search|find|query|fetch|describe|show|status)/i.test(
+    toolName,
+  );
+}
 
 export function registerPolicy(pi: ExtensionAPI) {
-  let profile = "safe";
   try {
-    profile = loadConfig().permissionProfile || "safe";
+    const profile = loadConfig().permissionProfile || "safe";
+    setPermissionProfile(profile);
   } catch {
-    profile = "safe";
+    setPermissionProfile("safe");
   }
 
   pi.registerCommand("permissions", {
     description: "Show or set permission profile: /permissions [readonly|safe|workspace]",
     handler: async (args, ctx) => {
       const next = (args || "").trim().toLowerCase();
+      const cur = getState().permissionProfile;
       if (!next) {
-        ctx.ui.notify(`Permission profile: ${profile}`, "info");
+        ctx.ui.notify(
+          `Permission profile: ${cur}\nMode: ${getState().mode}\nRead-only effective: ${isReadOnlyMode()}`,
+          "info",
+        );
         return;
       }
-      if (!["readonly", "safe", "workspace"].includes(next)) {
-        ctx.ui.notify("Use: readonly | safe | workspace", "warning");
-        return;
+      try {
+        setPermissionProfile(next);
+        ctx.ui.setStatus("alloy-policy", `perm:${next}`);
+        ctx.ui.notify(`Permission profile → ${next}`, "info");
+      } catch (err) {
+        ctx.ui.notify(String((err as Error).message || err), "warning");
       }
-      profile = next;
-      ctx.ui.setStatus("alloy-policy", `perm:${profile}`);
-      ctx.ui.notify(`Permission profile → ${profile}`, "info");
     },
   });
 
   pi.on("tool_call", async (event, ctx) => {
-    if (profile === "workspace") return undefined;
+    const { permissionProfile: profile, mode } = getState();
+    const name = event.toolName;
 
-    if (profile === "readonly") {
-      if (WRITE_TOOLS.has(event.toolName)) {
-        // Allow bash only if it looks like a pure inspection command (heuristic)
-        if (event.toolName === "bash") {
-          const command = String((event.input as { command?: string }).command || "");
+    // --- Read-only effective (plan / review / readonly profile) ---
+    if (isReadOnlyMode()) {
+      if (MUTATING_NATIVE.has(name)) {
+        if (name === "bash") {
+          const command = String(
+            (event.input as { command?: string }).command || "",
+          );
           const inspection =
-            /^(ls|pwd|cat|head|tail|rg|grep|find|git\s+(status|diff|log|show|branch)|sed\s+-n|wc|file|which|node\s+-v|npm\s+(test|run|ls)|python\s+--version)\b/i.test(
+            /^(ls|pwd|cat|head|tail|rg|grep|find|git\s+(status|diff|log|show|branch|rev-parse)|sed\s+-n|wc|file|which|node\s+-e|node\s+--version|node\s+-v|npm\s+(test|run|ls|view)|python\s+--version|echo)\b/i.test(
               command.trim(),
             );
           if (inspection) return undefined;
         }
         return {
           block: true,
-          reason: "Alloy readonly profile blocks mutating tools",
+          reason: `Alloy ${mode}/${profile}: mutating tool "${name}" blocked`,
+        };
+      }
+      if (isMcpToolName(name) && !mcpLooksReadOnly(name)) {
+        return {
+          block: true,
+          reason: `Alloy ${mode}: MCP tool "${name}" blocked (read-only mode). Switch /mode build to allow.`,
         };
       }
       return undefined;
     }
 
-    // safe profile
-    if (event.toolName === "bash") {
-      const command = String((event.input as { command?: string }).command || "");
+    if (profile === "workspace") return undefined;
+
+    // --- safe profile ---
+    if (name === "bash") {
+      const command = String(
+        (event.input as { command?: string }).command || "",
+      );
       const dangerous = DANGEROUS.some((re) => re.test(command));
       if (!dangerous) return undefined;
 
       if (!ctx.hasUI) {
         return {
           block: true,
-          reason: "Dangerous command blocked (no UI for approval; headless fail-closed)",
+          reason:
+            "Dangerous command blocked (no UI for approval; headless fail-closed)",
         };
       }
 
@@ -101,6 +132,7 @@ export function registerPolicy(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    ctx.ui.setStatus("alloy-policy", `perm:${profile}`);
+    const { permissionProfile } = getState();
+    ctx.ui.setStatus("alloy-policy", `perm:${permissionProfile}`);
   });
 }

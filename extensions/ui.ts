@@ -22,13 +22,15 @@ export function registerUi(pi: ExtensionAPI) {
     description: "Alloy help and version",
     handler: async (_args, ctx) => {
       const lines = [
-        `Alloy v${process.env.ALLOY_VERSION || "0.1.0"}`,
-        "Harness on Pi · MVP: 3 subs + memory + skills + MCP",
+        `Alloy v${process.env.ALLOY_VERSION || "0.2.0"}`,
+        "Harness on Pi · 3 subs · memory · skills · live MCP · modes · checkpoints",
         "",
         "Auth:     /login   /providers   /doctor",
+        "Modes:    /mode chat|plan|build|review",
         "Memory:   /remember   /memory list|search|forget",
         "Skills:   /skill-capture   /skill-promote   /skill-drafts",
-        "MCP:      /mcp list|status|reload|path",
+        "MCP:      /mcp connect|list|status|disconnect|path",
+        "Git:      /checkpoint   /checkpoints   /undo",
         "Safety:   /permissions [readonly|safe|workspace]",
         "",
         "Subscriptions: Claude · Codex/ChatGPT · Grok",

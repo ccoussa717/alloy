@@ -9,7 +9,7 @@ alloy
 
 | | |
 |---|---|
-| **Status** | MVP scaffold (v0.1.0) |
+| **Status** | MVP active development (v0.2.0) |
 | **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 |
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
@@ -76,7 +76,9 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Subscriptions** | Claude (Anthropic), Codex/ChatGPT (OpenAI), Grok (xAI) via Pi `/login` |
 | **Durable memory** | Facts survive `/new` and new days (`/remember`, `/memory`) |
 | **Skills** | Create, compose (skills using skills), capture + promote with approval |
-| **MCP** | Server config + discovery; live stdio tool bridge next |
+| **MCP** | Config + **live stdio connect** (`/mcp connect`) — tools registered on the agent |
+| **Modes** | `chat` · `plan` · `build` · `review` with tool gating |
+| **Checkpoints** | `/checkpoint` · `/undo` for recoverable git snapshots |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
 | **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
 
@@ -193,7 +195,12 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | `/skill-capture <name> [desc]` | Draft a skill from a workflow |
 | `/skill-promote <name>` | **Approve** and install draft → `~/.pi/agent/skills/<name>/` |
 | `/skill-drafts` | List drafts awaiting approval |
-| `/mcp list\|status\|reload\|path` | MCP configuration |
+| `/mcp connect\|list\|status\|disconnect\|reload\|path` | MCP live bridge |
+| `/mode [chat\|plan\|build\|review]` | Operating mode |
+| `/plan` `/build` `/review` | Mode shortcuts |
+| `/checkpoint [label]` | Create git checkpoint |
+| `/checkpoints` | List checkpoints |
+| `/undo [id]` | Restore checkpoint (confirms) |
 | `/permissions [readonly\|safe\|workspace]` | Permission profile |
 
 ### Still Pi (unchanged)
@@ -258,17 +265,14 @@ Starter skills in the package: `testing`, `git-hygiene`, `skill-capture`.
 
 Pi core does **not** ship MCP. Alloy owns MCP as a product concern.
 
-**Now (v0.1):**
+**Now (v0.2):**
 
 - Global config: `~/.pi/alloy/mcp.json`
-- Project config: `.pi/alloy-mcp.json` (trusted projects)
-- `/mcp list|status|reload|path`
-- Tool `alloy_mcp_list` for the model
-
-**Next:**
-
-- stdio MCP client
-- Tools registered behind the same approval/path policy as native tools
+- Project config: `.pi/alloy-mcp.json`
+- `/mcp connect` spawns stdio servers via `@modelcontextprotocol/sdk`
+- Tools appear as `mcp_<server>_<tool>` and go through Alloy policy
+- `/mcp disconnect` tears down processes
+- Optional `mcp.connectOnStart` in `~/.pi/alloy/config.json`
 
 Example config (see `config/mcp.example.json`):
 
@@ -276,14 +280,19 @@ Example config (see `config/mcp.example.json`):
 {
   "version": 1,
   "servers": {
-    "example": {
+    "everything": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-everything"],
-      "enabled": false,
+      "enabled": true,
       "transport": "stdio"
     }
   }
 }
+```
+
+```text
+/mcp connect
+/mcp list
 ```
 
 ---
@@ -381,12 +390,11 @@ alloy --help
 
 ```mermaid
 flowchart LR
-  MVP["v0.1 MVP<br/>subs · memory · skills · MCP config"]
-  B1["Live MCP stdio bridge"]
-  B2["Plan / build / review modes"]
-  B3["Git checkpoints + worktrees"]
+  V01["v0.1 scaffold"]
+  V02["v0.2 live MCP · modes · checkpoints"]
+  B3["Worktrees + richer diagnostics"]
   B4["Multi-agent /auto factory"]
-  MVP --> B1 --> B2 --> B3 --> B4
+  V01 --> V02 --> B3 --> B4
 ```
 
 The longer architect plan (independent reviewer, fusion, sandbox profiles, acceptance contracts) remains valid as **post-MVP** product work. This repo’s job first is: **something Chris can use every day on Claude, Codex, and Grok.**

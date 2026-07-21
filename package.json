@@ -1,6 +1,6 @@
 {
   "name": "@kylaira/alloy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
   "type": "module",
   "bin": {
@@ -43,11 +43,12 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",
-    "typebox": "^1.1.38"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "typebox": "*"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },

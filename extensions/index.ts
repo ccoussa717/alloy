@@ -1,6 +1,6 @@
 /**
  * Alloy — root extension.
- * Wires MVP modules: providers, memory, skills-improve, mcp, policy, ui.
+ * Wires: ui, providers, memory, skills, mcp, modes, policy, git.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -14,6 +14,8 @@ import { registerSkillsImprove } from "./skills-improve.ts";
 import { registerMcp } from "./mcp.ts";
 import { registerPolicy } from "./policy.ts";
 import { registerUi } from "./ui.ts";
+import { registerModes } from "./modes.ts";
+import { registerGit } from "./git.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,7 +24,6 @@ const { ensureMcpConfig } = require(join(root, "lib", "mcp-config.mjs"));
 const { getAlloyHome } = require(join(root, "lib", "paths.mjs"));
 
 export default function alloyExtension(pi: ExtensionAPI) {
-  // Ensure on-disk layout exists before any command runs
   try {
     getAlloyHome();
     ensureDefaultConfig();
@@ -31,10 +32,13 @@ export default function alloyExtension(pi: ExtensionAPI) {
     console.error("Alloy: failed to init home:", err);
   }
 
+  // Order matters: modes/policy before tools fire; mcp after policy handlers registered
   registerUi(pi);
   registerProviders(pi);
+  registerModes(pi);
+  registerPolicy(pi);
   registerMemory(pi);
   registerSkillsImprove(pi);
   registerMcp(pi);
-  registerPolicy(pi);
+  registerGit(pi);
 }
