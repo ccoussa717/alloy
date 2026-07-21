@@ -417,6 +417,69 @@ describe("P0.4 safe checkpoints", () => {
     );
   });
 
+  test("duplicate checkpoint ID preserves the first checkpoint and restore capability", () => {
+    const repo = initRepo("duplicate-checkpoint-id");
+    const fixedNow = 1_700_000_100_000;
+    const fixedRandom = 0.234567891;
+    const oldNow = Date.now;
+    const oldRandom = Math.random;
+    Date.now = () => fixedNow;
+    Math.random = () => fixedRandom;
+    let first = null;
+    let secondError = null;
+
+    try {
+      writeFileSync(join(repo, "a.txt"), "first checkpoint tracked bytes\n");
+      writeFileSync(join(repo, "first-untracked.txt"), "first untracked bytes\n");
+      first = git.createCheckpoint("first", repo);
+      const rootIndex = join(dirname(dirname(first.path)), `${first.id}.json`);
+      const before = {
+        ref: run(repo, ["rev-parse", first.ref]).stdout.trim(),
+        rootIndex: readFileSync(rootIndex),
+        metadata: readFileSync(first.path),
+        patch: readFileSync(join(first.storeDir, "worktree.patch")),
+        untracked: readFileSync(
+          join(first.storeDir, "untracked", "first-untracked.txt"),
+        ),
+      };
+
+      writeFileSync(join(repo, "a.txt"), "second checkpoint tracked bytes\n");
+      try {
+        git.createCheckpoint("second", repo);
+      } catch (err) {
+        secondError = err;
+      }
+
+      assert.ok(secondError);
+      assert.equal(run(repo, ["rev-parse", first.ref]).stdout.trim(), before.ref);
+      assert.deepEqual(readFileSync(rootIndex), before.rootIndex);
+      assert.deepEqual(readFileSync(first.path), before.metadata);
+      assert.deepEqual(
+        readFileSync(join(first.storeDir, "worktree.patch")),
+        before.patch,
+      );
+      assert.deepEqual(
+        readFileSync(join(first.storeDir, "untracked", "first-untracked.txt")),
+        before.untracked,
+      );
+
+      rmSync(join(repo, "first-untracked.txt"));
+      run(repo, ["reset", "--hard", "HEAD"]);
+      git.restoreCheckpoint(first.id, repo);
+      assert.equal(
+        readFileSync(join(repo, "a.txt"), "utf8"),
+        "first checkpoint tracked bytes\n",
+      );
+      assert.equal(
+        readFileSync(join(repo, "first-untracked.txt"), "utf8"),
+        "first untracked bytes\n",
+      );
+    } finally {
+      Date.now = oldNow;
+      Math.random = oldRandom;
+    }
+  });
+
   test("regular untracked modes restore independently of process umask", () => {
     const repo = initRepo("restore-untracked-mode");
     writeFileSync(join(repo, "executable.sh"), "#!/bin/sh\nexit 0\n");
@@ -532,7 +595,7 @@ describe("P0.4 safe checkpoints", () => {
 
     const commands = readFileSync(log, "utf8").trim().split("\n");
     const anchor = commands.find((line) =>
-      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+$/.test(line),
+      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
     );
     assert.ok(anchor, "expected durable ref creation");
     const [, ref, object] = anchor.split(" ");
@@ -583,7 +646,7 @@ describe("P0.4 safe checkpoints", () => {
 
     const commands = readFileSync(log, "utf8").trim().split("\n");
     const anchor = commands.find((line) =>
-      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+$/.test(line),
+      /^update-ref refs\/alloy\/checkpoints\/\S+ [0-9a-f]+ 0+$/.test(line),
     );
     assert.ok(anchor, "expected durable ref creation");
     const [, ref, object] = anchor.split(" ");
@@ -600,6 +663,72 @@ describe("P0.4 safe checkpoints", () => {
     for (const path of checkpointArtifactPaths(repo, id)) {
       assert.equal(existsSync(path), false, `unexpected checkpoint artifact: ${path}`);
     }
+  });
+
+  test("delete ref failure preserves discoverable checkpoint artifacts", () => {
+    const repo = initRepo("delete-ref-failure");
+    writeFileSync(join(repo, "a.txt"), "checkpoint tracked bytes\n");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+    const cp = git.createCheckpoint("delete-failure", repo);
+    const rootIndex = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+    const before = {
+      ref: run(repo, ["rev-parse", cp.ref]).stdout.trim(),
+      rootIndex: readFileSync(rootIndex),
+      metadata: readFileSync(cp.path),
+      untracked: readFileSync(
+        join(cp.storeDir, "untracked", "untracked.txt"),
+      ),
+    };
+    const bin = join(tmp, "fake-delete-ref-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "update-ref" ] && [ "$2" = "-d" ]; then exit 73; fi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+
+    process.env.REAL_GIT = realGit;
+    process.env.PATH = `${bin}:${oldPath}`;
+    try {
+      assert.throws(
+        () => git.deleteCheckpoint(cp.id, repo),
+        /ref|delete|preserv/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+    }
+
+    assert.equal(run(repo, ["rev-parse", cp.ref]).stdout.trim(), before.ref);
+    assert.deepEqual(readFileSync(rootIndex), before.rootIndex);
+    assert.deepEqual(readFileSync(cp.path), before.metadata);
+    assert.deepEqual(
+      readFileSync(join(cp.storeDir, "untracked", "untracked.txt")),
+      before.untracked,
+    );
+    assert.ok(git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === cp.id));
+  });
+
+  test("delete removes the durable ref and all checkpoint artifacts", () => {
+    const repo = initRepo("delete-success");
+    writeFileSync(join(repo, "a.txt"), "checkpoint tracked bytes\n");
+    writeFileSync(join(repo, "untracked.txt"), "checkpoint untracked bytes\n");
+    const cp = git.createCheckpoint("delete-success", repo);
+    const rootIndex = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+
+    assert.equal(git.deleteCheckpoint(cp.id, repo), true);
+    assert.equal(
+      run(repo, ["for-each-ref", "--format=%(refname)", cp.ref]).stdout.trim(),
+      "",
+    );
+    assert.equal(existsSync(cp.storeDir), false);
+    assert.equal(existsSync(rootIndex), false);
+    assert.equal(git.listCheckpoints(repo).some((checkpoint) => checkpoint.id === cp.id), false);
   });
 
   test("restore never git cleans new untracked files", () => {

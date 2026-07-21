@@ -58,6 +58,12 @@ same staged, unstaged, and untracked baseline the planner observed.
     the restoring process umask.
 20. Exact checkpoint IDs take precedence, while non-exact prefixes matching
     multiple checkpoints fail before repository mutation.
+21. Checkpoint creation claims a generated store ID before creating its durable
+    ref and uses zero-old-object compare-and-swap, so duplicate IDs cannot alter
+    an existing checkpoint's metadata, store, ref, or restore capability.
+22. Checkpoint deletion compare-and-swap deletes the recorded durable ref/object
+    before removing metadata or recovery data; ref deletion failure is reported
+    and leaves the checkpoint fully discoverable.
 
 ## Plan
 
@@ -79,10 +85,12 @@ same staged, unstaged, and untracked baseline the planner observed.
    writability, and preserve intent-to-add and regular file modes exactly.
 9. Reject ambiguous checkpoint prefixes and preserve pre-existing root index
    collisions while compensating owned state.
-10. Run the complete unit and integration suite, CLI smoke, and package dry run
-   through `npm run ci:local` under Node 22.19.0.
-11. Review the exact diff adversarially, then create one focused local commit if
-   every gate is green.
+10. Establish create-only durable-ref ownership and make checkpoint deletion
+    ref-first and compare-and-swap guarded.
+11. Run the complete unit and integration suite, CLI smoke, and package dry run
+    through `npm run ci:local` under Node 22.19.0.
+12. Review the exact diff adversarially, then create one focused local commit if
+    every gate is green.
 
 ## Exclusions
 

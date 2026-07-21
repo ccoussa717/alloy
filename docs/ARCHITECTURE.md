@@ -30,6 +30,12 @@ revalidates it immediately before mutation, and performs an actual temporary
 create/write/unlink probe for each untracked destination. Those checks fail
 closed for detected changes and capability failures.
 
+Checkpoint creation claims its generated store ID before creating a durable
+ref, and creates that ref only when its previous object is the zero object.
+Deletion performs the inverse ownership check: it compare-and-swap deletes the
+recorded ref/object before removing discoverable metadata or stored recovery
+data.
+
 They are not an OS security boundary against a malicious same-UID process that
 races an ancestor replacement between validation and filesystem use. Alloy does
 not currently claim TOCTOU-safe path operations. A native descriptor-relative
