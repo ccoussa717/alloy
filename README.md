@@ -165,30 +165,28 @@ cd alloy
 npm install
 chmod +x bin/alloy.mjs
 
-# 3) Put `alloy` on PATH (recommended — uses ~/.local/bin)
+# 3) Install the `alloy` command (required once per machine / after clone)
 npm run install-cli
-# or:  npm run setup     # install + install-cli
+# or everything in one go:
+# npm run setup
 
-# Run without installing to PATH:
-npm start                   # node ./bin/alloy.mjs
-./bin/alloy.mjs
+alloy
 ```
 
-Pi is a dependency of this package. The launcher finds it under `node_modules` after `npm install`.
+`npm run install-cli` will:
 
-**If `alloy` is still “not found”:**
+1. Ensure dependencies (including Pi) are installed  
+2. Write an `alloy` launcher **next to `node`** (already on your PATH with nvm)  
+3. Also install to `~/.local/bin/alloy`  
+4. Add `~/.local/bin` to `~/.bashrc` / `~/.zshrc` / `~/.profile` if needed  
+
+After that, `alloy` should work in the same terminal (and new ones).
+
+Without installing the CLI command you can still run:
 
 ```bash
-# See where npm thinks global bins go (npm link uses this — often NOT on PATH)
-npm bin -g
-npm config get prefix
-
-# Prefer the installer (writes ~/.local/bin/alloy):
-npm run install-cli
-export PATH="$HOME/.local/bin:$PATH"
-hash -r
-which alloy
-alloy
+npm start
+./bin/alloy.mjs
 ```
 
 ### First run
