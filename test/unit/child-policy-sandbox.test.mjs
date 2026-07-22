@@ -64,9 +64,12 @@ const { evaluateToolPolicy } = await import(
   pathToFileURL(join(root, "lib/capabilities.mjs")).href
 );
 
-const { setPermissionProfile, setMode } = await import(
-  pathToFileURL(join(root, "lib/state.mjs")).href
-);
+const {
+  setPermissionProfile,
+  setMode,
+  setSandboxActive,
+  resetStateForTests,
+} = await import(pathToFileURL(join(root, "lib/state.mjs")).href);
 
 const { resolveParentChildSpawnOpts } = await import(
   pathToFileURL(join(root, "lib/parent-policy.mjs")).href
@@ -135,8 +138,7 @@ before(() => {
 
 beforeEach(() => {
   clearRuntimeProjectTrust();
-  setPermissionProfile("ask-dangerous");
-  setMode("build");
+  resetStateForTests();
 });
 
 after(() => {
@@ -285,6 +287,16 @@ describe("docker-positive sandbox children execute in container", () => {
       result.spawnPlan.args.some((a) => String(a).includes("ALLOY_CHILD_IN_DOCKER=1")));
     // must not be a direct host node spawn of pi
     assert.notEqual(result.spawnPlan.command, process.execPath);
+    // host auth dir must never appear as a volume mount
+    const joined = result.spawnPlan.args.join("\n");
+    assert.ok(!joined.includes(hostAuthDir), "must not mount host auth dir");
+    assert.ok(!joined.includes(hostAuthPath), "must not mount host auth.json");
+    // policy still records ask-all approval under docker sandbox
+    assert.equal(result.policy.permissionProfile, "ask-all");
+    assert.equal(result.policy.sandbox, true);
+    assert.equal(result.policy.credentialBoundary, "docker-fs");
+    // enforcer path inside container
+    assert.match(joined, /child-enforcer/);
   });
 
   it("sandbox without docker still fail-closed", async () => {
@@ -369,10 +381,42 @@ describe("credential isolation — host auth.json unreadability", () => {
     assert.ok(!body.includes("HOST_AUTH_MUST_NOT_LEAK"));
     rmSync(iso.home, { recursive: true, force: true });
   });
+
+  it("host dryRun never points env at host auth; boundary is env-home-isolation", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      parentPermissionProfile: "ask-all",
+      parentSandbox: false,
+      permissionProfile: "ask-all",
+      sandbox: false,
+      dryRun: true,
+    });
+    assert.equal(result.error, "dry_run");
+    assert.equal(result.spawnPlan.backend, "host");
+    assert.equal(result.policy.credentialBoundary, "env-home-isolation");
+    assert.notEqual(result.spawnPlan.env.HOME, home);
+    assert.notEqual(result.spawnPlan.env.PI_CODING_AGENT_DIR, hostAuthDir);
+    assert.equal(existsSync(join(result.spawnPlan.env.PI_CODING_AGENT_DIR, "auth.json")), false);
+    // synthetic host secret must not be readable via child env paths
+    assert.ok(existsSync(hostAuthPath));
+    assert.ok(
+      !String(result.spawnPlan.env.HOME || "").includes(hostAuthDir) &&
+        result.spawnPlan.env.PI_CODING_AGENT_DIR !== hostAuthDir,
+    );
+    // cleanup isolated home from dryRun
+    if (result.isolatedHome?.home) {
+      try {
+        rmSync(result.isolatedHome.home, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
 });
 
 describe("parent propagation for model-callable tools", () => {
-  it("resolveParentChildSpawnOpts reads session ask-all + sandbox", () => {
+  it("resolveParentChildSpawnOpts reads session sandbox profile id", () => {
     setPermissionProfile("sandbox"); // legacy id → sandbox axis on
     const opts = resolveParentChildSpawnOpts();
     assert.equal(opts.sandbox, true);
@@ -386,6 +430,63 @@ describe("parent propagation for model-callable tools", () => {
     const opts = resolveParentChildSpawnOpts();
     assert.equal(opts.permissionProfile, "ask-all");
     assert.equal(opts.sandbox, false);
+  });
+
+  it("ask-all + sandboxActive stays ask-all with sandbox true (orthogonal)", () => {
+    setPermissionProfile("ask-all");
+    setSandboxActive(true, "test-ctr");
+    const opts = resolveParentChildSpawnOpts();
+    assert.equal(opts.permissionProfile, "ask-all");
+    assert.equal(opts.parentPermissionProfile, "ask-all");
+    assert.equal(opts.sandbox, true);
+    assert.equal(opts.parentSandbox, true);
+    // mechanical clamp must not collapse approval to sandbox/allow-all
+    const policy = resolveChildExecutionPolicy({
+      ...opts,
+      permissionProfile: "ask-none", // child tries to open up
+      sandbox: false,
+    });
+    assert.equal(policy.permissionProfile, "ask-all");
+    assert.equal(policy.sandbox, true);
+    const ev = evaluateToolPolicy({
+      toolName: "write",
+      permissionProfile: policy.permissionProfile,
+      mode: "build",
+    });
+    assert.equal(ev.decision, "approve");
+  });
+
+  it("handler-equivalent: parentOpts flow into resolveChildExecutionPolicy for auto/fusion", () => {
+    // Mirrors extensions/auto.ts alloy_auto / alloy_fusion execute():
+    //   const parentOpts = resolveParentChildSpawnOpts();
+    //   await runAutoWorkflow({ ...parentOpts }) / runFusion({ ...parentOpts })
+    // which then pass parent* into runChildAgent → resolveChildExecutionPolicy.
+    setPermissionProfile("ask-some");
+    setSandboxActive(true, "ctr");
+    const parentOpts = resolveParentChildSpawnOpts();
+    assert.equal(parentOpts.permissionProfile, "ask-some");
+    assert.equal(parentOpts.sandbox, true);
+
+    const policy = resolveChildExecutionPolicy({
+      parentPermissionProfile: parentOpts.parentPermissionProfile,
+      parentSandbox: parentOpts.parentSandbox,
+      permissionProfile: parentOpts.permissionProfile,
+      sandbox: parentOpts.sandbox,
+      mode: "build",
+    });
+    assert.equal(policy.permissionProfile, "ask-some");
+    assert.equal(policy.sandbox, true);
+    assert.equal(policy.mechanical, true);
+    assert.equal(policy.enforcer, "extensions/child-enforcer.ts");
+
+    const manifest = buildChildPolicyManifest(policy);
+    const d = enforceChildToolCall(
+      manifest,
+      "bash",
+      { command: "echo x" },
+      { ALLOY_CHILD_IN_DOCKER: "0" },
+    );
+    assert.equal(d.block, true); // sandbox host bash blocked
   });
 
   it("alloy_auto / alloy_fusion handler path uses resolveParentChildSpawnOpts (source contract)", async () => {
@@ -402,6 +503,11 @@ describe("parent propagation for model-callable tools", () => {
     // must spread parent opts into runAutoWorkflow / runFusion
     assert.match(autoToolBody, /\.\.\.parentOpts/);
     assert.match(fusionToolBody, /\.\.\.parentOpts/);
+
+    // agents.ts alloy_task tool similarly
+    const agentsSrc = readFileSync(join(root, "extensions/agents.ts"), "utf8");
+    assert.match(agentsSrc, /resolveParentChildSpawnOpts/);
+    assert.match(agentsSrc, /\.\.\.parentOpts/);
   });
 });
 
