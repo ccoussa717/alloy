@@ -1,4 +1,4 @@
-import { test, describe } from "node:test";
+import { test, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
@@ -880,7 +880,7 @@ describe("P0.4 safe checkpoints", () => {
     assert.equal(existsSync(rootPath), true);
   });
 
-  test("checkpoint creation cannot follow a colliding symref into its target", () => {
+  test("checkpoint creation never follows a colliding symref into its target", () => {
     const repo = initRepo("symbolic-checkpoint-create");
     writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
     const fixedNow = 1_700_000_200_000;
@@ -889,25 +889,80 @@ describe("P0.4 safe checkpoints", () => {
     const ref = `refs/alloy/checkpoints/${id}`;
     const victim = "refs/heads/unborn-checkpoint-victim";
     run(repo, ["symbolic-ref", ref, victim]);
+    const bin = join(tmp, "fake-symbolic-create-git-bin");
+    const log = join(tmp, "symbolic-create-git.log");
+    mkdirSync(bin, { recursive: true });
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_LOG"\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
     const oldNow = Date.now;
     const oldRandom = Math.random;
+    const oldPath = process.env.PATH;
+    const oldGitLog = process.env.GIT_LOG;
+    const oldRealGit = process.env.REAL_GIT;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    let created = null;
+    let error = null;
+
+    process.env.GIT_LOG = log;
+    process.env.REAL_GIT = realGit;
+    process.env.PATH = `${bin}:${oldPath}`;
     Date.now = () => fixedNow;
     Math.random = () => fixedRandom;
 
     try {
-      assert.throws(
-        () => git.createCheckpoint("symbolic-create", repo),
-        /anchor|collision|reference|ref/i,
-      );
+      created = git.createCheckpoint("symbolic-create", repo);
+    } catch (err) {
+      error = err;
     } finally {
       Date.now = oldNow;
       Math.random = oldRandom;
+      process.env.PATH = oldPath;
+      if (oldRealGit === undefined) delete process.env.REAL_GIT;
+      else process.env.REAL_GIT = oldRealGit;
+      if (oldGitLog === undefined) delete process.env.GIT_LOG;
+      else process.env.GIT_LOG = oldGitLog;
     }
 
-    assert.equal(run(repo, ["symbolic-ref", "-q", ref]).stdout.trim(), victim);
-    assert.notEqual(run(repo, ["rev-parse", "--verify", victim]).status, 0);
-    for (const path of checkpointArtifactPaths(repo, id)) {
-      assert.equal(existsSync(path), false);
+    let commands;
+    try {
+      commands = readFileSync(log, "utf8").trim().split("\n");
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+      rmSync(log, { force: true });
+    }
+    const refUpdates = commands.filter(
+      (line) => line.startsWith("update-ref ") && line.split(" ").includes(ref),
+    );
+    assert.ok(refUpdates.length > 0, "expected at least one checkpoint ref update");
+    for (const update of refUpdates) {
+      assert.match(update, /^update-ref --no-deref /);
+    }
+    assert.ok(
+      refUpdates.some((line) =>
+        new RegExp(`^update-ref --no-deref ${ref} [0-9a-f]+ 0+$`).test(line),
+      ),
+      "expected a no-deref compare-and-swap ref claim",
+    );
+    assert.equal(run(repo, ["show-ref", "--verify", "--quiet", victim]).status, 1);
+    if (error) {
+      assert.match(error.message, /anchor|collision|reference|ref/i);
+      assert.equal(run(repo, ["symbolic-ref", "-q", ref]).stdout.trim(), victim);
+      for (const path of checkpointArtifactPaths(repo, id)) {
+        assert.equal(existsSync(path), false);
+      }
+    } else {
+      assert.equal(created.id, id);
+      assert.equal(run(repo, ["symbolic-ref", "-q", ref]).status, 1);
+      assert.equal(run(repo, ["rev-parse", "--verify", ref]).stdout.trim(), created.refObject);
+      for (const path of checkpointArtifactPaths(repo, id)) {
+        assert.equal(existsSync(path), true);
+      }
     }
   });
 
@@ -1146,25 +1201,44 @@ describe("P0.4 safe checkpoints", () => {
     );
   });
 
-  test("restore preflights destination writability before tracked mutation", () => {
+  test("restore preflights destination writability before tracked mutation", (t) => {
     const repo = initRepo("restore-unwritable-parent");
-    mkdirSync(join(repo, "locked"));
-    writeFileSync(join(repo, "locked", "value.txt"), "checkpoint bytes\n");
+    const locked = join(repo, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "value.txt"), "checkpoint bytes\n");
     const cp = git.createCheckpoint("unwritable-parent", repo);
-    rmSync(join(repo, "locked", "value.txt"));
+    rmSync(join(locked, "value.txt"));
     writeFileSync(join(repo, "a.txt"), "current tracked bytes\n");
     run(repo, ["add", "a.txt"]);
     const before = snapshot(repo, ["a.txt"]);
-    chmodSync(join(repo, "locked"), 0o500);
+    chmodSync(locked, 0o500);
 
     try {
+      const probe = join(locked, ".alloy-permission-probe");
+      let modeBitsBypassed = false;
+      try {
+        writeFileSync(probe, "probe", { flag: "wx" });
+        modeBitsBypassed = true;
+      } catch (err) {
+        assert.ok(
+          err?.code === "EACCES" || err?.code === "EPERM",
+          `expected mode-bit permission denial, received ${err?.code || err}`,
+        );
+      } finally {
+        rmSync(probe, { force: true });
+      }
+      if (modeBitsBypassed) {
+        t.skip("effective process can write into a mode 0500 directory");
+        return;
+      }
+
       assert.throws(
         () => git.restoreCheckpoint(cp.id, repo),
         /writ|EACCES|permission/i,
       );
       assert.deepEqual(snapshot(repo, ["a.txt"]), before);
     } finally {
-      chmodSync(join(repo, "locked"), 0o700);
+      chmodSync(locked, 0o700);
     }
   });
 
@@ -1623,7 +1697,7 @@ describe("P0.4 safe checkpoints", () => {
     assert.ok(p.trackedDirty.includes("a.txt"));
   });
 
-  test("cleanup", () => {
+  after(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 });
