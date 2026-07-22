@@ -1352,6 +1352,37 @@ describe("P0.4 safe checkpoints", () => {
     assert.deepEqual(snapshot(repo, ["a.txt"]), before);
   });
 
+  test("empty checkpoint IDs and prefixes cannot restore a single record", () => {
+    const repo = initRepo("empty-restore-id");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("nonempty", repo);
+    run(repo, ["reset", "--hard", "HEAD"]);
+    writeFileSync(join(repo, "a.txt"), "current survivor bytes\n");
+    run(repo, ["add", "a.txt"]);
+    const before = snapshot(repo, ["a.txt"]);
+
+    for (const id of ["", "   "]) {
+      assert.throws(() => git.restoreCheckpoint(id, repo), /non-empty/i);
+      assert.deepEqual(snapshot(repo, ["a.txt"]), before);
+      assert.equal(run(repo, ["rev-parse", cp.ref]).stdout.trim(), cp.refObject);
+      assert.equal(existsSync(cp.storeDir), true);
+    }
+  });
+
+  test("empty checkpoint IDs cannot delete a single record", () => {
+    const repo = initRepo("empty-delete-id");
+    writeFileSync(join(repo, "a.txt"), "checkpoint bytes\n");
+    const cp = git.createCheckpoint("nonempty", repo);
+    const rootPath = join(dirname(dirname(cp.path)), `${cp.id}.json`);
+
+    for (const id of ["", "   "]) {
+      assert.throws(() => git.deleteCheckpoint(id, repo), /non-empty/i);
+      assert.equal(run(repo, ["rev-parse", cp.ref]).stdout.trim(), cp.refObject);
+      assert.equal(existsSync(cp.storeDir), true);
+      assert.equal(existsSync(rootPath), true);
+    }
+  });
+
   test("persists final recovery metadata in both metadata files", () => {
     const repo = initRepo("persisted-recovery");
     writeFileSync(join(repo, "untracked.txt"), "recoverable\n");

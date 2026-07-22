@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  readdirSync,
   writeFileSync,
   readFileSync,
   rmSync,
@@ -9,8 +10,10 @@ import {
   mkdirSync,
   chmodSync,
   lstatSync,
+  renameSync,
   readlinkSync,
   symlinkSync,
+  unlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -157,6 +160,153 @@ describe("worktrees", () => {
     );
   });
 
+  test("symlinked managed root rejects create list and remove without external writes", () => {
+    const repo = initRepo("symlinked-managed-root");
+    const created = wt.createWorktree({
+      taskId: "root-link1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const root = dirname(created.path);
+    const backup = `${root}-backup`;
+    const victim = join(tmp, "managed-root-victim");
+    mkdirSync(victim);
+    writeFileSync(join(victim, "sentinel.txt"), "preserve me\n");
+    renameSync(root, backup);
+    symlinkSync(victim, root, "dir");
+
+    try {
+      assert.throws(() => wt.listWorktrees(repo), /symlink/i);
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /symlink/i,
+      );
+      assert.throws(
+        () =>
+          wt.createWorktree({
+            taskId: "root-link2",
+            role: "builder",
+            cwd: repo,
+            seedDirty: false,
+          }),
+        /symlink/i,
+      );
+      assert.deepEqual(readdirSync(victim), ["sentinel.txt"]);
+      assert.equal(readFileSync(join(victim, "sentinel.txt"), "utf8"), "preserve me\n");
+      assert.equal(git(repo, ["worktree", "list", "--porcelain"]).stdout.includes(created.path), true);
+      assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    } finally {
+      unlinkSync(root);
+      renameSync(backup, root);
+      if (existsSync(created.path)) wt.removeWorktree(created.id, { cwd: repo });
+      rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test("remove rejects a registered final-path symlink and preserves all state", () => {
+    const repo = initRepo("registered-final-symlink");
+    const created = wt.createWorktree({
+      taskId: "final-link1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const metadataPath = join(dirname(created.path), "index.json");
+    const metadataBefore = readFileSync(metadataPath);
+    const victim = join(tmp, "registered-final-symlink-victim");
+    mkdirSync(victim);
+    writeFileSync(join(victim, "sentinel.txt"), "preserve me\n");
+    rmSync(created.path, { recursive: true, force: true });
+    symlinkSync(victim, created.path, "dir");
+    const bin = join(tmp, "reject-final-symlink-git-bin");
+    const removeLog = join(tmp, "final-symlink-remove.log");
+    mkdirSync(bin);
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ]; then\n  printf "called\\n" >> "$REMOVE_LOG"\n  printf "git worktree remove must not run\\n" >&2\n  exit 74\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    process.env.REAL_GIT = realGit;
+    process.env.REMOVE_LOG = removeLog;
+    process.env.PATH = `${bin}:${oldPath}`;
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /symlink/i,
+      );
+      assert.equal(existsSync(removeLog), false);
+      assert.equal(readFileSync(join(victim, "sentinel.txt"), "utf8"), "preserve me\n");
+      assert.deepEqual(readFileSync(metadataPath), metadataBefore);
+      assert.equal(git(repo, ["worktree", "list", "--porcelain"]).stdout.includes(created.path), true);
+      assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.REMOVE_LOG;
+      unlinkSync(created.path);
+      git(repo, ["worktree", "remove", "--force", created.path]);
+      git(repo, ["worktree", "prune"]);
+      wt.removeWorktree(created.id, { cwd: repo });
+      git(repo, ["branch", "-D", created.branch]);
+      rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
+  test("remove rejects a registered non-directory final path", () => {
+    const repo = initRepo("registered-final-file");
+    const created = wt.createWorktree({
+      taskId: "final-file1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    rmSync(created.path, { recursive: true, force: true });
+    writeFileSync(created.path, "preserve file\n");
+    const bin = join(tmp, "reject-final-file-git-bin");
+    const removeLog = join(tmp, "final-file-remove.log");
+    mkdirSync(bin);
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ]; then\n  printf "called\\n" >> "$REMOVE_LOG"\n  printf "git worktree remove must not run\\n" >&2\n  exit 75\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    process.env.REAL_GIT = realGit;
+    process.env.REMOVE_LOG = removeLog;
+    process.env.PATH = `${bin}:${oldPath}`;
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /directory|non-directory|path/i,
+      );
+      assert.equal(existsSync(removeLog), false);
+      assert.equal(readFileSync(created.path, "utf8"), "preserve file\n");
+      assert.equal(git(repo, ["worktree", "list", "--porcelain"]).stdout.includes(created.path), true);
+      assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.REMOVE_LOG;
+      rmSync(created.path, { force: true });
+      git(repo, ["worktree", "remove", "--force", created.path]);
+      git(repo, ["worktree", "prune"]);
+      wt.removeWorktree(created.id, { cwd: repo });
+      git(repo, ["branch", "-D", created.branch]);
+    }
+  });
+
   test("remove rejects an external metadata path and preserves the victim", () => {
     const repo = initRepo("remove-external-victim");
     const created = wt.createWorktree({
@@ -212,7 +362,7 @@ describe("worktrees", () => {
     }
   });
 
-  test("remove forgets an already absent and pruned worktree without deleting its branch", () => {
+  test("deleteBranch false forgets an absent worktree without deleting its branch", () => {
     const repo = initRepo("remove-already-absent");
     const created = wt.createWorktree({
       taskId: "absent1",
@@ -222,12 +372,138 @@ describe("worktrees", () => {
     });
     assert.equal(git(repo, ["worktree", "remove", "--force", created.path]).status, 0);
 
-    const removed = wt.removeWorktree(created.id, { cwd: repo });
+    const removed = wt.removeWorktree(created.id, { cwd: repo, deleteBranch: false });
 
     assert.equal(removed.id, created.id);
     assert.equal(wt.listWorktrees(repo).some((entry) => entry.id === created.id), false);
     assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
     git(repo, ["branch", "-D", created.branch]);
+  });
+
+  test("deleteBranch false removes a live worktree but preserves its branch", () => {
+    const repo = initRepo("preserve-live-branch");
+    const created = wt.createWorktree({
+      taskId: "preserve-live1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+
+    const removed = wt.removeWorktree(created.id, {
+      cwd: repo,
+      deleteBranch: false,
+    });
+
+    assert.equal(removed.id, created.id);
+    assert.equal(existsSync(created.path), false);
+    assert.equal(wt.listWorktrees(repo).some((entry) => entry.id === created.id), false);
+    assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    git(repo, ["branch", "-D", created.branch]);
+  });
+
+  test("branch deletion failure retains retryable metadata until retry succeeds", () => {
+    const repo = initRepo("retry-branch-delete");
+    const created = wt.createWorktree({
+      taskId: "retry-delete1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const bin = join(tmp, "fake-worktree-branch-delete-bin");
+    const marker = join(tmp, "worktree-branch-delete-failed");
+    mkdirSync(bin);
+    const wrapper = join(bin, "git");
+    writeFileSync(
+      wrapper,
+      '#!/bin/sh\nif [ "$1" = "branch" ] && [ "$2" = "-D" ] && [ ! -e "$FAIL_MARKER" ]; then\n  : > "$FAIL_MARKER"\n  printf "injected branch delete failure\\n" >&2\n  exit 73\nfi\nexec "$REAL_GIT" "$@"\n',
+    );
+    chmodSync(wrapper, 0o755);
+    const oldPath = process.env.PATH;
+    const realGit = spawnSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    process.env.REAL_GIT = realGit;
+    process.env.FAIL_MARKER = marker;
+    process.env.PATH = `${bin}:${oldPath}`;
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree(created.id, { cwd: repo }),
+        /branch|delete|injected/i,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+      delete process.env.REAL_GIT;
+      delete process.env.FAIL_MARKER;
+    }
+
+    assert.equal(existsSync(created.path), false);
+    assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    assert.ok(wt.listWorktrees(repo).some((entry) => entry.id === created.id));
+
+    const removed = wt.removeWorktree(created.id, { cwd: repo });
+    assert.equal(removed.id, created.id);
+    assert.notEqual(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+    assert.equal(wt.listWorktrees(repo).some((entry) => entry.id === created.id), false);
+  });
+
+  test("empty worktree IDs and prefixes cannot remove or inspect a single record", () => {
+    const repo = initRepo("empty-worktree-id");
+    const created = wt.createWorktree({
+      taskId: "nonempty1",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const metadataPath = join(dirname(created.path), "index.json");
+    const metadataBefore = readFileSync(metadataPath);
+
+    try {
+      for (const id of ["", "   "]) {
+        assert.throws(
+          () => wt.removeWorktree(id, { cwd: repo }),
+          /non-empty/i,
+        );
+        assert.throws(() => wt.worktreeDiff(id, repo), /non-empty/i);
+        assert.equal(existsSync(created.path), true);
+        assert.deepEqual(readFileSync(metadataPath), metadataBefore);
+        assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+      }
+    } finally {
+      if (existsSync(created.path)) wt.removeWorktree(created.id, { cwd: repo });
+    }
+  });
+
+  test("ambiguous nonempty worktree prefixes fail without mutation", () => {
+    const repo = initRepo("ambiguous-worktree-prefix");
+    const first = wt.createWorktree({
+      taskId: "shared-a",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+    const second = wt.createWorktree({
+      taskId: "shared-b",
+      role: "builder",
+      cwd: repo,
+      seedDirty: false,
+    });
+
+    try {
+      assert.throws(
+        () => wt.removeWorktree("builder-shared", { cwd: repo }),
+        /ambiguous/i,
+      );
+      assert.throws(() => wt.worktreeDiff("builder-shared", repo), /ambiguous/i);
+      for (const created of [first, second]) {
+        assert.equal(existsSync(created.path), true);
+        assert.equal(git(repo, ["show-ref", "--verify", `refs/heads/${created.branch}`]).status, 0);
+      }
+    } finally {
+      for (const created of [first, second]) {
+        if (existsSync(created.path)) wt.removeWorktree(created.id, { cwd: repo });
+      }
+    }
   });
 
   test("remove rejects a branch mismatch without deleting worktree or branches", () => {
