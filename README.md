@@ -133,15 +133,15 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Docker sandbox** | `/permissions sandbox` — bash in `node:22-bookworm`, **network none** |
 | **Help** | `/help`, `/help <topic>`, `/help search <query>` |
 | **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
-| **Safety** | `readonly` / `safe` (default) / `workspace` profiles |
+| **Safety** | Ask-levels (`ask-all`…`ask-none`, default `ask-dangerous`) + optional Docker sandbox; plan/review hard read-only |
 
 ### Out (for now)
 
-- Multi-agent `/auto` factory (scout → plan → build → review fleet)
-- Fusion / parallel multi-model writers
-- Micro-VM sandbox product
+- Micro-VM sandbox product (beyond Docker)
 - Every OpenRouter model and a provider marketplace
 - GUI / hosted control plane
+- Public GitHub launch packaging (fresh history, SBOM, quiet security preview) — see `docs/SECURITY.md`
+- Native descriptor-relative `openat` checkpoint helper
 
 ---
 
@@ -193,7 +193,7 @@ sequenceDiagram
 
 ### Prerequisites
 
-- **Node.js 20+**
+- **Node.js ≥ 22.19** (Pi engine requirement)
 - Network access for model providers
 - GitLab SSH key (for this repo)
 
@@ -203,7 +203,7 @@ sequenceDiagram
 curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
 ```
 
-Needs **git**, **Node 20+**, and GitLab access (SSH key recommended for private repos).
+Needs **git**, **Node ≥ 22.19**, and GitLab access (SSH key recommended for private repos).
 
 If the raw URL is private or blocked, use:
 
