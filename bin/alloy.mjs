@@ -129,9 +129,11 @@ if (
 }
 
 /**
- * OpenCode-clean empty field: hide Pi startup resource dump + full changelog.
- * Must be set before Pi boots (too late in session_start).
- * Merges Alloy defaults without clobbering unrelated user settings.
+ * OpenCode-clean empty field before Pi boots.
+ * - quietStartup: hide Skills/Prompts resource dump
+ * - collapseChangelog: if anything still shows, keep it one line
+ * - lastChangelogVersion = pinned Pi version: skip injecting "What's New"
+ *   into the chat buffer (Pi never clears that dump when you send a message)
  */
 function ensureQuietStartup() {
   try {
@@ -151,9 +153,15 @@ function ensureQuietStartup() {
       settings.quietStartup = true;
       changed = true;
     }
-    // Full "What's New" dump is noisy; condensed one-liner is enough
     if (settings.collapseChangelog !== true) {
       settings.collapseChangelog = true;
+      changed = true;
+    }
+    // Mark current Pi version as "seen" so startup does not inject changelog
+    // Markdown into chatContainer (that content persists under your first messages).
+    const piVer = readPiVersion();
+    if (piVer && settings.lastChangelogVersion !== piVer) {
+      settings.lastChangelogVersion = piVer;
       changed = true;
     }
     if (changed) {

@@ -294,8 +294,41 @@ export function registerUi(pi: ExtensionAPI) {
     } catch {
       // ignore
     }
+    // Drop any leftover splash footer/hints chrome
+    try {
+      ctx.ui.setFooter((tui, theme) => {
+        activeTui = tui;
+        return {
+          dispose() {},
+          invalidate() {},
+          render(width: number): string[] {
+            // Active session: compact key hints only (no splash padding)
+            const running = listAgents(process.cwd(), { limit: 20 }).filter(
+              (a: { status: string }) => a.status === "running",
+            ).length;
+            const left =
+              theme.fg("dim", "esc") +
+              theme.fg("muted", " interrupt") +
+              theme.fg("dim", "  tab") +
+              theme.fg("muted", " agents") +
+              theme.fg("dim", "  /mcp") +
+              theme.fg("dim", "  Shift+Tab") +
+              theme.fg("muted", " ask");
+            const right =
+              running > 0 ? theme.fg("warning", `agents:${running}`) : "";
+            const gap = Math.max(
+              1,
+              width - visibleWidth(left) - visibleWidth(right),
+            );
+            return [truncateToWidth(left + " ".repeat(gap) + right, width)];
+          },
+        };
+      });
+    } catch {
+      // ignore
+    }
     installActiveHeader(ctx);
-    activeTui?.requestRender();
+    activeTui?.requestRender(true);
   };
 
   pi.on("agent_start", (_e, ctx) => {
@@ -318,6 +351,15 @@ export function registerUi(pi: ExtensionAPI) {
   pi.on("message_start", (event, ctx) => {
     if ((event as { message?: { role?: string } })?.message?.role === "user") {
       leaveSplash(ctx);
+    }
+  });
+
+  // As soon as the operator starts typing, drop splash chrome (don't wait for send)
+  pi.on("input", (_event, ctx) => {
+    try {
+      leaveSplash(ctx);
+    } catch {
+      // ignore
     }
   });
 
