@@ -1,7 +1,7 @@
 {
   "version": 1,
   "defaultMode": "build",
-  "permissionProfile": "safe",
+  "permissionProfile": "ask-dangerous",
   "providers": {
     "allow": ["anthropic", "openai", "openai-codex", "xai"],
     "favorites": [

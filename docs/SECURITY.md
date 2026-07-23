@@ -232,8 +232,8 @@ Alloy does **not** fork Pi sources into this repo; it depends on the published p
 
 | Audience | Path |
 |---|---|
-| Internal | Sphere → `grok` / `ava` / `bishop`, or Chris |
-| Public | TBD before GitHub launch (add `SECURITY.md` reporting URL at that time) |
+| Private / pre-public | Maintainers via private team channel (see root `SECURITY.md`) |
+| Public | TBD at open-source launch — publish a reporting URL before inviting external reports |
 
 ---
 

@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # Alloy one-shot installer for Linux and macOS.
 #
-# Single command (needs git + SSH access to the GitLab repo):
+# Alloy is a generic harness. The default ALLOY_REPO below is only the current
+# upstream hosting location — override freely for forks, mirrors, or a future
+# public remote. Prefer cloning yourself, then running this script from the tree:
 #
-#   curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
+#   git clone <your-alloy-remote> ~/dev/alloy && bash ~/dev/alloy/install.sh
 #
-# Or, if the raw URL is private / blocked:
+# Or (if the raw install.sh URL is published and reachable):
 #
-#   git clone git@gitlab.com:kylaira/infrastructure/alloy.git ~/dev/alloy \
-#     && bash ~/dev/alloy/install.sh
+#   curl -fsSL <raw-url-to-install.sh> | bash
 #
 # Environment (optional):
-#   ALLOY_DIR      Install location          (default: ~/dev/alloy)
-#   ALLOY_REPO     Git remote (SSH)          (default: git@gitlab.com:kylaira/infrastructure/alloy.git)
-#   ALLOY_BRANCH   Branch to use             (default: main)
-#   ALLOY_NODE_MIN Minimum Node major.minor  (default: 22.19 — Pi requirement)
+#   ALLOY_DIR         Install location          (default: ~/dev/alloy)
+#   ALLOY_REPO        Git remote (SSH)          (default: current upstream SSH URL)
+#   ALLOY_REPO_HTTPS  Git remote (HTTPS)        (default: current upstream HTTPS URL)
+#   ALLOY_BRANCH      Branch to use             (default: main)
+#   ALLOY_NODE_MIN    Minimum Node major.minor  (default: 22.19 — Pi requirement)
 #
 set -euo pipefail
 
 ALLOY_DIR="${ALLOY_DIR:-$HOME/dev/alloy}"
+# Defaults = current upstream only; not a product dependency on any org stack.
 ALLOY_REPO="${ALLOY_REPO:-git@gitlab.com:kylaira/infrastructure/alloy.git}"
 ALLOY_REPO_HTTPS="${ALLOY_REPO_HTTPS:-https://gitlab.com/kylaira/infrastructure/alloy.git}"
 ALLOY_BRANCH="${ALLOY_BRANCH:-main}"
 ALLOY_NODE_MIN="${ALLOY_NODE_MIN:-22.19}"
-
 log()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err()  { printf 'error: %s\n' "$*" >&2; exit 1; }

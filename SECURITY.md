@@ -11,8 +11,8 @@ Pi attribution and Alloy-vs-Pi boundary:
 
 ## Report a vulnerability
 
-**Internal (current):** Sphere relay to `grok`, `ava`, or `bishop`, or contact Chris directly.  
-**Public reporting URL:** TBD before any public GitHub launch.
+**While private / pre-public:** contact the maintainers (see README) through your
+team’s private channel. Do not file public issues with exploit details.
 
-Please do **not** open public issues with exploit details until a public
-reporting path is published.
+**Public reporting URL:** TBD if/when the project is published (add a dedicated
+security contact or advisory process at that time).

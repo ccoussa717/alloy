@@ -11,8 +11,19 @@ alloy
 
 Requires **Node.js ≥ 22.19** (Pi engine requirement).
 
+**Recommended** (works for private remotes, forks, and future public mirrors):
+
 ```bash
-curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
+git clone <alloy-git-url> ~/dev/alloy
+cd ~/dev/alloy && bash install.sh
+```
+
+Override remote when using `install.sh` clone path: `ALLOY_REPO=… ALLOY_REPO_HTTPS=… bash install.sh`.
+
+If a raw `install.sh` URL is published for your host:
+
+```bash
+curl -fsSL <raw-url-to-install.sh> | bash
 ```
 
 Then:
@@ -54,11 +65,12 @@ CI: `integration-mcp-pi` always runs; `integration-docker` uses Docker-in-Docker
 | | |
 |---|---|
 | **Status** | MVP active development (v0.8.2) |
-| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.80.10 · Node **≥22.19** |
-| **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
-| **Package** | `@kylaira/alloy` |
+| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.81.1 · Node **≥22.19** |
+| **Package** | `@kylaira/alloy` (npm scope is branding; product is org-agnostic) |
 | **CLI** | `alloy` |
+| **Boundary** | [docs/BOUNDARY.md](./docs/BOUNDARY.md) — what ships vs stays outside |
 | **Security** | [docs/SECURITY.md](./docs/SECURITY.md) · [ATTRIBUTION](./docs/ATTRIBUTION.md) · `npm run security:scan` |
+| **Adoption** | [docs/MAIN-HARNESS.md](./docs/MAIN-HARNESS.md) — main-harness checklist |
 
 ---
 
@@ -200,18 +212,13 @@ sequenceDiagram
 
 ### One-command install (Linux / macOS)
 
-```bash
-curl -fsSL https://gitlab.com/kylaira/infrastructure/alloy/-/raw/main/install.sh | bash
-```
-
-Needs **git**, **Node ≥ 22.19**, and GitLab access (SSH key recommended for private repos).
-
-If the raw URL is private or blocked, use:
+Needs **git** and **Node ≥ 22.19**. Clone from whatever remote hosts Alloy for you:
 
 ```bash
-git clone git@gitlab.com:kylaira/infrastructure/alloy.git ~/dev/alloy \
-  && bash ~/dev/alloy/install.sh
+git clone <alloy-git-url> ~/dev/alloy && bash ~/dev/alloy/install.sh
 ```
+
+`install.sh` defaults `ALLOY_REPO` / `ALLOY_REPO_HTTPS` to the current upstream only so a bare `bash install.sh` still works when that remote is reachable — override for forks.
 
 That single script will:
 
@@ -463,8 +470,11 @@ alloy/
 ├── themes/alloy-dark.json
 ├── config/*.example.json
 ├── docs/
+│   ├── BOUNDARY.md          # org-agnostic / OSS-ready product line
+│   ├── MAIN-HARNESS.md      # adoption checklist
 │   ├── MVP.md
-│   └── ARCHITECTURE.md
+│   ├── ARCHITECTURE.md
+│   └── SECURITY.md
 └── test/unit/
 ```
 
@@ -473,11 +483,11 @@ alloy/
 ## Development
 
 ```bash
-git clone git@gitlab.com:kylaira/infrastructure/alloy.git
+git clone <alloy-git-url>
 cd alloy
 npm install
 npm test
-npm link
+bash scripts/install-cli.sh
 alloy --help
 ```
 
@@ -582,13 +592,15 @@ The longer architect plan (independent reviewer, fusion, sandbox profiles, accep
 | `/doctor` shows missing providers | Run `/login` / `/login xai` for subscriptions |
 | Memory not sticking after `/new` | Confirm `~/.pi/alloy/memory/` files exist; `/memory list` |
 | Extension not loading | Run from a linked install; check `alloy` injects `-e` (omit `--no-inject`) |
-| Dangerous command blocked | Expected under `safe`; `/permissions workspace` only if you mean it |
+| Dangerous command blocked | Expected under `ask-dangerous` / `ask-all`; use Shift+Tab or `/permissions` |
+| “Update Available” for Pi after `pi update` | Alloy pins Pi in its own `node_modules` — upgrade inside the Alloy clone, not only global `pi` |
+| Host mode “isolation” | Host is not a FS jail — use `/permissions sandbox` + Docker when you need container isolation |
 
 ---
 
-## Related Kylaira context
+## Product boundary
 
-Alloy is infrastructure for the Kylaira agent stack (Pi-based coding harness). It sits alongside products like KylairaOS, Conclave, and Sphere — those coordinate businesses and multi-agent orgs; **Alloy is the engineer’s daily terminal agent.**
+Alloy is a **generic** daily terminal agent harness. Company meshes, shared knowledge bases, and private skill packs integrate via **config / MCP / local skills** — they are not required features of this package. Details: [docs/BOUNDARY.md](./docs/BOUNDARY.md).
 
 ---
 
@@ -600,4 +612,4 @@ MIT
 
 ## Maintainers
 
-Kylaira · Founder: Chris Coussa
+See git history and package metadata. Copyright: Kylaira / Chris Coussa (see `LICENSE`).

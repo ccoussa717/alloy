@@ -1,13 +1,14 @@
 /**
- * Alloy chrome — OpenCode empty-state layout.
+ * Alloy chrome — OpenCode empty-state layout (faithful).
  *
- * On start:
- *   terminal cleared
- *   big bold "alloy" wordmark dead-center
- *   solid chat panel directly underneath (green left bar)
- *   dim key hints under the panel
+ * On start (matches OpenCode splash proportions):
+ *   terminal cleared · pure black field
+ *   solid block "alloy" wordmark dead-center (gray → white ramp)
+ *   compact 2-row chat panel under it (~half width, centered)
+ *   thin green left accent bar (OpenCode uses blue; we brand green)
+ *   dim key hints flush under the panel's left edge
  *
- * Only brand differences from OpenCode: green + "alloy".
+ * Brand deltas only: word "alloy", accent #1FE07A.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -91,8 +92,8 @@ function shortModel(ctx: ExtensionContext): string {
 
 function panelWidth(termW: number, splash: boolean): number {
   if (!splash) return Math.max(20, termW);
-  // OpenCode empty-state box: ~half width, centered
-  return Math.min(64, Math.max(46, Math.floor(termW * 0.5)));
+  // OpenCode empty-state: compact centered box (~half width, not full-bleed)
+  return Math.min(62, Math.max(48, Math.floor(termW * 0.48)));
 }
 
 function centerPad(termW: number, boxW: number): number {
@@ -113,21 +114,26 @@ function padVisible(text: string, width: number): string {
   return text + " ".repeat(width - w);
 }
 
-/** OpenCode panel row: green left bar + solid gray body. */
+/**
+ * OpenCode panel row: thin accent bar + solid gray body.
+ * Left bar is 1 cell; body is filled to boxW.
+ */
 function panelRow(theme: ThemeLike, body: string, boxW: number): string {
   const innerW = Math.max(1, boxW - 1);
   const filled = padVisible(" " + body, innerW);
+  // Thin bar (OpenCode uses a 1px accent; ▌ reads as a solid strip in terminals)
   const bar = theme.fg("accent", "▌");
   if (theme.bg) return bar + theme.bg("userMessageBg", filled);
   return bar + filled;
 }
 
 // ---------------------------------------------------------------------------
-// Big bold "alloy" wordmark — 5-row solid block font (OpenCode mass)
-// Gradient left→right: dim green → Kylaira → white (like opencode gray→white)
+// Solid block "alloy" wordmark — OpenCode mass / density
+// Gradient left→right: dark gray → light gray → white (OpenCode grayscale)
 // ---------------------------------------------------------------------------
 
 const GLYPHS: Record<string, string[]> = {
+  // denser 5×5-ish glyphs (filled blocks like OpenCode)
   a: [
     " ███ ",
     "█   █",
@@ -158,20 +164,21 @@ const GLYPHS: Record<string, string[]> = {
   ],
 };
 
-/** Color ramp per letter index for "alloy" (5 letters). */
+/** OpenCode-style grayscale ramp across "alloy" (5 letters). */
 function letterColor(
   theme: ThemeLike,
   index: number,
 ): (s: string) => string {
-  // OpenCode: dark → light across the word. Ours: green brand with bright end.
-  const ramp = ["dim", "muted", "accent", "accent", "text"] as const;
+  // dark → mid → mid-light → light → white
+  const ramp = ["dim", "dim", "muted", "muted", "text"] as const;
   const key = ramp[Math.min(index, ramp.length - 1)]!;
   return (s: string) => theme.fg(key, s);
 }
 
 function buildWordmark(theme: ThemeLike, width: number): string[] {
   const word = "alloy";
-  const gap = "  ";
+  // OpenCode letters sit tight; single space between glyphs
+  const gap = " ";
   const rows = 5;
   const lines: string[] = [];
 
@@ -182,7 +189,6 @@ function buildWordmark(theme: ThemeLike, width: number): string[] {
       const glyph = GLYPHS[ch];
       if (!glyph) continue;
       const paint = letterColor(theme, i);
-      // Paint each non-space cell; keep spaces uncolored for clean gaps
       const row = glyph[r]!;
       let painted = "";
       for (const cell of row) {
@@ -198,10 +204,15 @@ function buildWordmark(theme: ThemeLike, width: number): string[] {
   return lines;
 }
 
-/** Rows consumed by splash unit (logo + gap + panel + hints). */
+/**
+ * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
+ * panel + hints — compact, lots of black field around it).
+ */
 const SPLASH_LOGO_ROWS = 5;
 const SPLASH_GAP = 2;
-const SPLASH_PANEL_ROWS = 2; // input + status
+/** OpenCode empty panel is 1 input row + 1 status row. */
+const SPLASH_INPUT_ROWS = 1;
+const SPLASH_PANEL_ROWS = SPLASH_INPUT_ROWS + 1;
 const SPLASH_HINT_ROWS = 1;
 const SPLASH_UNIT =
   SPLASH_LOGO_ROWS + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
@@ -368,6 +379,7 @@ export function registerUi(pi: ExtensionAPI) {
           invalidate() {},
           render(width: number): string[] {
             if (splashMode) {
+              // OpenCode: hints sit flush under the panel's left edge
               const boxW = panelWidth(width, true);
               const pad = centerPad(width, boxW);
               const hints =
@@ -375,7 +387,7 @@ export function registerUi(pi: ExtensionAPI) {
                 theme.fg("muted", " agents") +
                 theme.fg("dim", "  ctrl+p") +
                 theme.fg("muted", " commands");
-              return [" ".repeat(pad) + truncateToWidth(hints, boxW)];
+              return [" ".repeat(pad) + truncateToWidth(hints, Math.max(boxW, 40))];
             }
             const running = listAgents(process.cwd(), { limit: 20 }).filter(
               (a: { status: string }) => a.status === "running",
@@ -446,7 +458,7 @@ export function registerUi(pi: ExtensionAPI) {
           let body = raw.slice(1, -1);
           const typed = (this.getText?.() || "").length > 0;
 
-          // Empty splash: one input row only (OpenCode is 2 rows total with status)
+          // OpenCode splash: single input row only (compact 2-row panel w/ status)
           if (splash && !typed) {
             const cursorLine =
               body.find((l) => l.includes("\x1b[7m")) || body[0] || "";
@@ -458,14 +470,16 @@ export function registerUi(pi: ExtensionAPI) {
             if (body.length === 0) body = [""];
           }
 
-          // Placeholder (OpenCode: Ask anything…)
+          // Placeholder — OpenCode copy style (ASCII "...")
           if (splash && !typed && body[0] !== undefined) {
             const line = body[0];
-            const ph = thm.fg("dim", 'Ask anything…  "Fix broken tests"');
+            const phText = 'Ask anything...  "Fix broken tests"';
+            const ph = thm.fg("dim", phText);
             if (isVisuallyBlank(line)) {
               body[0] = ph;
             } else if (stripAnsi(line).replace(/\s/g, "").length <= 1) {
-              body[0] = line + thm.fg("dim", ' Ask anything…  "Fix broken tests"');
+              // keep cursor cell, then dim placeholder
+              body[0] = line + thm.fg("dim", " " + phText);
             }
           }
 
@@ -474,7 +488,7 @@ export function registerUi(pi: ExtensionAPI) {
             out.push(panelRow(thm, line, boxW));
           }
 
-          // Status row inside panel
+          // Status row inside panel (OpenCode: "Build · model …")
           let thinking = "off";
           try {
             thinking = pi.getThinkingLevel?.() || "off";
@@ -483,11 +497,18 @@ export function registerUi(pi: ExtensionAPI) {
           }
           const model = shortModel(ctx);
           const thinkBit = thinking !== "off" ? ` · ${thinking}` : "";
+          const modeRaw = getState().mode || "build";
+          const modeLabel =
+            modeRaw === "plan"
+              ? "Plan"
+              : modeRaw === "review"
+                ? "Review"
+                : "Build";
           const statusInner = isWorking
             ? thm.fg("accent", `${spinnerFrames[spinnerIndex]} working`)
-            : thm.fg("accent", "Build") +
+            : thm.fg("accent", modeLabel) +
               thm.fg("dim", " · ") +
-              thm.fg("text", model) +
+              thm.fg("muted", model) +
               thm.fg("dim", thinkBit);
           out.push(panelRow(thm, statusInner, boxW));
 
@@ -523,7 +544,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode layout · green alloy wordmark · accent #1FE07A",
+        "OpenCode splash · gray alloy wordmark · green accent #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);

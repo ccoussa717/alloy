@@ -354,12 +354,16 @@ const isNodeEntry = piBin.endsWith(".js") || piBin.endsWith(".mjs");
 const command = isNodeEntry ? process.execPath : piBin;
 const finalArgs = isNodeEntry ? [piBin, ...args] : args;
 
+// Alloy pins Pi via package.json (node_modules). Global `pi update` does not
+// change that pin — but Pi still nags "Update Available" against pi.dev.
+// Skip Pi's self-update check under Alloy; bump the dependency intentionally.
 const child = spawn(command, finalArgs, {
   stdio: "inherit",
   env: {
     ...process.env,
     ALLOY_ROOT,
     ALLOY_VERSION,
+    PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || "1",
   },
   windowsHide: true,
 });

@@ -82,6 +82,8 @@ Alloy does **not** fork or patch Pi’s published sources in-tree. Divergence is
 
 Differentiation must stay **demonstrable in code and docs** (this file + `docs/SECURITY.md` + `/doctor`).
 
+Alloy remains **org-agnostic**: no required dependency on any company mesh or knowledge base. See `docs/BOUNDARY.md`.
+
 ## Audit record
 
 | Date | Action |

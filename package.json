@@ -1,7 +1,7 @@
 {
   "name": "@kylaira/alloy",
   "version": "0.8.2",
-  "description": "Alloy — multi-provider coding harness on Pi. Subscriptions, durable memory, skills, MCP.",
+  "description": "Alloy — multi-provider coding agent harness on Pi. Policy, memory, skills, MCP, multi-agent.",
   "type": "module",
   "bin": {
     "alloy": "./bin/alloy.mjs"
@@ -55,7 +55,7 @@
     "security:scan": "bash ./scripts/security-scan.sh"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-coding-agent": "^0.81.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "typebox": "*"
   },

@@ -2,6 +2,8 @@
 
 Alloy is a **product layer** on [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). It does **not** fork Pi and does **not** reimplement provider OAuth.
 
+**Product boundary:** Alloy is org-agnostic (no required company mesh / shared brain). See [BOUNDARY.md](./BOUNDARY.md).
+
 ```text
 alloy (bin/alloy.mjs)
   └─ resolves Pi CLI (repo node_modules → npm root -g → which pi)

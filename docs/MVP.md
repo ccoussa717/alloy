@@ -24,7 +24,7 @@
 
 ## Out (deferred)
 
-- Public GitHub launch packaging (fresh history, SBOM, SECURITY.md release gate, quiet preview process) — tracked under open-source readiness, not product gaps.
+- Public open-source launch packaging (canonical public remote, SBOM, reporting URL, quiet preview) — packaging gate only; product boundary is already org-agnostic (see `docs/BOUNDARY.md`).
 - Native descriptor-relative `openat` checkpoint helper (TOCTOU hardening beyond current fail-closed revalidation).
 - Micro-VM sandbox product (beyond Docker).
 - Provider marketplace / every OpenRouter model as first-class surface.
@@ -32,6 +32,8 @@
 - Fix-loop polish and richer multi-model fusion productization beyond current `/auto` + `/fusion`.
 
 ## Exit tests (operator machine)
+
+Main-harness adoption (org-agnostic; dual private/OSS lens): see **[MAIN-HARNESS.md](./MAIN-HARNESS.md)** and **[BOUNDARY.md](./BOUNDARY.md)**.
 
 - [ ] `/login` works for Claude, Codex, and Grok (or honest red/green via `/doctor`)
 - [ ] Real repo work with tools under `ask-dangerous` (default)
