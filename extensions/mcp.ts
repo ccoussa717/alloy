@@ -154,18 +154,26 @@ async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; se
     };
   }
 
-  const results = await manager.connectEnabled(Object.fromEntries(enabled), {
-    onProgress: (msg: string) => ctx?.ui?.notify?.(msg, "info"),
-  });
+  // Quiet by default — no per-server progress toasts
+  const results = await manager.connectEnabled(Object.fromEntries(enabled));
   const reg = registerToolsFromManager(pi);
   const ok = results.filter((r: { ok: boolean }) => r.ok).length;
   const fail = results.filter((r: { ok: boolean }) => !r.ok);
-  ctx?.ui?.setStatus?.(
-    "alloy-mcp",
-    ok > 0
-      ? `mcp:${ok}/${results.length} t:${reg.total}`
-      : `mcp:fail ${fail.length}/${results.length}`,
-  );
+  // Compact status: mcp:name×tools or mcp:2/2 t:34
+  let status = `mcp:off`;
+  if (ok > 0) {
+    const live = manager.listConnections().filter(
+      (c: { status: string }) => c.status === "connected",
+    );
+    if (live.length === 1) {
+      status = `mcp:${live[0].name}·${live[0].toolCount}`;
+    } else {
+      status = `mcp:${ok}/${results.length}·${reg.total}`;
+    }
+  } else if (results.length) {
+    status = `mcp:fail`;
+  }
+  ctx?.ui?.setStatus?.("alloy-mcp", status);
   return { results, reg, ok, fail, message: undefined as string | undefined };
 }
 
@@ -174,7 +182,7 @@ export function registerMcp(pi: ExtensionAPI) {
 
   pi.registerCommand("mcp", {
     description:
-      "MCP: /mcp [list|status|connect|disconnect|reload|path]",
+      "MCP: /mcp [list|status|tools|connect|disconnect|reload|path]",
     handler: async (args, ctx) => {
       const parts = (args || "list").trim().split(/\s+/);
       const cmd = parts[0] || "list";
@@ -192,49 +200,56 @@ export function registerMcp(pi: ExtensionAPI) {
         await manager.disconnectAll();
         setMcpStats({ connected: false, toolCount: 0 });
         ctx.ui.setStatus("alloy-mcp", "mcp:off");
-        ctx.ui.notify("Disconnected all MCP servers.", "info");
+        ctx.ui.notify("MCP disconnected", "info");
         return;
       }
 
       if (cmd === "connect" || cmd === "reload") {
         if (cmd === "reload") {
           await manager.disconnectAll();
-          // Note: Pi cannot unregister tools; reload reconnects and registers any new names
         }
-        ctx.ui.notify("Connecting MCP servers…", "info");
         const { results, reg, ok, fail, message } = await connectAll(pi, ctx);
         if (message && !(results || []).length) {
           ctx.ui.notify(message, "warning");
           return;
         }
-        const lines = (results || []).map(
-          (r: {
-            name: string;
-            ok: boolean;
-            tools?: number;
-            error?: string;
-            transport?: string;
-          }) =>
-            r.ok
-              ? `✓ ${r.name}  (${r.tools} tools, ${r.transport || "?"})`
-              : `✗ ${r.name}  ${r.error}`,
-        );
-        lines.push("---");
-        lines.push(
-          `Registered tools this session: ${reg?.total ?? 0} (+${reg?.added ?? 0} new)`,
-        );
-        lines.push(
-          `Live connections: ${manager.listConnections().filter((c: { status: string }) => c.status === "connected").length}`,
-        );
-        // Always surface a toast — select UI can be dismissed without reading
-        const summary = `MCP connect: ${ok} ok, ${fail?.length || 0} failed, ${reg?.total ?? 0} tools`;
-        ctx.ui.notify(summary, ok > 0 ? "info" : "warning");
-        if (fail?.length) {
-          for (const f of fail) {
-            ctx.ui.notify(`MCP ${f.name}: ${f.error || "failed"}`, "warning");
+        // One short line — no modal, no tool dump
+        if (ok > 0 && !(fail?.length)) {
+          const bits = (results || [])
+            .filter((r: { ok: boolean }) => r.ok)
+            .map(
+              (r: { name: string; tools?: number }) =>
+                `${r.name}·${r.tools ?? 0}`,
+            );
+          ctx.ui.notify(`MCP ${bits.join(", ")}`, "info");
+        } else {
+          ctx.ui.notify(
+            `MCP connect: ${ok} ok, ${fail?.length || 0} failed`,
+            ok > 0 ? "info" : "warning",
+          );
+          for (const f of fail || []) {
+            ctx.ui.notify(
+              `${f.name}: ${(f as { error?: string }).error || "failed"}`,
+              "warning",
+            );
           }
         }
-        await ctx.ui.select(`MCP connect (${ok} ok, ${fail?.length || 0} failed)`, lines);
+        void reg;
+        return;
+      }
+
+      // Explicit tool dump only when asked
+      if (cmd === "tools") {
+        const tools = manager.getRegisteredTools();
+        if (!tools.length) {
+          ctx.ui.notify("No MCP tools — /mcp connect first", "info");
+          return;
+        }
+        const items = tools.map(
+          (t: { registerName: string; description: string }) =>
+            `${t.registerName}${t.description ? `  — ${t.description.slice(0, 60)}` : ""}`,
+        );
+        await ctx.ui.select(`MCP tools (${tools.length})`, items);
         return;
       }
 
@@ -242,47 +257,38 @@ export function registerMcp(pi: ExtensionAPI) {
         const live = manager.listConnections();
         if (!servers.length && !live.length) {
           ctx.ui.notify(
-            [
-              "No MCP servers configured.",
-              `Edit ${getAlloyMcpPath()}`,
-              "Then: /mcp connect",
-              "",
-              "Examples:",
-              '  stdio: { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"], "enabled": true }',
-              '  http:  { "transport": "http", "url": "https://host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" }, "enabled": true }',
-            ].join("\n"),
+            `No MCP servers. Edit ${getAlloyMcpPath()} then /mcp connect`,
             "info",
           );
           return;
         }
+        // Compact: one line per server — name + status + tool count (no tool names)
         const items: string[] = [];
         for (const s of servers) {
           const conn = live.find((c: { name: string }) => c.name === s.name);
-          const state = conn
-            ? `${conn.status} tools=${conn.toolCount} (${conn.transport || s.transport})`
-            : s.enabled
-              ? "configured (not connected — /mcp connect)"
-              : "disabled";
-          const endpoint =
-            s.url ||
-            [s.command, ...(s.args || [])].filter(Boolean).join(" ") ||
-            "(no endpoint)";
-          items.push(
-            `${s.enabled ? "●" : "○"} ${s.name}  [${s.transport}]  ${state}  ${endpoint}`,
-          );
+          if (conn && conn.status === "connected") {
+            items.push(
+              `● ${s.name}  ${conn.toolCount} tools  [${conn.transport || s.transport}]`,
+            );
+          } else if (s.enabled) {
+            items.push(`○ ${s.name}  not connected  [${s.transport}]`);
+          } else {
+            items.push(`○ ${s.name}  disabled  [${s.transport}]`);
+          }
         }
-        for (const t of manager.getRegisteredTools().slice(0, 40)) {
-          items.push(`  tool: ${t.registerName}`);
+        // Also show live servers not in config (shouldn't happen often)
+        for (const c of live) {
+          if (!servers.some((s) => s.name === c.name) && c.status === "connected") {
+            items.push(`● ${c.name}  ${c.toolCount} tools  [${c.transport || "?"}]`);
+          }
         }
-        if (manager.getRegisteredTools().length > 40) {
-          items.push(`  … +${manager.getRegisteredTools().length - 40} more tools`);
-        }
-        await ctx.ui.select(`MCP (${servers.length} configured)`, items);
+        items.push("—  /mcp tools for full tool list");
+        await ctx.ui.select(`MCP (${servers.length})`, items);
         return;
       }
 
       ctx.ui.notify(
-        "Usage: /mcp list|status|connect|disconnect|reload|path",
+        "Usage: /mcp list|status|tools|connect|disconnect|reload|path",
         "warning",
       );
     },
@@ -292,48 +298,54 @@ export function registerMcp(pi: ExtensionAPI) {
     name: "alloy_mcp_list",
     label: "Alloy MCP List",
     description:
-      "List configured and connected Alloy MCP servers and their tools.",
-    promptSnippet: "List MCP servers and tools",
-    parameters: Type.Object({}),
-    async execute() {
+      "Summarize Alloy MCP servers (name, status, tool counts). Set includeTools=true only when the user asks for tool names.",
+    promptSnippet: "List MCP servers (summary)",
+    parameters: Type.Object({
+      includeTools: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, include every registered tool name. Default false.",
+        }),
+      ),
+    }),
+    async execute(_id, params: { includeTools?: boolean }) {
       const servers: ServerRow[] = listMcpServers(process.cwd());
       const live = manager.listConnections();
       const tools = manager.getRegisteredTools();
-      const text = [
-        "## Configured",
-        ...servers.map((s) => {
-          const ep =
-            s.url ||
-            [s.command, ...(s.args || [])].filter(Boolean).join(" ") ||
-            "(no endpoint)";
-          return `- ${s.name}: enabled=${s.enabled} transport=${s.transport || "?"} endpoint=${ep}`;
-        }),
-        "",
-        "## Connected",
-        ...(live.length
-          ? live.map(
-              (c: {
-                name: string;
-                status: string;
-                toolCount: number;
-                error?: string;
-                transport?: string;
-              }) =>
-                `- ${c.name}: ${c.status} transport=${c.transport || "?"} tools=${c.toolCount}${c.error ? ` err=${c.error}` : ""}`,
-            )
-          : [
-              "- (none)",
-              "- Run /mcp connect to attach enabled servers (HTTP/stdio/SSE).",
-            ]),
-        "",
-        "## Tools",
-        ...(tools.length
-          ? tools.map((t: { registerName: string; description: string }) =>
-              `- ${t.registerName}: ${t.description.slice(0, 100)}`,
-            )
-          : ["- (none)"]),
-      ].join("\n");
-      return { content: [{ type: "text", text }], details: { servers, live, tools } };
+      const lines: string[] = ["## MCP servers"];
+      if (!servers.length && !live.length) {
+        lines.push("- (none configured)");
+      }
+      for (const s of servers) {
+        const conn = live.find((c: { name: string }) => c.name === s.name);
+        if (conn && conn.status === "connected") {
+          lines.push(
+            `- ${s.name}: connected, ${conn.toolCount} tools [${conn.transport || s.transport}]`,
+          );
+        } else {
+          lines.push(
+            `- ${s.name}: ${s.enabled ? "not connected" : "disabled"} [${s.transport}]`,
+          );
+        }
+      }
+      lines.push(`Total tools registered: ${tools.length}`);
+      if (params?.includeTools && tools.length) {
+        lines.push("", "## Tools");
+        for (const t of tools) {
+          lines.push(`- ${t.registerName}`);
+        }
+      } else if (tools.length) {
+        lines.push("(Pass includeTools=true or user runs /mcp tools for names.)");
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: {
+          servers,
+          live,
+          toolCount: tools.length,
+          tools: params?.includeTools ? tools : undefined,
+        },
+      };
     },
   });
 
@@ -374,36 +386,41 @@ export function registerMcp(pi: ExtensionAPI) {
       }
       loadMcpConfig(cwd);
 
-      // connectOnStart: GLOBAL servers only (operator config). Never project MCP.
+      // connectOnStart: GLOBAL servers only. One quiet status line on success.
       const globalCfg = loadGlobalConfig();
       if (globalCfg.mcp?.connectOnStart) {
         const auto = listAutoConnectServers(cwd);
         if (auto.length > 0) {
-          ctx.ui.notify(
-            `Auto-connecting ${auto.length} global MCP server(s)…`,
-            "info",
-          );
           const { results, reg, ok, fail } = await connectAll(pi, ctx);
           const failN = fail?.length || 0;
-          ctx.ui.notify(
-            `MCP auto-connect: ${ok} ok, ${failN} failed, ${reg?.total ?? 0} tools`,
-            ok > 0 ? "info" : "warning",
-          );
-          if (failN) {
+          if (ok > 0 && failN === 0) {
+            const bits = (results || [])
+              .filter((r: { ok: boolean }) => r.ok)
+              .map(
+                (r: { name: string; tools?: number }) =>
+                  `${r.name}·${r.tools ?? 0}`,
+              );
+            // Single compact toast — matches footer status, no tool dump
+            ctx.ui.notify(`MCP ${bits.join(", ")}`, "info");
+          } else if (failN > 0) {
+            ctx.ui.notify(
+              `MCP: ${ok} ok, ${failN} failed`,
+              ok > 0 ? "info" : "warning",
+            );
             for (const f of fail || []) {
               ctx.ui.notify(
-                `MCP ${f.name}: ${(f as { error?: string }).error || "failed"}`,
+                `${f.name}: ${(f as { error?: string }).error || "failed"}`,
                 "warning",
               );
             }
           }
-          void results;
+          void reg;
         }
       }
     } catch (err) {
       try {
         ctx.ui.notify(
-          `MCP session_start error: ${(err as Error)?.message || err}`,
+          `MCP: ${(err as Error)?.message || err}`,
           "warning",
         );
       } catch {

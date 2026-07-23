@@ -129,9 +129,9 @@ if (
 }
 
 /**
- * OpenCode-clean empty field: hide Pi's Skills/Prompts/Extensions/Themes dump.
+ * OpenCode-clean empty field: hide Pi startup resource dump + full changelog.
  * Must be set before Pi boots (too late in session_start).
- * Only writes when quietStartup is missing/false — does not clobber other settings.
+ * Merges Alloy defaults without clobbering unrelated user settings.
  */
 function ensureQuietStartup() {
   try {
@@ -146,9 +146,19 @@ function ensureQuietStartup() {
         settings = {};
       }
     }
-    if (settings.quietStartup === true) return;
-    settings.quietStartup = true;
-    writeFileSync(path, JSON.stringify(settings, null, "\t") + "\n", "utf8");
+    let changed = false;
+    if (settings.quietStartup !== true) {
+      settings.quietStartup = true;
+      changed = true;
+    }
+    // Full "What's New" dump is noisy; condensed one-liner is enough
+    if (settings.collapseChangelog !== true) {
+      settings.collapseChangelog = true;
+      changed = true;
+    }
+    if (changed) {
+      writeFileSync(path, JSON.stringify(settings, null, "\t") + "\n", "utf8");
+    }
   } catch {
     // non-fatal — chrome still works, just noisier
   }
