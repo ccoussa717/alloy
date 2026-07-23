@@ -26,6 +26,7 @@ const {
   formatMcpResult,
   isMcpToolName,
 } = require(join(root, "lib", "mcp-client.mjs"));
+const { loadAlloyEnvFile } = require(join(root, "lib", "alloy-env.mjs"));
 const { setMcpStats } = require(join(root, "lib", "state.mjs"));
 const { loadConfig, loadGlobalConfig } = require(join(root, "lib", "config.mjs"));
 const { setRuntimeProjectTrust, isProjectTrusted } = require(
@@ -41,9 +42,18 @@ type ServerRow = {
   transport: string;
 };
 
-/** Shared manager for this process */
-const manager = new McpManager();
-const registeredNames = new Set<string>();
+/**
+ * Process-wide manager. Pi may re-evaluate extension modules; keep one
+ * McpManager so /mcp connect and /mcp list share connection state.
+ */
+const g = globalThis as typeof globalThis & {
+  __alloyMcpManager?: InstanceType<typeof McpManager>;
+  __alloyMcpRegisteredTools?: Set<string>;
+};
+if (!g.__alloyMcpManager) g.__alloyMcpManager = new McpManager();
+if (!g.__alloyMcpRegisteredTools) g.__alloyMcpRegisteredTools = new Set();
+const manager = g.__alloyMcpManager;
+const registeredNames = g.__alloyMcpRegisteredTools;
 
 function jsonSchemaToTypeBox(schema: Record<string, unknown> | undefined) {
   // Accept any object args — MCP validates on the server side.
@@ -120,6 +130,8 @@ function isConnectableSpec(s: {
 }
 
 async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; setStatus?: Function } }) {
+  // Ensure MCP ${ENV} secrets are present even if launcher did not load them
+  loadAlloyEnvFile({ force: true });
   ensureMcpConfig();
   const { servers } = loadMcpConfig(process.cwd());
   const enabled = Object.entries(servers).filter(([, s]) =>
@@ -127,7 +139,16 @@ async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; se
   );
   if (!enabled.length) {
     return {
-      results: [],
+      results: [] as Array<{
+        name: string;
+        ok: boolean;
+        tools?: number;
+        error?: string;
+        transport?: string;
+      }>,
+      reg: { added: 0, total: 0 },
+      ok: 0,
+      fail: [] as Array<{ name: string; ok: boolean; error?: string }>,
       message:
         "No enabled MCP servers in config (need command for stdio or url for http/sse).",
     };
@@ -141,9 +162,11 @@ async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; se
   const fail = results.filter((r: { ok: boolean }) => !r.ok);
   ctx?.ui?.setStatus?.(
     "alloy-mcp",
-    `mcp:${ok}/${results.length} t:${reg.total}`,
+    ok > 0
+      ? `mcp:${ok}/${results.length} t:${reg.total}`
+      : `mcp:fail ${fail.length}/${results.length}`,
   );
-  return { results, reg, ok, fail };
+  return { results, reg, ok, fail, message: undefined as string | undefined };
 }
 
 export function registerMcp(pi: ExtensionAPI) {
@@ -179,7 +202,11 @@ export function registerMcp(pi: ExtensionAPI) {
           // Note: Pi cannot unregister tools; reload reconnects and registers any new names
         }
         ctx.ui.notify("Connecting MCP servers…", "info");
-        const { results, reg, ok, fail } = await connectAll(pi, ctx);
+        const { results, reg, ok, fail, message } = await connectAll(pi, ctx);
+        if (message && !(results || []).length) {
+          ctx.ui.notify(message, "warning");
+          return;
+        }
         const lines = (results || []).map(
           (r: {
             name: string;
@@ -193,10 +220,19 @@ export function registerMcp(pi: ExtensionAPI) {
               : `✗ ${r.name}  ${r.error}`,
         );
         lines.push("---");
-        lines.push(`Registered tools this session: ${reg?.total ?? 0} (+${reg?.added ?? 0} new)`);
-        if (!lines.length) {
-          ctx.ui.notify("No servers to connect. Edit mcp.json and enable servers.", "warning");
-          return;
+        lines.push(
+          `Registered tools this session: ${reg?.total ?? 0} (+${reg?.added ?? 0} new)`,
+        );
+        lines.push(
+          `Live connections: ${manager.listConnections().filter((c: { status: string }) => c.status === "connected").length}`,
+        );
+        // Always surface a toast — select UI can be dismissed without reading
+        const summary = `MCP connect: ${ok} ok, ${fail?.length || 0} failed, ${reg?.total ?? 0} tools`;
+        ctx.ui.notify(summary, ok > 0 ? "info" : "warning");
+        if (fail?.length) {
+          for (const f of fail) {
+            ctx.ui.notify(`MCP ${f.name}: ${f.error || "failed"}`, "warning");
+          }
         }
         await ctx.ui.select(`MCP connect (${ok} ok, ${fail?.length || 0} failed)`, lines);
         return;
@@ -269,8 +305,8 @@ export function registerMcp(pi: ExtensionAPI) {
           const ep =
             s.url ||
             [s.command, ...(s.args || [])].filter(Boolean).join(" ") ||
-            "";
-          return `- ${s.name}: enabled=${s.enabled} transport=${s.transport} ${ep}`;
+            "(no endpoint)";
+          return `- ${s.name}: enabled=${s.enabled} transport=${s.transport || "?"} endpoint=${ep}`;
         }),
         "",
         "## Connected",
@@ -285,7 +321,10 @@ export function registerMcp(pi: ExtensionAPI) {
               }) =>
                 `- ${c.name}: ${c.status} transport=${c.transport || "?"} tools=${c.toolCount}${c.error ? ` err=${c.error}` : ""}`,
             )
-          : ["- (none — user should run /mcp connect)"]),
+          : [
+              "- (none)",
+              "- Run /mcp connect to attach enabled servers (HTTP/stdio/SSE).",
+            ]),
         "",
         "## Tools",
         ...(tools.length
@@ -313,6 +352,9 @@ export function registerMcp(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     try {
+      // Secrets for HTTP MCP (${TOKEN}) — also done in launcher
+      loadAlloyEnvFile({ force: true });
+
       // Authoritative trust from Pi session
       try {
         const trusted =
@@ -341,17 +383,32 @@ export function registerMcp(pi: ExtensionAPI) {
             `Auto-connecting ${auto.length} global MCP server(s)…`,
             "info",
           );
-          const map = Object.fromEntries(auto.map((a: { name: string; spec: object }) => [a.name, a.spec]));
-          const results = await manager.connectEnabled(map, {
-            onProgress: (msg: string) => ctx.ui.notify?.(msg, "info"),
-          });
-          const reg = registerToolsFromManager(pi);
-          const ok = results.filter((r: { ok: boolean }) => r.ok).length;
-          ctx.ui.setStatus("alloy-mcp", `mcp:${ok}/${results.length} t:${reg.total}`);
+          const { results, reg, ok, fail } = await connectAll(pi, ctx);
+          const failN = fail?.length || 0;
+          ctx.ui.notify(
+            `MCP auto-connect: ${ok} ok, ${failN} failed, ${reg?.total ?? 0} tools`,
+            ok > 0 ? "info" : "warning",
+          );
+          if (failN) {
+            for (const f of fail || []) {
+              ctx.ui.notify(
+                `MCP ${f.name}: ${(f as { error?: string }).error || "failed"}`,
+                "warning",
+              );
+            }
+          }
+          void results;
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      try {
+        ctx.ui.notify(
+          `MCP session_start error: ${(err as Error)?.message || err}`,
+          "warning",
+        );
+      } catch {
+        // ignore
+      }
     }
   });
 
