@@ -23,6 +23,7 @@ import { registerSandbox } from "./sandbox.ts";
 import { registerHelp } from "./help.ts";
 import { registerEffort } from "./effort.ts";
 import { registerAgents } from "./agents.ts";
+import { registerToolDisplay } from "./tool-display.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,7 +47,8 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerModes(pi);
   registerPolicy(pi); // Shift+Tab = permissions
   registerEffort(pi); // /effort = thinking
-  registerSandbox(pi); // overrides bash when profile=sandbox
+  registerSandbox(pi); // Docker routing for bash (display override follows)
+  registerToolDisplay(pi); // compact one-line tool UI (includes sandbox-aware bash)
   registerMemory(pi);
   registerSkillsImprove(pi);
   registerMcp(pi);

@@ -164,6 +164,11 @@ function ensureQuietStartup() {
       settings.lastChangelogVersion = piVer;
       changed = true;
     }
+    // Quieter stream: hide thinking blocks unless user expands
+    if (settings.hideThinkingBlock !== true) {
+      settings.hideThinkingBlock = true;
+      changed = true;
+    }
     if (changed) {
       writeFileSync(path, JSON.stringify(settings, null, "\t") + "\n", "utf8");
     }

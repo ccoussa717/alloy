@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compactToolRenderers } from "./tool-display.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,12 +85,15 @@ function registerToolsFromManager(pi: ExtensionAPI) {
     const desc =
       t.description || `MCP tool ${tool} from server ${server}`;
 
+    const compact = compactToolRenderers(`${server}/${tool}`);
     pi.registerTool({
       name: t.registerName,
       label: `MCP ${server}/${tool}`,
       description: `${desc} (via MCP server "${server}")`,
       promptSnippet: `MCP ${server}/${tool}`,
       parameters: jsonSchemaToTypeBox(t.inputSchema as Record<string, unknown>),
+      renderCall: compact.renderCall as never,
+      renderResult: compact.renderResult as never,
       async execute(_id, params) {
         try {
           const result = await manager.callRegistered(t.registerName, params);
