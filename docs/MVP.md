@@ -7,7 +7,7 @@
 1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, xAI Grok via Pi `/login` (API keys as fallback). `/doctor` reports status without printing secrets.
 2. **Durable memory** — User + project facts survive `/new` and new processes (`/remember`, `/memory`).
 3. **Skills** — Create, compose (skills using skills), capture → approve → promote (`/skill-capture`, `/skill-promote`).
-4. **MCP** — Config + **live stdio tool bridge** (`/mcp connect`); tools share the central capability gate.
+4. **MCP** — Config + live **stdio**, **HTTP (streamable)**, and **SSE** bridges (`/mcp connect`); tools share the central capability gate. Headers support `${ENV}` expansion.
 5. **Modes** — `chat` · `plan` · `build` · `review` with hard read-only on plan/review.
 6. **Git checkpoints** — `/checkpoint`, `/checkpoints`, `/undo` with authenticated metadata, untracked capture, no `git clean` on restore.
 7. **Worktrees** — Isolated builder trees under `~/.pi/alloy/worktrees/` with dirty-baseline seeding.

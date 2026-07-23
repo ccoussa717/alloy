@@ -12,7 +12,7 @@ alloy (bin/alloy.mjs)
                  ├── providers   /doctor /providers
                  ├── memory      /remember /memory + inject
                  ├── skills-improve  capture → promote
-                 ├── mcp         live stdio bridge
+                 ├── mcp         live stdio / HTTP / SSE bridge
                  ├── policy      capability gate + permissions UX
                  ├── modes       chat|plan|build|review
                  ├── git         checkpoints
@@ -69,7 +69,7 @@ Children (`/auto`, `/fusion`, `/agent`) spawn via `lib/child-runner.mjs`:
 - Activated by `/permissions sandbox` (not auto-enabled for `/auto`).
 - Default image `node:22-bookworm`, network `none`, memory/CPU caps, `cap-drop ALL`, `no-new-privileges`.
 - Project/worktree mounted at `/workspace`; bash/`!shell` containerized. File tools remain host path-scoped on the mount in current design.
-- MCP stays host-side in v1.
+- MCP stays host-side in v1 (stdio children + remote HTTP/SSE to configured URLs).
 
 ## Checkpoints and worktrees
 

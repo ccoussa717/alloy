@@ -1,5 +1,6 @@
 /**
- * Live MCP adapter: connect stdio servers, register tools on the agent.
+ * Live MCP adapter: connect stdio + HTTP (streamable) + SSE servers,
+ * register tools on the agent.
  * Policy: MCP tools go through the same tool_call gate (readonly blocks mutating MCP names).
  */
 
@@ -36,6 +37,7 @@ type ServerRow = {
   enabled: boolean;
   command: string;
   args: string[];
+  url?: string;
   transport: string;
 };
 
@@ -108,12 +110,27 @@ function registerToolsFromManager(pi: ExtensionAPI) {
   return { added, total: manager.getRegisteredTools().length };
 }
 
+function isConnectableSpec(s: {
+  enabled?: boolean;
+  command?: string;
+  url?: string;
+} | null) {
+  if (!s || s.enabled === false) return false;
+  return Boolean(s.command || s.url);
+}
+
 async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; setStatus?: Function } }) {
   ensureMcpConfig();
   const { servers } = loadMcpConfig(process.cwd());
-  const enabled = Object.entries(servers).filter(([, s]) => s && s.enabled !== false && s.command);
+  const enabled = Object.entries(servers).filter(([, s]) =>
+    isConnectableSpec(s as { enabled?: boolean; command?: string; url?: string }),
+  );
   if (!enabled.length) {
-    return { results: [], message: "No enabled MCP servers in config." };
+    return {
+      results: [],
+      message:
+        "No enabled MCP servers in config (need command for stdio or url for http/sse).",
+    };
   }
 
   const results = await manager.connectEnabled(Object.fromEntries(enabled), {
@@ -164,9 +181,15 @@ export function registerMcp(pi: ExtensionAPI) {
         ctx.ui.notify("Connecting MCP servers…", "info");
         const { results, reg, ok, fail } = await connectAll(pi, ctx);
         const lines = (results || []).map(
-          (r: { name: string; ok: boolean; tools?: number; error?: string }) =>
+          (r: {
+            name: string;
+            ok: boolean;
+            tools?: number;
+            error?: string;
+            transport?: string;
+          }) =>
             r.ok
-              ? `✓ ${r.name}  (${r.tools} tools)`
+              ? `✓ ${r.name}  (${r.tools} tools, ${r.transport || "?"})`
               : `✗ ${r.name}  ${r.error}`,
         );
         lines.push("---");
@@ -188,8 +211,9 @@ export function registerMcp(pi: ExtensionAPI) {
               `Edit ${getAlloyMcpPath()}`,
               "Then: /mcp connect",
               "",
-              "Example:",
-              '{ "servers": { "everything": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"], "enabled": true } } }',
+              "Examples:",
+              '  stdio: { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"], "enabled": true }',
+              '  http:  { "transport": "http", "url": "https://host/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" }, "enabled": true }',
             ].join("\n"),
             "info",
           );
@@ -199,12 +223,16 @@ export function registerMcp(pi: ExtensionAPI) {
         for (const s of servers) {
           const conn = live.find((c: { name: string }) => c.name === s.name);
           const state = conn
-            ? `${conn.status} tools=${conn.toolCount}`
+            ? `${conn.status} tools=${conn.toolCount} (${conn.transport || s.transport})`
             : s.enabled
               ? "configured (not connected — /mcp connect)"
               : "disabled";
+          const endpoint =
+            s.url ||
+            [s.command, ...(s.args || [])].filter(Boolean).join(" ") ||
+            "(no endpoint)";
           items.push(
-            `${s.enabled ? "●" : "○"} ${s.name}  ${state}  ${s.command} ${(s.args || []).join(" ")}`,
+            `${s.enabled ? "●" : "○"} ${s.name}  [${s.transport}]  ${state}  ${endpoint}`,
           );
         }
         for (const t of manager.getRegisteredTools().slice(0, 40)) {
@@ -237,16 +265,25 @@ export function registerMcp(pi: ExtensionAPI) {
       const tools = manager.getRegisteredTools();
       const text = [
         "## Configured",
-        ...servers.map(
-          (s) =>
-            `- ${s.name}: enabled=${s.enabled} cmd=${s.command} ${(s.args || []).join(" ")}`,
-        ),
+        ...servers.map((s) => {
+          const ep =
+            s.url ||
+            [s.command, ...(s.args || [])].filter(Boolean).join(" ") ||
+            "";
+          return `- ${s.name}: enabled=${s.enabled} transport=${s.transport} ${ep}`;
+        }),
         "",
         "## Connected",
         ...(live.length
           ? live.map(
-              (c: { name: string; status: string; toolCount: number; error?: string }) =>
-                `- ${c.name}: ${c.status} tools=${c.toolCount}${c.error ? ` err=${c.error}` : ""}`,
+              (c: {
+                name: string;
+                status: string;
+                toolCount: number;
+                error?: string;
+                transport?: string;
+              }) =>
+                `- ${c.name}: ${c.status} transport=${c.transport || "?"} tools=${c.toolCount}${c.error ? ` err=${c.error}` : ""}`,
             )
           : ["- (none — user should run /mcp connect)"]),
         "",

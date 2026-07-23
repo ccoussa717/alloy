@@ -2,11 +2,27 @@
   "version": 1,
   "servers": {
     "example-everything": {
+      "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-everything"],
       "env": {},
-      "enabled": false,
-      "transport": "stdio"
+      "enabled": false
+    },
+    "example-http": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
+      },
+      "enabled": false
+    },
+    "example-sse": {
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${MCP_SSE_TOKEN}"
+      },
+      "enabled": false
     }
   }
 }

@@ -15,7 +15,7 @@ This boundary is required whether the repo stays private **or** is published ope
 | Children | Runner, enforcer, sandbox spawn plans, credential boundaries |
 | Memory | Local durable user/project facts (`/remember`, `/memory`) |
 | Skills | Capture → human approve → promote mechanism + starter skills |
-| MCP | Config shape + stdio bridge; tools under the same gate |
+| MCP | Config shape + stdio / HTTP (streamable) / SSE bridges; tools under the same gate |
 | Orchestration | `/auto`, `/fusion`, `/agent` primitives |
 | Git | Checkpoints, worktrees, diagnostics helpers |
 | Docs | Architecture, security model, adoption checklist |

@@ -83,6 +83,7 @@ cd /path/to/alloy && git pull && npm install && bash scripts/install-cli.sh
 ## 6. MCP
 
 - [ ] `~/.pi/alloy/mcp.json` from examples; **connectOnStart: false**
+- [ ] Stdio **or** HTTP (streamable) **or** SSE servers configured (`url` + `headers` with `${ENV}` for tokens)
 - [ ] Explicit `/mcp connect`
 - [ ] Same capability gate as native tools
 - [ ] No live secrets committed to Alloy or example configs
