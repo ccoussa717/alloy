@@ -387,32 +387,40 @@ Starter skills in the package: `testing`, `git-hygiene`, `skill-capture`.
 
 Pi core does **not** ship MCP. Alloy owns MCP as a product concern.
 
-**Now (v0.2):**
-
 - Global config: `~/.pi/alloy/mcp.json`
-- Project config: `.pi/alloy-mcp.json`
-- `/mcp connect` spawns stdio servers via `@modelcontextprotocol/sdk`
+- Project config: `.pi/alloy-mcp.json` (trusted projects only for project entries)
+- Transports: **stdio**, **http** (Streamable HTTP), **sse** (legacy)
+- `/mcp connect` connects enabled servers via `@modelcontextprotocol/sdk`
 - Tools appear as `mcp_<server>_<tool>` and go through Alloy policy
-- `/mcp disconnect` tears down processes
-- Optional `mcp.connectOnStart` in `~/.pi/alloy/config.json`
+- Headers support `${ENV}` expansion (keep tokens out of the file)
+- Optional `mcp.connectOnStart` in `~/.pi/alloy/config.json` (global servers only)
 
-Example config (see `config/mcp.example.json`):
+Examples (see `config/mcp.example.json`):
 
 ```json
 {
   "version": 1,
   "servers": {
     "everything": {
+      "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-everything"],
-      "enabled": true,
-      "transport": "stdio"
+      "enabled": true
+    },
+    "open-brain": {
+      "transport": "http",
+      "url": "https://your-host.example/mcp",
+      "headers": {
+        "Authorization": "Bearer ${OPEN_BRAIN_MCP_TOKEN}"
+      },
+      "enabled": true
     }
   }
 }
 ```
 
 ```text
+export OPEN_BRAIN_MCP_TOKEN=…   # shell env, not committed
 /mcp connect
 /mcp list
 ```
@@ -423,12 +431,17 @@ Example config (see `config/mcp.example.json`):
 
 | Profile | Behavior |
 |---|---|
-| `readonly` | Blocks write/edit and non-inspection bash |
-| `safe` (default) | Normal work; dangerous bash asks approval (fail-closed headless) |
-| `workspace` | Full host autonomy in the project (still no secret printing) |
+| `ask-all` | Approve almost everything non-read |
+| `ask-some` | Approve writes, process, child agents, MCP side-effects |
+| `ask-dangerous` (default) | Approve dangerous bash / destructive git |
+| `ask-none` | No prompts (headless-friendly) |
+| `sandbox` | Docker isolation for bash (approval defaults to ask-dangerous) |
+
+Shift+Tab cycles ask-levels. Legacy ids `safe` / `workspace` / `readonly` still map.
 
 ```text
-/permissions safe
+/permissions ask-dangerous
+/permissions sandbox
 ```
 
 ---
