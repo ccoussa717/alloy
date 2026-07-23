@@ -74,7 +74,8 @@ export function registerSandbox(pi: ExtensionAPI) {
     },
   });
 
-  // !shell / user bash path
+  // !shell / user bash path — fail closed when sandbox profile is on but Docker
+  // is unavailable (never fall back to host bash).
   pi.on("user_bash", () => {
     if (!isSandboxProfile()) return;
     try {
@@ -82,8 +83,17 @@ export function registerSandbox(pi: ExtensionAPI) {
       return {
         operations: createDockerBashOperations(process.cwd()) as BashOperations,
       };
-    } catch {
-      return undefined;
+    } catch (err) {
+      const reason = String((err as Error)?.message || err || "Docker unavailable");
+      return {
+        operations: {
+          async exec(_command: string, _cwd: string, _opts: unknown) {
+            throw new Error(
+              `Sandbox bash denied (host bash blocked): ${reason}`,
+            );
+          },
+        } as BashOperations,
+      };
     }
   });
 

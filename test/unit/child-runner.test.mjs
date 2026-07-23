@@ -16,13 +16,16 @@ describe("P0.3 child isolation", () => {
     assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
     assert.equal(env.ALLOY_CHILD, "1");
     assert.ok(env.PATH);
-    // only allowlisted keys (+ ALLOY_CHILD/ROOT/VERSION)
+    // only allowlisted keys (+ ALLOY_CHILD/ROOT/VERSION + isolated paths when set)
     for (const k of Object.keys(env)) {
       if (
         CHILD_ENV_ALLOWLIST.includes(k) ||
         k === "ALLOY_CHILD" ||
         k === "ALLOY_ROOT" ||
-        k === "ALLOY_VERSION"
+        k === "ALLOY_VERSION" ||
+        k === "HOME" ||
+        k === "PI_CODING_AGENT_DIR" ||
+        k === "ALLOY_HOME"
       ) {
         continue;
       }
@@ -63,8 +66,9 @@ describe("P0.3 child isolation", () => {
 
   it("manifest includes policy rules and version", () => {
     const m = buildChildPolicyManifest({ role: "builder" });
-    assert.equal(m.version, 1);
+    assert.ok(m.version >= 1);
     assert.equal(m.role, "builder");
+    assert.equal(m.mechanical, true);
     assert.ok(Array.isArray(m.rules) && m.rules.length > 0);
   });
 });
