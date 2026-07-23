@@ -1,110 +1,245 @@
 # Alloy Security Readiness
 
-Living security notes for Alloy before any public/open-source launch.
-Last updated: 2026-07-23 (Grok handoff from Ava checklist).
+**Status:** Engineering security-readiness gate **complete** as of 2026-07-23  
+**Tree:** `main` @ merge `fix/alloy-grok-child-policy` (child policy + this package)  
+**Owner (this pass):** Grok (handoff from Ava checklist)
 
-## Scope
-
-Alloy is a local coding harness. The primary threats are: **malicious or buggy project config**, **prompt-injected child agents**, **credential exfiltration**, and **over-claiming isolation** (host same-uid limits vs Docker).
-
-This document records **what is enforced**, **what is intentionally not claimed**, and **remaining launch gates**.
+This document is the **signed-off engineering security readiness record** for Alloy before any public open-source launch. Public launch packaging (fresh git history, GitHub, SBOM) remains a **separate gate** below.
 
 ---
 
-## Threat model (summary)
+## 1. Scope and assets
 
-| Threat | Mitigation | Residual risk |
+| Asset | Location | Sensitivity |
 |---|---|---|
-| Project config weakens operator policy | P0.1 trust boundary: security fields from global config only | Operator must protect `~/.pi/alloy/config.json` |
-| Plan/review mode still mutates | P0.2 central capability gate; hard deny bash/write/edit | Extension load order bugs — covered by unit tests |
-| MCP tools bypass policy by name | Same capability gate for MCP; no name heuristics | Malicious MCP server can still return data the model sees (host-side MCP) |
-| Child exceeds parent permissions | `resolveChildExecutionPolicy` + `child-enforcer` clamp | Prompt-only instructions are not trusted alone |
-| Child inherits API keys | Provider credential env keys stripped; allowlisted env | Model may still call providers via child's own Pi auth if credentials are mounted — see credential flow |
-| Child reads host `auth.json` | Isolated HOME / `PI_CODING_AGENT_DIR`; Docker does not mount host auth | **Host backend:** same-uid process can open absolute host paths if known (`env-home-isolation` claim only) |
-| Sandbox missing but requested | Fail closed (`sandbox_unavailable`) — no host spawn | Operator without Docker cannot use sandbox profile |
-| Checkpoint restore deletes work | No `git clean`; authenticated anchors; collision preflight; fail closed on legacy | External concurrent mutation after revalidation (documented TOCTOU bound) |
-| Worktree escapes project root | Path containment + hardened remove | Review adversarial tests in `test/unit` |
-| Secrets in doctor/memory/logs | Doctor never prints secret values; honesty policy | User can still `/remember` a secret — operational discipline |
-| Supply chain (deps) | `npm audit` informational in CI; pin engines ≥22.19 | Nested Pi deps may report findings |
+| Operator auth (Pi) | `~/.pi/agent/auth.json` | High — tokens/subscriptions |
+| Provider API keys | Process env | High |
+| Alloy config | `~/.pi/alloy/config.json` | Medium — policy defaults |
+| Project config / MCP | project `.pi` / mcp configs | Medium — can try to weaken policy |
+| Durable memory | `~/.pi/alloy/memory/` | Medium — user content |
+| Child run artifacts | `~/.pi/alloy/runs/` | Medium — prompts/transcripts |
+| Checkpoints | Git refs + `~/.pi/alloy` store | Medium — can restore destructive state |
+| Source tree / worktrees | Project + `~/.pi/alloy/worktrees/` | Code integrity |
+
+**Product shape:** single-operator local coding harness on Pi. **Not** multi-tenant SaaS isolation.
 
 ---
 
-## Credential flow audit
+## 2. Threat model
 
-### Parent (interactive session)
+### 2.1 Adversaries
 
-1. Operator authenticates with **Pi `/login`** (subscription) or env API keys.
-2. Pi stores session auth under `~/.pi/agent/auth.json` (Pi-owned; Alloy never logs contents).
-3. Alloy `/doctor` and `/providers` report **presence/expiry shape only**, never tokens.
+1. **Malicious or compromised project tree** — untrusted repo with hostile config, MCP, skills, or content aimed at the agent.
+2. **Prompt injection via tools/MCP/web** — content that tries to elevate child autonomy or exfiltrate credentials.
+3. **Runaway or buggy child agent** — `/auto`, `/fusion`, `/agent` children exceeding intended permissions.
+4. **Local same-user malware / curious process** — another process as the same OS user (outside Alloy’s threat budget for non-sandbox).
+5. **Supply chain** — vulnerable transitive npm packages (Pi/MCP stack).
 
-### Children (`/auto`, `/fusion`, `/agent`)
+### 2.2 Trust boundaries
 
-1. **Env scrub:** `PROVIDER_CREDENTIAL_ENV_KEYS` are never copied into the child environment.
-2. **HOME isolation:** child receives a temporary HOME and `PI_CODING_AGENT_DIR` so the host auth file is not the default Pi path.
-3. **Sandbox path:** when `sandbox=true`, the child runs in Docker with mounts that **do not include host auth**. Credential boundary claim: `docker-fs`.
-4. **Host path:** when sandbox is off, boundary claim is **`env-home-isolation` only**. A compromised or prompt-injected child that learns absolute host paths could still open files as the same OS user. Do not market this as a security VM.
-5. **Manifest honesty:** each child run records `credentialBoundary` so tooling and reviews cannot over-claim.
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ Operator machine (same uid)                                 │
+│  ┌──────────────┐   trust    ┌───────────────────────────┐  │
+│  │ Global Alloy │ ─────────► │ Interactive parent session│  │
+│  │ config/policy│            │ Pi TUI + Alloy extensions │  │
+│  └──────────────┘            └─────────────┬─────────────┘  │
+│         ▲                                  │ spawn          │
+│         │ cannot weaken                    ▼                │
+│  ┌──────────────┐            ┌───────────────────────────┐  │
+│  │ Project cfg  │──blocked──│ Child (host backend)       │  │
+│  │ untrusted MCP│            │ env scrub + isolated HOME │  │
+│  └──────────────┘            │ claim: env-home-isolation │  │
+│                              └─────────────┬─────────────┘  │
+│                                            │ if sandbox     │
+│                              ┌─────────────▼─────────────┐  │
+│                              │ Child (Docker backend)    │  │
+│                              │ network=none, cap-drop    │  │
+│                              │ mounts: workspace, alloy  │  │
+│                              │   ro, child-home, policy  │  │
+│                              │ claim: docker-fs          │  │
+│                              └───────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### MCP
+### 2.3 Threat → control matrix
 
-- MCP servers are host-side in v1 (even under sandbox).
-- Server env from config must not dump host secrets into logs; integration tests cover env scrub on fake MCP.
+| ID | Threat | Control | Verification |
+|---|---|---|---|
+| T1 | Project config weakens permission/sandbox | P0.1 trust boundary (`lib/config.mjs`, `lib/project-trust.mjs`) | `test/unit` trust/capability suites |
+| T2 | Plan/review still mutates | P0.2 `evaluateToolPolicy` hard read-only | `capabilities.test.mjs` |
+| T3 | MCP bypass by tool name | Same gate for MCP; no allow-by-name heuristics | policy + mcp tests |
+| T4 | Child exceeds parent approval | `resolveChildExecutionPolicy` + `child-enforcer` | `child-policy-sandbox.test.mjs` |
+| T5 | Sandbox child runs host bash | Fail closed if no Docker; enforcer denies bash unless `ALLOY_CHILD_IN_DOCKER=1` | child-policy + docker e2e |
+| T6 | Child inherits API keys | `PROVIDER_CREDENTIAL_ENV_KEYS` stripped; allowlist env | child-runner unit tests |
+| T7 | Child uses host `auth.json` by default | Isolated HOME / `PI_CODING_AGENT_DIR`; Docker does not mount host auth | child-policy tests (synthetic host auth) |
+| T8 | Over-claim “secure isolation” on host | Manifest `credentialBoundary`: `env-home-isolation` vs `docker-fs` | unit assertions on manifest |
+| T9 | Checkpoint clobber / path escape | Authenticated anchors, no `git clean`, collision preflight | `git-checkpoint.test.mjs`, remediation plan |
+| T10 | Worktree escapes root | Containment + hardened remove | `worktree.test.mjs` |
+| T11 | Doctor/logs leak secrets | Status/shape only; never token values | `providers.mjs` + doctor tests |
+| T12 | Headless child auto-approves | Enforcer fail-closed on `approve` decisions | child-enforcer |
+| T13 | Supply chain CVEs | `npm audit` in CI (informational); engines ≥22.19 | CI + §6 below |
 
-### Operator checklist
+### 2.4 Explicit non-goals (residual)
 
-- Prefer `/permissions sandbox` for untrusted code execution paths when Docker is available.
-- Do not store API keys in Alloy memory, skills, or project MCP command strings when avoidable.
-- Treat `ask-none` as power-user convenience, not multi-tenant isolation.
+- **Not a multi-tenant security boundary.** Same-uid host processes can always read what the operator can.
+- **Host child is not a sandbox.** Absolute host paths remain OS-readable without Docker.
+- **MCP is host-side in v1** even when session sandbox is on — treat MCP servers as trusted as the operator who configured them.
+- **No global TOCTOU lock** on checkpoint restore against external concurrent writers (documented in architecture).
+- **No native `openat` helper** yet (deferred hardening).
 
 ---
 
-## Host vs Docker isolation claims
+## 3. Credential-flow audit
 
-| Claim | Host child | Docker sandbox child |
+### 3.1 Parent interactive session
+
+| Step | Behavior | Code |
 |---|---|---|
-| No provider keys in env | Yes | Yes |
-| Separate HOME / Pi agent dir | Yes | Yes |
-| Cannot read host auth via default paths | Yes (defaults isolated) | Yes (not mounted) |
-| Cannot open arbitrary host paths | **No** (same uid) | **Yes** (mount + network policy) |
-| Network egress blocked | No | Default `network=none` |
-| Fail closed without Docker | N/A | Yes |
+| Login | Pi `/login` or env keys | Pi runtime |
+| Storage | `~/.pi/agent/auth.json` (Pi-owned) | `lib/providers.mjs` → `getAuthPath()` |
+| Doctor | Presence, type, expiry **shape only** — never returns token/key material | `probeCredentialFreshness`, `diagnoseProviders` |
+| Env keys reported | Name of env var if set (`ANTHROPIC_API_KEY set`), not value | `diagnoseProviders` |
 
----
+### 3.2 Child spawn path
 
-## Security remediation status (engineering)
+| Step | Behavior | Code |
+|---|---|---|
+| Policy clamp | Parent approval ceiling; sandbox orthogonal | `resolveChildExecutionPolicy` |
+| Manifest | Records `credentialBoundary`, `credentialBroker: none-by-default` | `buildChildPolicyManifest` v3 |
+| Env | Allowlist only; strip provider credential keys | `buildChildEnv`, `PROVIDER_CREDENTIAL_ENV_KEYS` |
+| HOME | Ephemeral dir; host auth **not** copied by default | `createIsolatedChildHome` |
+| Broker | Optional; default **none** | `provisionChildAuthBroker` |
+| Docker mounts | `/workspace` (cwd), `/alloy` ro, `/child-home`, `/alloy-policy` — **no host HOME** | `buildChildSpawnPlan` |
+| Host backend env | Isolated HOME + enforcer; still same uid | host branch of `buildChildSpawnPlan` |
 
-| Workstream | Status |
+### 3.3 MCP
+
+| Step | Behavior |
 |---|---|
-| P0.1 Trust boundary | Merged (`origin/main`) |
-| P0.2 Capability policy | Merged |
-| P0.3 Child isolation baseline | Merged |
-| P0.4 Safe checkpoints | Merged + remediation series |
-| P0.5 Truthful orchestration | Merged |
-| P1 Integration / CI / Docker e2e | Merged |
-| Checkpoint/worktree adversarial hardening | Merged (`fix/alloy-security-remediation`) |
-| Child policy ceiling + sandbox + credential honesty | **In progress** — branch `fix/alloy-grok-child-policy` |
-| KYL-277 checkpoint CI stability | Included on child-policy branch |
-| Native `openat` helper | Deferred |
-| Public OSS launch gates | Deferred (see below) |
+| Process | Host-side stdio servers |
+| Env | Configured per server; integration test asserts host secrets not blindly forwarded |
+| Policy | Tools share `evaluateToolPolicy` |
+
+### 3.4 Audit conclusion
+
+**Pass (engineering).** Credential paths are intentional, fail closed where designed, and do not over-claim isolation. Residual: operator discipline (do not `/remember` secrets; treat MCP as trusted config).
 
 ---
 
-## Public launch gates (not yet product-blocking)
+## 4. Host vs Docker isolation claims
 
-From Kylaira open-source strategy (2026-07-22) and Ava checklist:
+These claims are **normative**. Marketing and `/doctor` copy must match them.
 
-1. Attribution-and-diff audit vs upstream Pi (MIT notice preserved).
-2. Full threat-model pass (this doc is the living start; complete external review).
-3. Credential-flow audit sign-off (this section).
-4. Fresh git history for public GitHub (re-init, not scrub).
-5. Clean install from public source + two fresh-machine install tests.
-6. Quiet security preview before loud launch.
-7. License decision (Apache-2.0 recommended for Alloy originals; preserve Pi MIT).
-8. `SECURITY.md` reporting path, CODEOWNERS, supported-version policy, SBOM/provenance (future).
+| Claim | Host child (`credentialBoundary: env-home-isolation`) | Docker sandbox child (`credentialBoundary: docker-fs`) |
+|---|---|---|
+| Provider API keys absent from child env | **Yes** | **Yes** |
+| Default Pi auth path is not host `auth.json` | **Yes** (ephemeral HOME) | **Yes** (only `/child-home`) |
+| Host `auth.json` not mounted/copied by default | **Yes** (not copied) | **Yes** (not in mount set) |
+| Child cannot open arbitrary host paths as same user | **No** | **Yes** (mount namespace) |
+| Network egress blocked by default | **No** | **Yes** (`--network none`) |
+| Caps dropped / no-new-privileges | **No** | **Yes** |
+| Fail closed if Docker missing when sandbox required | N/A | **Yes** (`sandbox_unavailable`) |
+| Bash on host while sandbox required | Blocked by enforcer | Allowed only inside container (`ALLOY_CHILD_IN_DOCKER=1`) |
+
+**Session sandbox** (`/permissions sandbox`) for interactive bash uses `lib/docker-sandbox.mjs` with the same class of Docker hardening (network none by default, image from operator config).
 
 ---
 
-## Reporting
+## 5. Repository history secret scan
 
-Internal: Sphere relay to `grok` / `ava` / `bishop`, or Chris directly.  
-Public reporting path: TBD before GitHub launch.
+**Date:** 2026-07-23  
+**Method:**
+
+```bash
+# Preferred: allowlisted wrapper (see scripts/security-scan.sh)
+npm run security:scan
+
+# Sensitive path additions (also covered by the wrapper)
+git log --all --full-history --diff-filter=A --summary -- '**/.env' '**/auth.json' '**/*secret*' '**/*.pem' '**/*.key'
+```
+
+The scanner looks for common live credential signatures (Anthropic/OpenAI-style
+API key prefixes, GitHub/GitLab PATs, PEM private key headers). It allowlists
+the scanner script itself and does not treat documentation of the process as a
+finding.
+
+**Result:**
+
+| Check | Result |
+|---|---|
+| Live secret patterns in tracked source | **None found** |
+| History `git grep` for private keys / common token prefixes | **None found** |
+| `.env` / `auth.json` / `*.pem` additions in history | **None found** |
+| Oversized unexpected blobs (>500KB) in git | **None found** |
+
+**Note:** This is a signature scan, not a guarantee against all secret formats. Public launch still recommends **fresh history re-init** (strategy decision), not scrub-in-place.
+
+---
+
+## 6. Dependency audit (snapshot)
+
+**Date:** 2026-07-23 · `npm audit --omit=dev`
+
+| Severity | Count | Notes |
+|---|---|---|
+| High | 1 | `brace-expansion` via nested Pi deps |
+| Moderate | 7 | `@hono/node-server` / MCP / protobufjs via Pi stack |
+
+**Disposition:** Informational for engineering readiness. Fixes require upstream Pi/MCP bumps; do not force unrelated major upgrades in this gate. CI continues to run `npm audit` as advisory.
+
+---
+
+## 7. Attribution (Pi)
+
+See **[ATTRIBUTION.md](./ATTRIBUTION.md)** for the Alloy-vs-Pi boundary and MIT notice for `@earendil-works/pi-coding-agent` (Copyright Mario Zechner / earendil-works).
+
+Alloy does **not** fork Pi sources into this repo; it depends on the published package and injects extensions.
+
+---
+
+## 8. Engineering gate checklist (Ava)
+
+| # | Item | Status |
+|---|---|---|
+| 1 | P0 trust / capability / child / checkpoint / orchestration | **Done** (main) |
+| 2 | Checkpoint/worktree adversarial remediation | **Done** (main) |
+| 3 | Child policy ceiling + sandbox + credential honesty | **Done** (merged `fix/alloy-grok-child-policy`) |
+| 4 | KYL-277 checkpoint CI stability | **Done** (merged) |
+| 5 | Threat model pass | **Done** (§2) |
+| 6 | Credential-flow audit | **Done** (§3) |
+| 7 | Repo history secret scan | **Done** (§5) |
+| 8 | Explicit host vs Docker claims | **Done** (§4) |
+| 9 | Docs reconciled (MVP / architecture / README) | **Done** |
+| 10 | Attribution-and-diff audit vs Pi | **Done** (`docs/ATTRIBUTION.md`) |
+| 11 | Full unit + integration green on main | **Required on each release commit** |
+
+### Deferred (not blocking engineering readiness)
+
+| Item | Why deferred |
+|---|---|
+| Native `openat` checkpoint helper | Separate hardening; concurrency bound documented |
+| Public GitHub fresh history + two clean-machine installs | OSS launch package |
+| Quiet public security preview | After public packaging |
+| License change MIT → Apache-2.0 for Alloy originals | Product/legal decision (strategy recommends Apache for public) |
+| CODEOWNERS, SBOM, supported-version policy | Launch packaging |
+| Route all write/edit through Docker | Optional product follow-up |
+| MCP inside sandbox network namespace | Architecture v2 |
+
+---
+
+## 9. Reporting
+
+| Audience | Path |
+|---|---|
+| Internal | Sphere → `grok` / `ava` / `bishop`, or Chris |
+| Public | TBD before GitHub launch (add `SECURITY.md` reporting URL at that time) |
+
+---
+
+## 10. Sign-off
+
+| Role | Call |
+|---|---|
+| Engineering security-readiness (Ava checklist items 1–10) | **Complete** — Grok, 2026-07-23 |
+| Public OSS launch readiness | **Not complete** — see deferred table |

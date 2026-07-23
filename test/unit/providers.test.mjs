@@ -25,12 +25,16 @@ test("all missing when empty auth", () => {
 });
 
 test("detects auth.json subscription-like credentials", () => {
+  // Canary values (not real token prefixes) — assert doctor never echoes them.
+  const secretA = "oauth-access-SECRET_MUST_NOT_APPEAR_IN_DOCTOR_abcdef";
+  const secretB = "oauth-access-SECRET_MUST_NOT_APPEAR_IN_DOCTOR_xyz";
+  const secretC = "subscription-token-SECRET_MUST_NOT_APPEAR_IN_DOCTOR_1234567890";
   writeFileSync(
     join(agentDir, "auth.json"),
     JSON.stringify({
-      anthropic: { type: "oauth", accessToken: "redacted" },
-      openai: { type: "oauth", accessToken: "redacted" },
-      xai: { type: "subscription", token: "redacted" },
+      anthropic: { type: "oauth", accessToken: secretA },
+      openai: { type: "oauth", accessToken: secretB },
+      xai: { type: "subscription", token: secretC },
     }),
     "utf8",
   );
@@ -38,20 +42,32 @@ test("detects auth.json subscription-like credentials", () => {
   assert.ok(results.every((r) => r.ok));
   assert.ok(results.every((r) => r.status === "subscription"));
   const report = mod.formatDoctorReport(results);
-  assert.ok(!report.includes("redacted"));
   assert.ok(report.includes("[OK "));
   const full = mod.formatFullDoctorReport({ results });
   assert.ok(full.includes("extra usage") || full.includes("Claude"));
-  assert.ok(!full.includes("redacted"));
+  for (const s of [secretA, secretB, secretC]) {
+    assert.ok(!report.includes(s), "doctor short report must not leak secrets");
+    assert.ok(!full.includes(s), "doctor full report must not leak secrets");
+    for (const r of results) {
+      assert.ok(!JSON.stringify(r).includes(s), "diagnoseProviders payload must not leak secrets");
+    }
+  }
 });
 
-test("env key path", () => {
+test("env key path reports name only, never value", () => {
   writeFileSync(join(agentDir, "auth.json"), "{}", "utf8");
-  process.env.XAI_API_KEY = "xai-test-not-real";
+  const envSecret = "env-path-SECRET_MUST_NOT_APPEAR_9876543210";
+  process.env.XAI_API_KEY = envSecret;
   const results = mod.diagnoseProviders();
   const xai = results.find((r) => r.id === "xai");
   assert.equal(xai.ok, true);
   assert.equal(xai.status, "env");
+  assert.ok(xai.detail.includes("XAI_API_KEY"));
+  assert.ok(!xai.detail.includes(envSecret));
+  const report = mod.formatDoctorReport(results);
+  const full = mod.formatFullDoctorReport({ results });
+  assert.ok(!report.includes(envSecret));
+  assert.ok(!full.includes(envSecret));
   delete process.env.XAI_API_KEY;
 });
 

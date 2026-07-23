@@ -37,6 +37,7 @@ unit:
     - *npm_setup
     - npm test
     - node ./bin/alloy.mjs --version
+    - npm run security:scan
 
 integration-mcp-pi:
   stage: integration

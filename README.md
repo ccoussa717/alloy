@@ -58,6 +58,7 @@ CI: `integration-mcp-pi` always runs; `integration-docker` uses Docker-in-Docker
 | **Repo** | [kylaira/infrastructure/alloy](https://gitlab.com/kylaira/infrastructure/alloy) |
 | **Package** | `@kylaira/alloy` |
 | **CLI** | `alloy` |
+| **Security** | [docs/SECURITY.md](./docs/SECURITY.md) · [ATTRIBUTION](./docs/ATTRIBUTION.md) · `npm run security:scan` |
 
 ---
 

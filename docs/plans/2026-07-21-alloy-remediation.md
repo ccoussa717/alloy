@@ -136,8 +136,8 @@ same staged, unstaged, and untracked baseline the planner observed.
 
 ## Exclusions
 
-- Child-agent policy, sandbox inheritance, and credential isolation are owned
-  by Grok on `fix/alloy-grok-child-policy`.
-- No push, merge, deploy, production credentials, dependency upgrades, or
-  unrelated release changes.
-- No native descriptor-relative `openat` helper in this release follow-up.
+- Child-agent policy, sandbox inheritance, and credential isolation were owned
+  by Grok on `fix/alloy-grok-child-policy` and **merged to `main`** (2026-07-23).
+- No native descriptor-relative `openat` helper in this release follow-up
+  (still deferred; see `docs/SECURITY.md`).
+- Public OSS launch packaging remains a separate gate (`docs/SECURITY.md` §8 deferred).

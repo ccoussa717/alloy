@@ -37,7 +37,8 @@
     "scripts",
     "install.sh",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md"
   ],
   "scripts": {
     "start": "node ./bin/alloy.mjs",
@@ -50,7 +51,8 @@
     "install-cli": "bash ./scripts/install-cli.sh",
     "bootstrap": "bash ./install.sh",
     "version:print": "node ./bin/alloy.mjs --version",
-    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm run test:all && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null"
+    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm run test:all && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null && npm run security:scan",
+    "security:scan": "bash ./scripts/security-scan.sh"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.10",
