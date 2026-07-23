@@ -57,6 +57,7 @@ Integration coverage (Ava P1 verification):
 | Suite | What it proves |
 |-------|----------------|
 | `mcp-fake.e2e` | Real stdio MCP process: connect, list/call tools, env scrub (no host secrets) |
+| `mcp-http.e2e` | Streamable HTTP MCP: connect, list/call tools against local fixture |
 | `pi-startup.e2e` | Isolated `HOME` / `PI_CODING_AGENT_DIR`: `alloy --version`, `--help`, doctor |
 | `docker-sandbox.e2e` | Live Docker: container start/reuse, bind-mount exec, `network=none` inspect; **skips** if no daemon |
 
@@ -133,7 +134,7 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Subscriptions** | Claude (Anthropic), Codex/ChatGPT (OpenAI), Grok (xAI) via Pi `/login` |
 | **Durable memory** | Facts survive `/new` and new days (`/remember`, `/memory`) |
 | **Skills** | Create, compose (skills using skills), capture + promote with approval |
-| **MCP** | Config + **live stdio connect** (`/mcp connect`) — tools registered on the agent |
+| **MCP** | Config + live **stdio / HTTP / SSE** (`/mcp connect`) — tools registered on the agent |
 | **Modes** | `chat` · `plan` · `build` · `review` with tool gating |
 | **Checkpoints** | `/checkpoint` · `/undo` for recoverable git snapshots |
 | **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
