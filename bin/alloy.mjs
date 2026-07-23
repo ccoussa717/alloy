@@ -19,6 +19,41 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 
+/**
+ * Load ~/.pi/alloy/env (export KEY=value lines) into process.env if missing.
+ * Lets MCP ${VAR} headers work without requiring the user to source the file.
+ * Does not override vars already set in the environment.
+ */
+function loadAlloyEnvFile() {
+  try {
+    const path = join(homedir(), ".pi", "alloy", "env");
+    if (!existsSync(path)) return;
+    const text = readFileSync(path, "utf8");
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const cleaned = line.replace(/^export\s+/, "");
+      const eq = cleaned.indexOf("=");
+      if (eq <= 0) continue;
+      const key = cleaned.slice(0, eq).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+      if (process.env[key] != null && process.env[key] !== "") continue;
+      let val = cleaned.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      process.env[key] = val;
+    }
+  } catch {
+    // non-fatal
+  }
+}
+
+loadAlloyEnvFile();
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ALLOY_ROOT = resolve(__dirname, "..");
 
