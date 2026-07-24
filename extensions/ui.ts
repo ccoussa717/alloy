@@ -3,13 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   bold fullwidth "alloy harness" wordmark dead-center (accent green)
+ *   large 3-row "alloy harness" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: "alloy harness", accent #1FE07A.
- * Wordmark is real terminal glyphs (bold + fullwidth, fusion-harness style).
+ * Wordmark uses portable terminal glyphs with a fullwidth narrow fallback.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -129,13 +129,17 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: one bold line, centered.
-// Same trick as fusion-harness: fullwidth Unicode (2 cells/letter) so it
-// reads larger without DECDHL, block art, or image protocols. Falls back
-// to ASCII if the terminal is too narrow.
+// Splash wordmark: three display rows on wide terminals, centered.
+// Narrow terminals retain the fullwidth/ASCII fallback without relying on
+// terminal-specific font sizing or image protocols.
 // ---------------------------------------------------------------------------
 
 const SPLASH_WORDMARK = "alloy harness";
+const LARGE_SPLASH_WORDMARK = [
+  "█▀█ █   █   █▀█ █ █   █ █ █▀█ █▀▄ █▄ █ █▀▀ █▀▀ █▀▀",
+  "█▀█ █   █   █ █  █    █▀█ █▀█ █▀▄ █ ▀█ █▀  ▀▀█ ▀▀█",
+  "▀ ▀ ▀▀▀ ▀▀▀ ▀▀▀  ▀    ▀ ▀ ▀ ▀ ▀ ▀ ▀  ▀ ▀▀▀ ▀▀▀ ▀▀▀",
+];
 
 /** ASCII → fullwidth letters/digits (U+FF01..) and ideographic space. */
 function toFullwidth(s: string): string {
@@ -146,30 +150,40 @@ function toFullwidth(s: string): string {
     .replace(/ /g, "\u3000");
 }
 
-/** Single centered bold accent wordmark — fullwidth when it fits. */
-function buildWordmark(theme: ThemeLike, width: number): string[] {
+/** Center the large green wordmark, with a single-line narrow fallback. */
+export function buildWordmark(theme: ThemeLike, width: number): string[] {
   const full = toFullwidth(SPLASH_WORDMARK);
-  // Prefer fullwidth (~2× cell width); ASCII if the pane is too narrow.
-  const plain = visibleWidth(full) <= width ? full : SPLASH_WORDMARK;
-  let word = plain;
-  if (theme.bold) word = theme.bold(word);
-  word = theme.fg("accent", word);
-  const left = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
-  return [" ".repeat(left) + word];
+  const fallback = visibleWidth(full) <= width ? full : SPLASH_WORDMARK;
+  const lines = LARGE_SPLASH_WORDMARK.every(
+    (line) => visibleWidth(line) <= width,
+  )
+    ? LARGE_SPLASH_WORDMARK
+    : [fallback];
+
+  return lines.map((plain) => {
+    let word = plain;
+    if (theme.bold) word = theme.bold(word);
+    word = theme.fg("accent", word);
+    const left = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
+    return " ".repeat(left) + word;
+  });
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = 1;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
 const SPLASH_PANEL_ROWS = SPLASH_INPUT_ROWS + 1;
 const SPLASH_HINT_ROWS = 1;
-const SPLASH_UNIT =
-  SPLASH_LOGO_ROWS + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
+
+export function splashTopPadding(rows: number, logoRows: number): number {
+  const splashUnit =
+    logoRows + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
+  return Math.max(0, Math.floor((rows - splashUnit) / 2));
+}
 
 // ---------------------------------------------------------------------------
 // Register
@@ -349,10 +363,10 @@ export function registerUi(pi: ExtensionAPI) {
             render(width: number) {
               if (!splashMode) return [];
               const rows = tui.terminal?.rows || 24;
-              // Top pad so logo+panel+hints sit in the vertical middle
-              const pad = Math.max(0, Math.floor((rows - SPLASH_UNIT) / 2));
-              const blanks = Array.from({ length: pad }, () => "");
               const mark = buildWordmark(theme, width);
+              // Top pad so logo+panel+hints sit in the vertical middle
+              const pad = splashTopPadding(rows, mark.length);
+              const blanks = Array.from({ length: pad }, () => "");
               // Gap under logo before the chat panel (editor is next)
               const gap = Array.from({ length: SPLASH_GAP }, () => "");
               return [...blanks, ...mark, ...gap];
@@ -540,7 +554,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · bold fullwidth “alloy harness” · green #1FE07A",
+        "OpenCode splash · large terminal-art “alloy harness” · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
