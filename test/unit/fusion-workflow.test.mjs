@@ -78,8 +78,8 @@ function deps(runDir, runChildAgent, lease = null) {
       const provider = models[0].split("/", 1)[0];
       const secret = provider === "anthropic" ? "secret-a" : "secret-b";
       return {
-        mode: "ephemeral-json",
-        authJson: { [provider]: { type: "oauth", access: secret } },
+        mode: "runtime-key",
+        runtimeCredential: { provider, apiKey: secret },
         providers: [provider],
         missing: [],
       };
@@ -99,10 +99,18 @@ test("architect and builder run in parallel before attributed synthesis", async 
   const leaseRequests = [];
   let active = 0;
   let maxActive = 0;
+  const panels = [];
   const runChildAgent = async (options) => {
     calls.push(options);
     active++;
     maxActive = Math.max(maxActive, active);
+    options.onEvent?.({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `live ${options.role}` }],
+      },
+    });
     await new Promise((resolve) => setTimeout(resolve, 10));
     active--;
     const text = proposals[options.role] || synthesis;
@@ -127,6 +135,7 @@ test("architect and builder run in parallel before attributed synthesis", async 
       cwd: process.cwd(),
       mode: "plan",
       parentPermissionProfile: "ask-all",
+      onPanel: (panel) => panels.push(structuredClone(panel)),
     },
     workflowDeps,
   );
@@ -148,15 +157,22 @@ test("architect and builder run in parallel before attributed synthesis", async 
   ]);
   assert.ok(calls.every((call) => call.mode === "plan"));
   assert.ok(calls.every((call) => call.tools.every((tool) => tool !== "bash")));
-  assert.ok(calls.every((call) => call.credentialBroker === "ephemeral-json"));
+  assert.ok(calls.every((call) => call.credentialBroker === "runtime-key"));
   assert.ok(calls.every((call) => call.permissionProfile === "ask-all"));
   assert.ok(calls.every((call) => call.parentPermissionProfile === "ask-all"));
   assert.ok(calls.every((call) => call.readRoot === process.cwd()));
-  assert.deepEqual(calls.map((call) => Object.keys(call.brokerAuthJson)), [
-    ["anthropic"],
-    ["openai-codex"],
-    ["anthropic"],
+  assert.deepEqual(calls.map((call) => call.brokerRuntimeCredential.provider), [
+    "anthropic",
+    "openai-codex",
+    "anthropic",
   ]);
+  assert.ok(
+    panels.some((panel) => {
+      const architect = panel.agents.find((agent) => agent.role === "architect");
+      const builder = panel.agents.find((agent) => agent.role === "builder");
+      return architect?.output?.includes("live fusion-architect") && builder?.output?.includes("live fusion-builder");
+    }),
+  );
   assert.deepEqual(leaseRequests, [
     ["anthropic/architect"],
     ["openai-codex/builder"],
@@ -217,7 +233,7 @@ test("invalid proposal skips synthesis and cannot complete", async () => {
   assert.equal(summary.synthesis, "");
 });
 
-test("missing selected credentials fails before spawning children", async () => {
+test("parent-inaccessible providers fail before spawning children", async () => {
   assert.equal(typeof fusion.runFusionWithDependencies, "function");
   const runDir = makeRunDir();
   let calls = 0;
@@ -239,7 +255,8 @@ test("missing selected credentials fails before spawning children", async () => 
   );
 
   assert.equal(calls, 0);
-  assert.equal(summary.status, "AUTH_REQUIRED");
+  assert.equal(summary.status, "FAILED");
+  assert.equal(summary.error, "provider_unavailable");
   assert.deepEqual(summary.missingProviders, ["openai-codex"]);
 });
 
@@ -271,7 +288,7 @@ test("worker cost can stop the workflow before synthesis", async () => {
   assert.equal(summary.usage.cost, 1.5);
 });
 
-test("synthesis auth failure is reported as auth required", async () => {
+test("synthesis credential failure is reported as provider unavailable", async () => {
   const runDir = makeRunDir();
   let calls = 0;
   const summary = await fusion.runFusionWithDependencies(
@@ -297,8 +314,10 @@ test("synthesis auth failure is reported as auth required", async () => {
   );
 
   assert.equal(calls, 3);
-  assert.equal(summary.status, "AUTH_REQUIRED");
-  assert.equal(summary.synthesizer.error, "auth_required");
+  assert.equal(summary.status, "FAILED");
+  assert.equal(summary.synthesizer.error, "provider_unavailable");
+  assert.equal(summary.error, "provider_unavailable");
+  assert.deepEqual(summary.missingProviders, ["anthropic"]);
 });
 
 test("synthesis cost can exceed the total workflow budget", async () => {

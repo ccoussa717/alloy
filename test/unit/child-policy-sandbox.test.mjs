@@ -14,6 +14,7 @@ import {
   readFileSync,
   rmSync,
   existsSync,
+  statSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ const {
   buildChildSpawnPlan,
   createIsolatedChildHome,
   provisionChildAuthBroker,
+  provisionChildRuntimeCredential,
   PROVIDER_CREDENTIAL_ENV_KEYS,
   CHILD_ENV_ALLOWLIST,
 } = await import(pathToFileURL(join(root, "lib/child-runner.mjs")).href);
@@ -537,6 +539,53 @@ describe("credential isolation — host auth.json unreadability", () => {
     assert.match(readFileSync(hostAuthPath, "utf8"), /HOST_AUTH_MUST_NOT_LEAK/);
     assert.ok(!body.includes("HOST_AUTH_MUST_NOT_LEAK"));
     rmSync(iso.home, { recursive: true, force: true });
+  });
+
+  it("runtime credentials stay in isolated 0600 files and out of process env", () => {
+    const iso = createIsolatedChildHome();
+    const provisioned = provisionChildRuntimeCredential(iso.piDir, {
+      provider: "openai-codex",
+      apiKey: "synthetic-runtime-token",
+      headers: { "x-account-id": "synthetic-account-id" },
+      env: { SYNTHETIC_PROVIDER_SCOPE: "synthetic-provider-value" },
+      baseUrl: "https://enterprise.example.test/api",
+    });
+
+    assert.equal(provisioned.provisioned, true);
+    assert.equal(statSync(provisioned.path).mode & 0o777, 0o600);
+    assert.equal(statSync(provisioned.authPath).mode & 0o777, 0o600);
+    const config = readFileSync(provisioned.path, "utf8");
+    const auth = readFileSync(provisioned.authPath, "utf8");
+    assert.match(config, /openai-codex/);
+    assert.match(config, /https:\/\/enterprise\.example\.test\/api/);
+    assert.doesNotMatch(config, /synthetic-runtime-token/);
+    assert.doesNotMatch(config, /synthetic-account-id/);
+    assert.match(auth, /synthetic-runtime-token/);
+    assert.match(auth, /synthetic-account-id/);
+    assert.match(auth, /synthetic-provider-value/);
+    assert.match(readFileSync(hostAuthPath, "utf8"), /HOST_AUTH_MUST_NOT_LEAK/);
+    assert.equal(existsSync(iso.authPath), true);
+    rmSync(iso.home, { recursive: true, force: true });
+  });
+
+  it("runtime credentials never appear in child argv or returned spawn diagnostics", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      model: "openai-codex/gpt-5.4",
+      mode: "plan",
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "openai-codex",
+        apiKey: "synthetic-runtime-token",
+      },
+      dryRun: true,
+    });
+
+    assert.doesNotMatch(result.spawnPlan.args.join(" "), /synthetic-runtime-token/);
+    assert.doesNotMatch(JSON.stringify(result.spawnPlan), /synthetic-runtime-token/);
+    assert.equal(result.spawnPlan.env.ALLOY_FUSION_RUNTIME_API_KEY, undefined);
+    assert.doesNotMatch(JSON.stringify(result.spawnPlan.env), /synthetic-runtime/);
   });
 
   it("host dryRun never points env at host auth; boundary is env-home-isolation", async () => {
