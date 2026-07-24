@@ -19,7 +19,7 @@ import {
   probeCredentialFreshness,
 } from "../../lib/providers.mjs";
 
-describe("P1 version + catalog", () => {
+describe("version and model catalog", () => {
   it("reports alloy version from package.json", () => {
     const v = getAlloyVersion();
     assert.match(v, /^\d+\.\d+\.\d+/);

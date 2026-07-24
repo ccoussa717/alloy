@@ -8,8 +8,16 @@ const mod = await import(
 );
 
 test("mcpToolName sanitizes server and tool", () => {
-  assert.equal(mod.mcpToolName("foo-bar", "list.things"), "mcp_foo_bar_list_things");
+  assert.match(mod.mcpToolName("foo-bar", "list.things"), /^mcp_foo_bar_list_things_/);
   assert.ok(mod.mcpToolName("a", "b").length <= 64);
+  assert.notEqual(
+    mod.mcpToolName("foo-bar", "list.things"),
+    mod.mcpToolName("foo_bar", "list_things"),
+  );
+  assert.notEqual(
+    mod.mcpToolName("a".repeat(80), "tool"),
+    mod.mcpToolName("a".repeat(79) + "b", "tool"),
+  );
 });
 
 test("isMcpToolName", () => {
@@ -59,6 +67,20 @@ test("expandEnvVars and headers", () => {
   });
   // process.env may not have the token — use expandEnvRecord path already tested
   assert.ok(init.headers.Accept.includes("json"));
+  assert.equal(init.redirect, "error");
+});
+
+test("fetchWithoutRedirect overrides caller redirect behavior", async () => {
+  let observed;
+  await mod.fetchWithoutRedirect(
+    "https://example.com/mcp",
+    { redirect: "follow" },
+    async (_input, init) => {
+      observed = init;
+      return { ok: true };
+    },
+  );
+  assert.equal(observed.redirect, "error");
 });
 
 test("isMcpSpecConnectable", () => {
@@ -87,4 +109,45 @@ test("McpManager rejects incomplete http without url", async () => {
   assert.equal(results[0].ok, false);
   assert.match(results[0].error, /url|missing/i);
   await m.disconnectAll();
+});
+
+test("remote MCP requires HTTPS for every non-loopback transport", async () => {
+  for (const spec of [
+    { transport: "http", url: "http://example.com/mcp" },
+    {
+      transport: "http",
+      url: "http://example.com/mcp",
+      headers: { "X-Auth-Token": "secret" },
+    },
+    {
+      transport: "http",
+      url: "http://example.com/mcp",
+      headers: { "X-Custom-Credential": "secret" },
+    },
+    { transport: "http", url: "http://user:secret@example.com/mcp" },
+    { transport: "http", url: "http://example.com/mcp?token=secret" },
+    { transport: "sse", url: "http://example.com/events" },
+    { transport: "http", url: "http://127.example.com/mcp" },
+    { transport: "http", url: "https://example.com/mcp?code=secret" },
+    { transport: "http", url: "https://example.com/mcp#secret" },
+  ]) {
+    await assert.rejects(
+      mod.createMcpTransport("unsafe", spec),
+      /https|plaintext|credentials|query parameters|fragments/i,
+    );
+  }
+
+  const local = await mod.createMcpTransport("local", {
+    transport: "http",
+    url: "http://127.0.0.1:3000/mcp",
+    headers: { Authorization: "Bearer local" },
+  });
+  assert.equal(local.kind, "http");
+
+  const secure = await mod.createMcpTransport("secure", {
+    transport: "https",
+    url: "https://example.com/mcp",
+    headers: { "X-Custom-Credential": "secret" },
+  });
+  assert.equal(secure.kind, "http");
 });

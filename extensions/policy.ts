@@ -1,6 +1,6 @@
 /**
  * Permission levels (Grok Build style) + Shift+Tab cycle.
- * All tool_call decisions go through lib/capabilities.mjs (P0.2).
+ * All tool_call decisions go through lib/capabilities.mjs.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -156,7 +156,7 @@ export function registerPolicy(pi: ExtensionAPI) {
           "",
           "Shift+Tab cycles the four ask levels.",
           "Thinking/effort: /effort [off|minimal|low|medium|high|xhigh|max]",
-          "Policy: central capability gate (P0.2) — plan/review deny bash + non-read tools.",
+          "Policy: central capability gate; plan/review deny bash + non-read tools.",
         ];
         if (ctx.hasUI) await ctx.ui.select("Permissions", lines);
         else console.log(lines.join("\n"));

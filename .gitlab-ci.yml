@@ -1,19 +1,22 @@
-# Alloy CI — Node 22.19+, unit + integration, pack smoke, Docker e2e (dind)
+# Alloy CI: tests, installed-artifact smoke, security, SBOM, and Docker e2e.
 # Matches engines.node in package.json (Pi requirement).
 
-image: node:22.19-bookworm
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+image: node:22.19.0-bookworm
 
 stages:
+  - security
   - test
   - integration
   - pack
 
 variables:
+  GIT_DEPTH: "0"
   npm_config_cache: "$CI_PROJECT_DIR/.npm"
-  AUDIT_LEVEL: critical
-  # Docker-in-Docker
-  DOCKER_TLS_CERTDIR: "/certs"
-  DOCKER_DRIVER: overlay2
+  AUDIT_LEVEL: high
+  SECRET_DETECTION_HISTORIC_SCAN: "true"
 
 cache:
   key: ${CI_COMMIT_REF_SLUG}
@@ -24,6 +27,7 @@ cache:
 .default_rules: &default_rules
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
     - if: $CI_COMMIT_BRANCH
 
 .npm_setup: &npm_setup
@@ -38,53 +42,59 @@ unit:
     - npm test
     - node ./bin/alloy.mjs --version
     - npm run security:scan
+    - npm run release:verify
+
+secret_detection:
+  <<: *default_rules
+  stage: security
+  allow_failure: false
+
+validate-security-report:
+  stage: test
+  <<: *default_rules
+  needs:
+    - job: secret_detection
+      artifacts: true
+  script:
+    - node scripts/validate-security-report.mjs
 
 integration-mcp-pi:
   stage: integration
   <<: *default_rules
   script:
     - *npm_setup
-    # Fake MCP + isolated Pi/alloy startup (no Docker required)
-    - node --test test/integration/mcp-fake.e2e.test.mjs test/integration/pi-startup.e2e.test.mjs
+    - node --test --test-force-exit test/integration/mcp-fake.e2e.test.mjs test/integration/mcp-http.e2e.test.mjs test/integration/pi-startup.e2e.test.mjs test/integration/packed-install.e2e.test.mjs
 
 integration-docker:
   stage: integration
   <<: *default_rules
-  image: docker:27-cli
+  image: node:22.19.0-bookworm
   services:
-    - name: docker:27-dind
+    - name: docker:27.5.1-dind
       alias: docker
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    ALLOY_REQUIRE_DOCKER_TEST: "1"
+    TMPDIR: "$CI_PROJECT_DIR/.docker-tmp"
   before_script:
-    - apk add --no-cache nodejs npm bash git
-    # Node from alpine may be 20.x — use node image side-car style if needed
-    - node -v || true
-    - until docker info >/dev/null 2>&1; do echo "waiting for docker…"; sleep 2; done
-  script:
+    - node -e "if(process.versions.node !== '22.19.0') process.exit(1)"
+    - apt-get update
+    - apt-get install -y --no-install-recommends docker.io
+    - mkdir -p "$TMPDIR"
     - |
-      # Prefer Node 22 for tests; if apk node is too old, run tests in node container with docker.sock
-      if node -e "const [a,b]=process.versions.node.split('.').map(Number); process.exit(a>22||(a===22&&b>=19)?0:1)" 2>/dev/null; then
-        npm ci
-        # Pull sandbox image used by Alloy defaults
-        docker pull node:22-bookworm
-        node --test test/integration/docker-sandbox.e2e.test.mjs
-      else
-        echo "Host node too old for unit runner; using node:22.19 container with docker CLI"
-        docker pull node:22-bookworm
-        docker pull node:22.19-bookworm
-        docker run --rm \
-          -v "$CI_PROJECT_DIR:$CI_PROJECT_DIR" \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -w "$CI_PROJECT_DIR" \
-          -e ALLOY_HOME=/tmp/alloy-ci-home \
-          -e PI_CODING_AGENT_DIR=/tmp/alloy-ci-agent \
-          node:22.19-bookworm \
-          bash -lc "npm ci && node --test test/integration/docker-sandbox.e2e.test.mjs"
-      fi
-  # dind can be flaky on some runners — keep visible but don't block main if service missing
-  allow_failure: true
+      for attempt in $(seq 1 60); do
+        docker info >/dev/null 2>&1 && break
+        if [ "$attempt" -eq 60 ]; then
+          echo "Docker daemon did not become ready" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+  script:
+    - npm ci
+    - docker pull node:22-bookworm
+    - ALLOY_REQUIRE_DOCKER_TEST=1 node --test test/integration/docker-sandbox.e2e.test.mjs
 
 pack-smoke:
   stage: pack
@@ -95,9 +105,11 @@ pack-smoke:
     - grep -q 'install.sh' pack-list.txt
     - grep -q 'scripts/install-cli.sh' pack-list.txt
     - grep -q 'bin/alloy.mjs' pack-list.txt
-    - grep -q 'test/fixtures/fake-mcp-server.mjs' pack-list.txt || true
+    - grep -q 'npm-shrinkwrap.json' pack-list.txt
+    - grep -q 'CONTRIBUTING.md' pack-list.txt
     - node -e "const p=require('./package.json'); if(p.engines.node!=='>=22.19.0') process.exit(1)"
-    - node -e "const v=require('./package.json').version; const l=require('./package-lock.json').version; if(v!==l){console.error('version mismatch',v,l); process.exit(1)}"
+    - npm run release:verify
+    - if [ -n "${CI_COMMIT_TAG:-}" ]; then npm run release:verify:publish; fi
   artifacts:
     when: always
     paths:
@@ -107,13 +119,21 @@ pack-smoke:
 audit:
   stage: test
   <<: *default_rules
-  allow_failure: true
   script:
     - *npm_setup
-    - npm audit --audit-level=$AUDIT_LEVEL || true
-    - |
-      echo "Full audit (informational — nested Pi deps may report high/moderate):"
-      npm audit || true
+    - npm audit --omit=dev --audit-level=$AUDIT_LEVEL
+
+sbom:
+  stage: pack
+  <<: *default_rules
+  script:
+    - *npm_setup
+    - npm run --silent sbom > alloy.cdx.json
+    - node -e "const b=require('./alloy.cdx.json'); if(b.bomFormat!=='CycloneDX'||!b.specVersion) process.exit(1)"
+  artifacts:
+    paths:
+      - alloy.cdx.json
+    expire_in: 30 days
 
 doctor-cli:
   stage: test

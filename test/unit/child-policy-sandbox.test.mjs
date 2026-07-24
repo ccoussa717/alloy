@@ -40,6 +40,7 @@ const {
   buildChildPolicyManifest,
   resolveChildExecutionPolicy,
   runChildAgent,
+  buildChildSpawnPlan,
   createIsolatedChildHome,
   provisionChildAuthBroker,
   PROVIDER_CREDENTIAL_ENV_KEYS,
@@ -262,6 +263,60 @@ describe("mechanical enforcer consumption", () => {
 });
 
 describe("docker-positive sandbox children execute in container", () => {
+  it("mounts a hoisted Pi dependency tree at a stable container path", () => {
+    const originalDockerHost = process.env.DOCKER_HOST;
+    process.env.DOCKER_HOST = "tcp://docker:2375";
+    const isolatedHome = createIsolatedChildHome();
+    const policyDir = mkdtempSync(join(tmpdir(), "alloy-child-policy-manifest-"));
+    const policyPath = join(policyDir, "policy.json");
+    const nodeModulesRoot = join(tempdirForHoistedPi(), "node_modules");
+    const piCli = join(
+      nodeModulesRoot,
+      "@earendil-works",
+      "pi-coding-agent",
+      "dist",
+      "cli.js",
+    );
+
+    try {
+      writeFileSync(policyPath, "{}\n");
+      const plan = buildChildSpawnPlan({
+        policy: {
+          sandbox: true,
+          permissionProfile: "ask-all",
+        },
+        inv: {
+          command: process.execPath,
+          argsPrefix: [piCli],
+          piNodeModulesRoot: nodeModulesRoot,
+        },
+        piArgs: ["--mode", "json", "--no-session", "-p", "hello"],
+        cwd: project,
+        childEnv: {},
+        isolatedHome,
+        policyPath,
+        dockerImage: "node:22-bookworm",
+      });
+
+      assert.ok(
+        plan.args.includes(`${nodeModulesRoot}:/alloy-runtime/node_modules:ro`),
+      );
+      const imageIndex = plan.args.indexOf("node:22-bookworm");
+      assert.deepEqual(plan.args.slice(imageIndex + 1, imageIndex + 3), [
+        "node",
+        "/alloy-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+      ]);
+      assert.ok(!plan.args.includes(piCli));
+      assert.equal(plan.env.DOCKER_HOST, "tcp://docker:2375");
+    } finally {
+      if (originalDockerHost === undefined) delete process.env.DOCKER_HOST;
+      else process.env.DOCKER_HOST = originalDockerHost;
+      rmSync(isolatedHome.home, { recursive: true, force: true });
+      rmSync(policyDir, { recursive: true, force: true });
+      rmSync(join(nodeModulesRoot, ".."), { recursive: true, force: true });
+    }
+  });
+
   it("sandbox + docker daemon → spawn plan backend docker (never host node)", async () => {
     const result = await runChildAgent({
       prompt: "hello",
@@ -314,6 +369,10 @@ describe("docker-positive sandbox children execute in container", () => {
     assert.equal(result.error, "sandbox_unavailable");
   });
 });
+
+function tempdirForHoistedPi() {
+  return mkdtempSync(join(tmpdir(), "alloy-hoisted-pi-"));
+}
 
 describe("credential isolation — host auth.json unreadability", () => {
   it("PROVIDER keys not on allowlist; buildChildEnv uses isolated HOME", () => {

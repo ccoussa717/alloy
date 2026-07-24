@@ -6,7 +6,7 @@ import {
   CHILD_ENV_ALLOWLIST,
 } from "../../lib/child-runner.mjs";
 
-describe("P0.3 child isolation", () => {
+describe("child isolation", () => {
   it("buildChildEnv does not copy full process.env", () => {
     process.env.ALLOY_HOST_SECRET_MARKER = "should-not-appear";
     process.env.AWS_SECRET_ACCESS_KEY = "leak-me";

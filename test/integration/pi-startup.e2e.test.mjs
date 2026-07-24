@@ -1,5 +1,5 @@
 /**
- * Isolated HOME / Pi startup smoke (Ava P1 verification).
+ * Isolated HOME / Pi startup smoke.
  * Does not require network model calls.
  */
 

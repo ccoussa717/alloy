@@ -7,7 +7,7 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Field | Value |
 |---|---|
 | Package | `@earendil-works/pi-coding-agent` |
-| Version (pinned range) | `^0.80.10` (resolved 0.80.10 at last audit) |
+| Version | `0.82.0` |
 | License | **MIT** |
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
@@ -44,10 +44,9 @@ Alloy **redistributes Pi only as an npm dependency** (not vendored source in thi
 
 | Field | Value |
 |---|---|
-| Package | `@kylaira/alloy` |
-| Copyright | Copyright (c) 2026 Kylaira / Chris Coussa |
-| License (current tree) | MIT (`LICENSE`) |
-| Strategy note | Public launch discussion recommended **Apache-2.0** for Alloy originals while keeping Pi MIT — **not applied yet** |
+| Package | `alloy-agent` |
+| Copyright | Copyright (c) 2026 Alloy contributors |
+| License | MIT (`LICENSE`) |
 
 ## What Alloy owns (divergence from bare Pi)
 
@@ -58,7 +57,7 @@ Alloy does **not** fork or patch Pi’s published sources in-tree. Divergence is
 | `bin/alloy.mjs`, `install.sh`, `scripts/` | Launcher, Pi discovery, PATH install |
 | `extensions/*` | Product commands, policy, MCP bridge, modes, auto, agents, sandbox, honesty, UI |
 | `lib/*` | Config trust boundary, capabilities, child runner, checkpoints, worktrees, memory, MCP client, docker sandbox |
-| `skills/`, `prompts/`, `themes/`, `agents/` | Starter skills, mode prompts, theme, role prompts |
+| `skills/`, `prompts/`, `themes/` | Starter skills, mode prompts, and theme |
 | `docs/*` | Product + security documentation |
 | `test/*` | Alloy unit/integration tests |
 
@@ -84,8 +83,5 @@ Differentiation must stay **demonstrable in code and docs** (this file + `docs/S
 
 Alloy remains **org-agnostic**: no required dependency on any company mesh or knowledge base. See `docs/BOUNDARY.md`.
 
-## Audit record
-
-| Date | Action |
-|---|---|
-| 2026-07-23 | Attribution pass for security-readiness (Grok). Confirmed dependency MIT via package metadata + upstream LICENSE fetch; no in-tree Pi source fork. |
+Dependency versions and integrity are pinned in `npm-shrinkwrap.json`. Release
+CI generates a CycloneDX SBOM and verifies package metadata before publication.

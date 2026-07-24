@@ -1,10 +1,10 @@
 {
   "version": 1,
   "servers": {
-    "example-everything": {
+    "example-reviewed-stdio": {
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "command": "/absolute/path/to/reviewed-mcp-server",
+      "args": [],
       "env": {},
       "enabled": false
     },

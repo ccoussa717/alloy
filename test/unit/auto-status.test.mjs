@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveAutoStatus } from "../../lib/auto-status.mjs";
 
-describe("P0.5 truthful auto status", () => {
+describe("truthful auto status", () => {
   it("COMPLETE only when pass", () => {
     assert.deepEqual(resolveAutoStatus({ pass: true }), {
       status: "COMPLETE",

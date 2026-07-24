@@ -49,10 +49,12 @@ type ServerRow = {
  */
 const g = globalThis as typeof globalThis & {
   __alloyMcpManager?: InstanceType<typeof McpManager>;
-  __alloyMcpRegisteredTools?: Set<string>;
+  __alloyMcpRegisteredTools?: Map<string, string>;
 };
 if (!g.__alloyMcpManager) g.__alloyMcpManager = new McpManager();
-if (!g.__alloyMcpRegisteredTools) g.__alloyMcpRegisteredTools = new Set();
+if (!(g.__alloyMcpRegisteredTools instanceof Map)) {
+  g.__alloyMcpRegisteredTools = new Map();
+}
 const manager = g.__alloyMcpManager;
 const registeredNames = g.__alloyMcpRegisteredTools;
 
@@ -78,8 +80,13 @@ function registerToolsFromManager(pi: ExtensionAPI) {
   const tools = manager.getRegisteredTools();
   let added = 0;
   for (const t of tools) {
-    if (registeredNames.has(t.registerName)) continue;
-    registeredNames.add(t.registerName);
+    const identity = `${t.server}\0${t.tool}`;
+    const registeredIdentity = registeredNames.get(t.registerName);
+    if (registeredIdentity && registeredIdentity !== identity) {
+      throw new Error(`MCP tool registration identity changed: ${t.registerName}`);
+    }
+    if (registeredIdentity) continue;
+    registeredNames.set(t.registerName, identity);
     const server = t.server;
     const tool = t.tool;
     const desc =
@@ -133,14 +140,19 @@ function isConnectableSpec(s: {
   return Boolean(s.command || s.url);
 }
 
-async function connectAll(pi: ExtensionAPI, ctx?: { ui?: { notify?: Function; setStatus?: Function } }) {
+async function connectAll(
+  pi: ExtensionAPI,
+  ctx?: { ui?: { notify?: Function; setStatus?: Function } },
+  selected?: Array<{ name: string; spec: object }>,
+) {
   // Ensure MCP ${ENV} secrets are present even if launcher did not load them
   loadAlloyEnvFile({ force: true });
   ensureMcpConfig();
-  const { servers } = loadMcpConfig(process.cwd());
-  const enabled = Object.entries(servers).filter(([, s]) =>
-    isConnectableSpec(s as { enabled?: boolean; command?: string; url?: string }),
-  );
+  const enabled = selected
+    ? selected.map(({ name, spec }) => [name, spec] as const)
+    : Object.entries(loadMcpConfig(process.cwd()).servers).filter(([, s]) =>
+        isConnectableSpec(s as { enabled?: boolean; command?: string; url?: string }),
+      );
   if (!enabled.length) {
     return {
       results: [] as Array<{
@@ -395,7 +407,7 @@ export function registerMcp(pi: ExtensionAPI) {
       if (globalCfg.mcp?.connectOnStart) {
         const auto = listAutoConnectServers(cwd);
         if (auto.length > 0) {
-          const { results, reg, ok, fail } = await connectAll(pi, ctx);
+          const { results, reg, ok, fail } = await connectAll(pi, ctx, auto);
           const failN = fail?.length || 0;
           if (ok > 0 && failN === 0) {
             const bits = (results || [])

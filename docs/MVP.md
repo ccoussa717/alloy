@@ -1,8 +1,9 @@
 # Alloy MVP Contract
 
-**Status:** Implemented as of v0.8.2 (+ child-policy branch). This document is the product contract, not a backlog of unfinished ideas.
+**Status:** Implemented in the v0.8.2 pre-release source. This document is the product contract,
+not a backlog of unfinished ideas.
 
-## In (shipped)
+## In (implemented)
 
 1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, xAI Grok via Pi `/login` (API keys as fallback). `/doctor` reports status without printing secrets.
 2. **Durable memory** — User + project facts survive `/new` and new processes (`/remember`, `/memory`).
@@ -24,7 +25,6 @@
 
 ## Out (deferred)
 
-- Public open-source launch packaging (canonical public remote, SBOM, reporting URL, quiet preview) — packaging gate only; product boundary is already org-agnostic (see `docs/BOUNDARY.md`).
 - Native descriptor-relative `openat` checkpoint helper (TOCTOU hardening beyond current fail-closed revalidation).
 - Micro-VM sandbox product (beyond Docker).
 - Provider marketplace / every OpenRouter model as first-class surface.
@@ -33,7 +33,8 @@
 
 ## Exit tests (operator machine)
 
-Main-harness adoption (org-agnostic; dual private/OSS lens): see **[MAIN-HARNESS.md](./MAIN-HARNESS.md)** and **[BOUNDARY.md](./BOUNDARY.md)**.
+Operator adoption: see **[OPERATIONS.md](./OPERATIONS.md)** and
+**[BOUNDARY.md](./BOUNDARY.md)**.
 
 - [ ] `/login` works for Claude, Codex, and Grok (or honest red/green via `/doctor`)
 - [ ] Real repo work with tools under `ask-dangerous` (default)

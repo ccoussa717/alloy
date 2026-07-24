@@ -1,18 +1,43 @@
-# Security
+# Security policy
 
-Alloy engineering security readiness, threat model, credential-flow audit, and
-isolation claims live in:
+## Supported versions
 
-**[docs/SECURITY.md](./docs/SECURITY.md)**
+Alloy has no public release yet. This policy becomes active when the canonical
+public repository and private vulnerability intake are available.
 
-Pi attribution and Alloy-vs-Pi boundary:
-
-**[docs/ATTRIBUTION.md](./docs/ATTRIBUTION.md)**
+| Version | Supported |
+|---|---|
+| Pre-release source | No public support channel |
 
 ## Report a vulnerability
 
-**While private / pre-public:** contact the maintainers (see README) through your
-team’s private channel. Do not file public issues with exploit details.
+Do not open a public issue with exploit details, credentials, private prompts,
+or customer data.
 
-**Public reporting URL:** TBD if/when the project is published (add a dedicated
-security contact or advisory process at that time).
+No public vulnerability-reporting channel exists yet. Authorized pre-release
+testers should contact the person who supplied the source, without technical
+details, and request a private channel. Public release is blocked until the
+canonical repository's private vulnerability-reporting feature is enabled.
+
+Maintainers aim to acknowledge a report within three business days and provide
+a status update within seven business days. Timelines for a fix depend on
+severity, reproducibility, and upstream dependencies.
+
+Include:
+
+- affected Alloy and Node versions;
+- operating system and install method;
+- minimal reproduction steps;
+- security impact;
+- whether the issue involves Pi or another upstream package; and
+- a safe way to contact you.
+
+## Scope
+
+Alloy is a single-operator local coding harness. Host-mode policy is not a
+filesystem sandbox. Reports that rely only on another process already running
+as the same operating-system user are generally outside the security boundary,
+but credential leaks, policy bypasses, path escapes, unsafe defaults, and
+sandbox failures are in scope.
+
+The detailed threat model is in [docs/SECURITY.md](./docs/SECURITY.md).

@@ -79,7 +79,8 @@ export function registerSandbox(pi: ExtensionAPI) {
   pi.on("user_bash", () => {
     if (!isSandboxProfile()) return;
     try {
-      ensureSandboxContainer(process.cwd());
+      const info = ensureSandboxContainer(process.cwd());
+      setSandboxActive(true, info.name);
       return {
         operations: createDockerBashOperations(process.cwd()) as BashOperations,
       };
@@ -148,7 +149,11 @@ export function registerSandbox(pi: ExtensionAPI) {
       }
 
       if (cmd === "stop") {
-        stopSandboxContainer(process.cwd());
+        const stopped = stopSandboxContainer(process.cwd());
+        if (!stopped.stopped) {
+          ctx.ui.notify(`Sandbox stop failed: ${stopped.error}`, "error");
+          return;
+        }
         setSandboxActive(false, null);
         ctx.ui.setStatus("alloy-sandbox", undefined);
         ctx.ui.notify("Sandbox container stopped.", "info");
@@ -178,13 +183,14 @@ export function registerSandbox(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
-    try {
-      if (getState().sandboxActive) {
-        stopSandboxContainer(process.cwd());
-        setSandboxActive(false, null);
+    if (getState().sandboxActive) {
+      const stopped = stopSandboxContainer(process.cwd());
+      if (!stopped.stopped) {
+        const message = `Sandbox shutdown cleanup failed: ${stopped.error}`;
+        console.error(message);
+        throw new Error(message);
       }
-    } catch {
-      // ignore
+      setSandboxActive(false, null);
     }
   });
 }

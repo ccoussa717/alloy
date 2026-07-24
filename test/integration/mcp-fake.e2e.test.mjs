@@ -1,5 +1,5 @@
 /**
- * Fake MCP process integration (Ava P1 verification).
+ * Fake MCP process integration.
  * Spawns test/fixtures/fake-mcp-server.mjs over stdio via McpManager.
  */
 

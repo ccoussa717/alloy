@@ -16,15 +16,22 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
+import {
+  findPackageRoot,
+  findPiCli,
+  readPackageVersion,
+} from "../lib/pi-package.mjs";
 
 // Load ~/.pi/alloy/env early so MCP ${VAR} headers work under Pi.
 try {
   const { loadAlloyEnvFile } = await import(
     new URL("../lib/alloy-env.mjs", import.meta.url).href
   );
-  loadAlloyEnvFile();
+  const result = loadAlloyEnvFile();
+  if (result.reason && result.reason !== "missing") {
+    console.error(`warning: Alloy secrets file not loaded: ${result.reason}`);
+  }
 } catch {
   // non-fatal — extension also loads this file
 }
@@ -52,25 +59,9 @@ function readAlloyVersion() {
 }
 
 function readPiVersion() {
-  const candidates = [
-    join(
-      ALLOY_ROOT,
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
-      "package.json",
-    ),
-  ];
-  for (const p of candidates) {
-    try {
-      if (!exists(p)) continue;
-      const pkg = JSON.parse(readFileSync(p, "utf8"));
-      if (pkg.version) return pkg.version;
-    } catch {
-      // continue
-    }
-  }
-  return null;
+  return readPackageVersion(
+    findPackageRoot("@earendil-works/pi-coding-agent", [ALLOY_ROOT]),
+  );
 }
 
 function printVersionAndExit() {
@@ -207,7 +198,11 @@ function findPiBin() {
   /** @type {string[]} */
   const candidates = [];
 
-  // 1) Local dependency next to this repo (most reliable after npm install)
+  // 1) Normal Node resolution shape, including npm-hoisted dependencies.
+  const resolvedCli = findPiCli([ALLOY_ROOT]);
+  if (resolvedCli) candidates.push(resolvedCli);
+
+  // 2) Local dependency next to this repo.
   candidates.push(
     join(
       ALLOY_ROOT,
@@ -218,18 +213,6 @@ function findPiBin() {
       "cli.js",
     ),
   );
-
-  // 2) Resolve package main from alloy root, then sibling cli.js
-  try {
-    const requireFromRoot = createRequire(join(ALLOY_ROOT, "package.json"));
-    const main = requireFromRoot.resolve("@earendil-works/pi-coding-agent");
-    // typically …/dist/index.js → cli.js beside it
-    candidates.push(join(dirname(main), "cli.js"));
-    candidates.push(join(dirname(main), "dist", "cli.js"));
-    candidates.push(join(dirname(dirname(main)), "dist", "cli.js"));
-  } catch {
-    // fall through
-  }
 
   // 3) Global npm root (even when `pi` is not on PATH)
   const gRoot = npmRootGlobal();
@@ -305,8 +288,8 @@ function findPiBin() {
     [
       "Alloy: could not find the Pi CLI.",
       "",
-      "From the alloy repo directory, run:",
-      "  npm install",
+      "From an Alloy source checkout, run:",
+      "  npm ci",
       "  # then confirm:",
       `  ls ${localCli}`,
       "",

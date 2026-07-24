@@ -1,5 +1,11 @@
 # Alloy
 
+> **Pre-release:** Alloy is not published to npm and does not yet have a
+> canonical public repository, support forum, or public vulnerability-reporting
+> channel. Do not install `alloy-agent` from the npm registry. Public
+> distribution remains blocked on the launch requirements in
+> [docs/RELEASING.md](./docs/RELEASING.md).
+
 **Alloy** is a multi-provider coding agent harness built on [Pi](https://pi.dev).  
 One terminal command. Three subscriptions you actually use. Durable memory, skills that improve with approval, and MCP — without forking Pi or reinventing OAuth.
 
@@ -7,24 +13,19 @@ One terminal command. Three subscriptions you actually use. Durable memory, skil
 alloy
 ```
 
-### Install (Linux / macOS)
+### Pre-release setup (Linux / macOS)
 
 Requires **Node.js ≥ 22.19** (Pi engine requirement).
 
-**Recommended** (works for private remotes, forks, and future public mirrors):
+From a source checkout supplied by a maintainer:
 
 ```bash
-git clone <alloy-git-url> ~/dev/alloy
-cd ~/dev/alloy && bash install.sh
+npm ci
+npm link
 ```
 
-Override remote when using `install.sh` clone path: `ALLOY_REPO=… ALLOY_REPO_HTTPS=… bash install.sh`.
-
-If a raw `install.sh` URL is published for your host:
-
-```bash
-curl -fsSL <raw-url-to-install.sh> | bash
-```
+Release artifacts will include a shrinkwrap, and publication is configured to
+require npm provenance. Avoid mutable `curl | bash` or branch-based installs.
 
 Then:
 
@@ -37,41 +38,43 @@ Inside a session: `/doctor` (providers, catalog defaults, Claude extra-usage eco
 
 ### CI / verification
 
-GitLab CI (`.gitlab-ci.yml`) on Node 22.19:
+Release CI on Node 22.19 verifies:
 
 - `npm ci` + full unit tests + `alloy --version`
-- `npm pack --dry-run` must include `install.sh` and `scripts/install-cli.sh`
-- package / lockfile version alignment
+- a clean install and real Pi startup from the packed npm artifact
+- package / shrinkwrap integrity and exact executable dependencies
 - catalog default model resolution
-- `npm audit` (informational; nested Pi deps may still report high/moderate)
+- historic secret detection, SBOM generation, and blocking high/critical audit
 
 Local smoke:
 
 ```bash
-npm run ci:local          # unit + integration + version + pack
-npm run test:integration  # fake MCP, isolated startup, Docker e2e (skips if no Docker)
+npm run ci:local          # unit + integration + pack + security + SBOM
+npm run test:integration  # MCP, packed install, Pi startup, Docker if present
 ```
 
-Integration coverage (Ava P1 verification):
+Integration coverage:
 
 | Suite | What it proves |
 |-------|----------------|
 | `mcp-fake.e2e` | Real stdio MCP process: connect, list/call tools, env scrub (no host secrets) |
 | `mcp-http.e2e` | Streamable HTTP MCP: connect, list/call tools against local fixture |
 | `pi-startup.e2e` | Isolated `HOME` / `PI_CODING_AGENT_DIR`: `alloy --version`, `--help`, doctor |
-| `docker-sandbox.e2e` | Live Docker: container start/reuse, bind-mount exec, `network=none` inspect; **skips** if no daemon |
+| `packed-install.e2e` | Actual npm tarball install: hoisted Pi discovery and native Pi startup |
+| `docker-sandbox.e2e` | Live Docker: container start/reuse, bind-mount exec, `network=none` inspect |
 
-CI: `integration-mcp-pi` always runs; `integration-docker` uses Docker-in-Docker (`allow_failure: true` if runner has no dind).
+Docker integration may skip on developer machines without Docker. Release CI
+sets `ALLOY_REQUIRE_DOCKER_TEST=1` and fails if the sandbox cannot run.
 
 | | |
 |---|---|
 | **Status** | MVP active development (v0.8.2) |
-| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` ^0.81.1 · Node **≥22.19** |
-| **Package** | `@kylaira/alloy` (npm scope is branding; product is org-agnostic) |
+| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` 0.82.0 · Node **≥22.19** |
+| **Planned package identity** | `alloy-agent` (not published) |
 | **CLI** | `alloy` |
 | **Boundary** | [docs/BOUNDARY.md](./docs/BOUNDARY.md) — what ships vs stays outside |
 | **Security** | [docs/SECURITY.md](./docs/SECURITY.md) · [ATTRIBUTION](./docs/ATTRIBUTION.md) · `npm run security:scan` |
-| **Adoption** | [docs/MAIN-HARNESS.md](./docs/MAIN-HARNESS.md) — main-harness checklist |
+| **Operations** | [docs/OPERATIONS.md](./docs/OPERATIONS.md) — installation and safety checklist |
 
 ---
 
@@ -154,7 +157,6 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 - Micro-VM sandbox product (beyond Docker)
 - Every OpenRouter model and a provider marketplace
 - GUI / hosted control plane
-- Public GitHub launch packaging (fresh history, SBOM, quiet security preview) — see `docs/SECURITY.md`
 - Native descriptor-relative `openat` checkpoint helper
 
 ---
@@ -209,25 +211,16 @@ sequenceDiagram
 
 - **Node.js ≥ 22.19** (Pi engine requirement)
 - Network access for model providers
-- GitLab SSH key (for this repo)
+- npm
 
-### One-command install (Linux / macOS)
+### Pre-release source setup (Linux / macOS)
 
-Needs **git** and **Node ≥ 22.19**. Clone from whatever remote hosts Alloy for you:
+From the source checkout provided to an authorized tester:
 
 ```bash
-git clone <alloy-git-url> ~/dev/alloy && bash ~/dev/alloy/install.sh
+npm ci
+npm link
 ```
-
-`install.sh` defaults `ALLOY_REPO` / `ALLOY_REPO_HTTPS` to the current upstream only so a bare `bash install.sh` still works when that remote is reachable — override for forks.
-
-That single script will:
-
-1. Clone or update `~/dev/alloy` (override with `ALLOY_DIR=…`)  
-2. `npm install` (pulls Pi and deps)  
-3. Install the `alloy` command on PATH (next to `node` + `~/.local/bin`)  
-4. Patch shell rc files if needed  
-5. Smoke-test `alloy --help`  
 
 Then:
 
@@ -235,17 +228,8 @@ Then:
 alloy
 ```
 
-Optional env vars: `ALLOY_DIR`, `ALLOY_REPO`, `ALLOY_BRANCH`, `ALLOY_NODE_MIN`.
-
-### Manual install (already cloned)
-
-```bash
-cd ~/dev/alloy
-git pull
-bash install.sh
-# or only refresh the CLI shim:
-npm run install-cli
-```
+The canonical clone URL will be added at public launch. Until then, run
+`npm run ci:local` only from a source checkout supplied for review.
 
 ### First run
 
@@ -401,26 +385,27 @@ Examples (see `config/mcp.example.json`):
 {
   "version": 1,
   "servers": {
-    "everything": {
+    "reviewed-local-server": {
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-everything"],
-      "enabled": true
+      "command": "/absolute/path/to/reviewed-mcp-server",
+      "args": [],
+      "enabled": false
     },
-    "open-brain": {
+    "remote-mcp": {
       "transport": "http",
       "url": "https://your-host.example/mcp",
       "headers": {
-        "Authorization": "Bearer ${OPEN_BRAIN_MCP_TOKEN}"
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
       },
-      "enabled": true
+      "enabled": false
     }
   }
 }
 ```
 
 ```text
-export OPEN_BRAIN_MCP_TOKEN=…   # shell env, not committed
+install -m 600 /dev/null ~/.pi/alloy/env
+printf '%s\n' 'MCP_HTTP_TOKEN=replace-me' >> ~/.pi/alloy/env
 /mcp connect
 /mcp list
 ```
@@ -484,8 +469,8 @@ alloy/
 ├── themes/alloy-dark.json
 ├── config/*.example.json
 ├── docs/
-│   ├── BOUNDARY.md          # org-agnostic / OSS-ready product line
-│   ├── MAIN-HARNESS.md      # adoption checklist
+│   ├── BOUNDARY.md          # organization-neutral product line
+│   ├── OPERATIONS.md        # installation and safety checklist
 │   ├── MVP.md
 │   ├── ARCHITECTURE.md
 │   └── SECURITY.md
@@ -497,11 +482,9 @@ alloy/
 ## Development
 
 ```bash
-git clone <alloy-git-url>
-cd alloy
-npm install
+npm ci
 npm test
-bash scripts/install-cli.sh
+npm link
 alloy --help
 ```
 
@@ -519,7 +502,7 @@ alloy --help
 2. Do not implement provider OAuth — use Pi `/login`.
 3. Never log or artifact credential values.
 4. Self-improve skills only after explicit approval.
-5. MCP tools must share native policy when the bridge lands.
+5. MCP tools share the same policy gate as native tools.
 6. Security and recovery before multi-agent autonomy.
 
 ---
@@ -584,17 +567,18 @@ Configure workers in `~/.pi/alloy/config.json`:
 {
   "fusion": {
     "models": [
-      "anthropic/claude-sonnet-4-5",
-      "openai-codex/gpt-5.1",
-      "xai/grok-3"
+      "anthropic/claude-sonnet-4-6",
+      "openai-codex/gpt-5.4",
+      "xai/grok-4.5"
     ],
-    "mergerModel": "anthropic/claude-sonnet-4-5"
+    "mergerModel": "anthropic/claude-sonnet-4-6"
   },
   "budgets": { "maxFixRounds": 2 }
 }
 ```
 
-The longer architect plan (independent reviewer, fusion, sandbox profiles, acceptance contracts) remains valid as **post-MVP** product work. This repo’s job first is: **something Chris can use every day on Claude, Codex, and Grok.**
+The immediate product goal is a reliable daily harness for Claude, Codex, and
+Grok users.
 
 ---
 
@@ -626,4 +610,5 @@ MIT
 
 ## Maintainers
 
-See git history and package metadata. Copyright: Kylaira / Chris Coussa (see `LICENSE`).
+See [GOVERNANCE.md](./GOVERNANCE.md) for project roles and decision-making.
+Contribution instructions are in [CONTRIBUTING.md](./CONTRIBUTING.md).

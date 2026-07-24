@@ -127,7 +127,7 @@ function initRepo(name) {
   return repo;
 }
 
-describe("P0.4 safe checkpoints", () => {
+describe("safe checkpoints", () => {
   test("checkpoint and restore dirty tracked tree", () => {
     const repo = initRepo("tracked");
     writeFileSync(join(repo, "a.txt"), "v2-dirty\n");

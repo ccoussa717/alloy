@@ -1,5 +1,5 @@
 /**
- * P0.1 adversarial tests: untrusted project cannot weaken Alloy.
+ * Adversarial tests: an untrusted project cannot weaken Alloy.
  */
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -93,7 +93,7 @@ after(() => {
   }
 });
 
-describe("P0.1 trust boundary", () => {
+describe("trust boundary", () => {
   it("isWeakerPermission detects ask-none weaker than ask-dangerous", () => {
     assert.equal(isWeakerPermission("ask-none", "ask-dangerous"), true);
     assert.equal(isWeakerPermission("ask-all", "ask-dangerous"), false);

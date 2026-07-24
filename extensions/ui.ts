@@ -175,7 +175,7 @@ function rgbFg(r: number, g: number, b: number, text: string): string {
 }
 
 // #1FE07A core sits on a soft #0FB863 / #0A5C38 halo
-const GLOW_MID = (s: string) => rgbFg(15, 184, 99, s); // kylaira-ish mid
+const GLOW_MID = (s: string) => rgbFg(15, 184, 99, s); // inner glow
 const GLOW_DIM = (s: string) => rgbFg(10, 92, 56, s); // outer soft halo
 
 /**

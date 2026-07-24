@@ -55,4 +55,4 @@ Do not describe host mode as “isolation.”
 | Private hosting | Access control, clone URL | Product boundary above |
 | Public open source | Canonical URL, SECURITY reporting, SBOM/CODEOWNERS launch gate | Same core; org packs remain outside |
 
-See also: [MAIN-HARNESS.md](./MAIN-HARNESS.md), [SECURITY.md](./SECURITY.md).
+See also: [OPERATIONS.md](./OPERATIONS.md), [SECURITY.md](./SECURITY.md).

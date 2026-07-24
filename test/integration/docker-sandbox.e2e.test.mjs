@@ -1,6 +1,6 @@
 /**
- * Real Docker sandbox e2e (Ava P1 verification).
- * Skips cleanly when Docker CLI/daemon/image unavailable.
+ * Real Docker sandbox e2e.
+ * Skips locally when Docker is unavailable, but release CI can require it.
  */
 
 import { describe, it, after } from "node:test";
@@ -17,6 +17,8 @@ process.env.ALLOY_HOME = join(home, "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, "agent");
 
 const sbx = await import(join(root, "lib", "docker-sandbox.mjs"));
+const { buildChildSpawnPlan } = await import(join(root, "lib", "child-runner.mjs"));
+const { findPiRuntime } = await import(join(root, "lib", "pi-package.mjs"));
 
 function dockerAvailable() {
   const which = spawnSync(
@@ -35,6 +37,10 @@ function dockerAvailable() {
 }
 
 const docker = dockerAvailable();
+
+if (!docker.ok && process.env.ALLOY_REQUIRE_DOCKER_TEST === "1") {
+  throw new Error(`Docker is required for this test run: ${docker.reason}`);
+}
 
 describe("integration: docker sandbox e2e", { skip: !docker.ok && `skip: ${docker.reason}` }, () => {
   const cwd = join(home, "project");
@@ -102,6 +108,44 @@ describe("integration: docker sandbox e2e", { skip: !docker.ok && `skip: ${docke
     );
     assert.equal(insp.status, 0, insp.stderr);
     assert.match(insp.stdout.trim(), /none/i);
+  });
+
+  it("executes the real child-container Pi runtime plan", () => {
+    const runtime = findPiRuntime([root]);
+    assert.ok(runtime);
+    const childHome = join(home, "child-home");
+    const policyDir = join(home, "child-policy");
+    mkdirSync(join(childHome, ".pi", "agent"), { recursive: true });
+    mkdirSync(policyDir, { recursive: true });
+    const policyPath = join(policyDir, "policy.json");
+    writeFileSync(policyPath, "{}\n");
+    const plan = buildChildSpawnPlan({
+      policy: { sandbox: true, permissionProfile: "ask-all" },
+      inv: {
+        command: process.execPath,
+        argsPrefix: [runtime.cli],
+        piNodeModulesRoot: runtime.nodeModulesRoot,
+      },
+      piArgs: ["--list-models"],
+      cwd,
+      childEnv: {},
+      isolatedHome: { home: childHome, piDir: join(childHome, ".pi", "agent") },
+      policyPath,
+      dockerImage: "node:22-bookworm",
+    });
+    const result = spawnSync(plan.command, plan.args, {
+      cwd: plan.cwd,
+      env: plan.env,
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const check = spawnSync(
+      "docker",
+      ["ps", "-a", "--filter", `name=^/${plan.containerName}$`, "--format", "{{.Names}}"],
+      { encoding: "utf8", env: plan.env },
+    );
+    assert.equal((check.stdout || "").trim(), "");
   });
 
   it("stopSandboxContainer removes container", () => {

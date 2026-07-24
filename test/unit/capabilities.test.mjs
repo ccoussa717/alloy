@@ -8,7 +8,7 @@ import {
   isDangerousBash,
 } from "../../lib/capabilities.mjs";
 
-describe("P0.2 capability policy", () => {
+describe("capability policy", () => {
   it("assigns explicit caps to native and alloy tools", () => {
     assert.deepEqual(capabilitiesForTool("read"), ["read"]);
     assert.deepEqual(capabilitiesForTool("write"), ["workspace_write"]);

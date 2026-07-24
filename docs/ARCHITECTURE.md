@@ -37,13 +37,13 @@ alloy (bin/alloy.mjs)
 | **Alloy libs** | Config trust boundary, capabilities, MCP client, checkpoints, worktrees, child runner, sandbox, memory store |
 | **Operator state** | `~/.pi/alloy/` (config, memory, mcp, runs, worktrees) and Pi's `~/.pi/agent/` (auth, sessions, skills) |
 
-## Trust boundary (P0.1)
+## Trust boundary
 
 - **Global operator config** (`~/.pi/alloy/config.json`) sets security-sensitive defaults: permission profile, sandbox, auto budgets, role models.
 - **Project config** may set non-security preferences (e.g. default mode) but **cannot weaken** operator policy, permission ceiling, or MCP trust.
 - Project MCP entries are loaded only when explicitly trusted; untrusted project MCP cannot inject host tools.
 
-## Capability gate (P0.2)
+## Capability gate
 
 All tool calls (native + MCP) pass through `lib/capabilities.mjs`:
 
@@ -73,7 +73,9 @@ Children (`/auto`, `/fusion`, `/agent`) spawn via `lib/child-runner.mjs`:
 
 ## Checkpoints and worktrees
 
-See the concurrency boundary section below (merged from remediation work). Checkpoints authenticate metadata against immutable Git anchors; restore fails closed for unversioned/legacy records.
+See the concurrency boundary section below. Checkpoints authenticate metadata
+against immutable Git anchors; restore fails closed for unversioned or legacy
+records.
 
 ## Filesystem concurrency boundary
 

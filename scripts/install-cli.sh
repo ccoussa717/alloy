@@ -67,7 +67,7 @@ BIN_SRC_REAL="$(_realpath "$BIN_SRC")"
 # --- dependencies ------------------------------------------------------------
 if [[ ! -d "$ROOT/node_modules/@earendil-works/pi-coding-agent" ]]; then
   log "Installing npm dependencies in $ROOT …"
-  (cd "$ROOT" && npm install)
+  (cd "$ROOT" && npm ci)
 fi
 
 if ! command -v node >/dev/null 2>&1; then
@@ -85,7 +85,7 @@ write_wrapper() {
   mkdir -p "$dest_dir"
 
   # If dest is a symlink, remove it first so we don't follow it and
-  # clobber bin/alloy.mjs (that was the Chappie breakage).
+  # clobber bin/alloy.mjs.
   if [[ -L "$dest" ]]; then
     log "Removing old symlink: $dest"
     rm -f "$dest"
@@ -137,7 +137,7 @@ EOF
 
 INSTALLED=()
 
-# 1) Next to node (usually already on PATH — nvm, hermes node, etc.)
+# 1) Next to node (usually already on PATH through a version manager)
 NODE_ALLOY="$NODE_BIN_DIR/alloy"
 if write_wrapper "$NODE_ALLOY"; then
   INSTALLED+=("$NODE_ALLOY")
@@ -240,7 +240,7 @@ log "OK — alloy is installed at: $ALLOY_PATH"
 # Smoke: must invoke the bash wrapper OR node on real JS — not corrupted source
 if ! "$ALLOY_PATH" --help >/dev/null 2>&1; then
   log "Warning: alloy --help failed."
-  log "  cd $ROOT && npm install && npm run install-cli"
+  log "  cd $ROOT && npm ci && npm run install-cli"
   # Show a few lines of error for debugging
   "$ALLOY_PATH" --help 2>&1 | head -20 || true
 else
