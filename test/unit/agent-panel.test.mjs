@@ -16,7 +16,7 @@ test("render panel shows agent statuses", () => {
   const lines = panel.renderPanelLines(p);
   assert.ok(lines[0].includes("ALLOY AUTO"));
   assert.ok(lines.some((l) => l.includes("scout") && l.includes("✓")));
-  assert.ok(lines.some((l) => l.includes("builder") && l.includes("●")));
+  assert.ok(lines.some((l) => l.includes("Builder") && l.includes("●")));
 });
 
 test("themed render falls back without theme", () => {
@@ -33,4 +33,19 @@ test("ticker lines appear in panel", () => {
   const lines = panel.renderPanelLines(p);
   assert.ok(lines.some((l) => l.includes("live")));
   assert.ok(lines.some((l) => l.includes("coder") && l.includes("bash")));
+});
+
+test("fusion roles render as Architect, Builder, then Synthesizer", () => {
+  const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-1" });
+  panel.upsertAgent(p, { role: "synthesizer", status: "pending" });
+  panel.upsertAgent(p, { role: "builder", status: "ok" });
+  panel.upsertAgent(p, { role: "architect", status: "ok" });
+
+  const roleLines = panel
+    .renderPanelLines(p)
+    .filter((line) => /Architect|Builder|Synthesizer/.test(line));
+  assert.equal(roleLines.length, 3);
+  assert.match(roleLines[0], /Architect/);
+  assert.match(roleLines[1], /Builder/);
+  assert.match(roleLines[2], /Synthesizer/);
 });

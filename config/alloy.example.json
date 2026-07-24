@@ -25,5 +25,10 @@
   "mcp": {
     "enabled": true,
     "connectOnStart": false
+  },
+  "fusion": {
+    "architectModel": "anthropic/claude-sonnet-4-6",
+    "builderModel": "openai-codex/gpt-5.4",
+    "synthesizerModel": "anthropic/claude-opus-4-6"
   }
 }

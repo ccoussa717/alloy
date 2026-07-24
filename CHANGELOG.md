@@ -9,6 +9,9 @@ and releases use semantic versioning during the 0.x development series.
 
 ### Changed
 
+- Replaced generic Fusion workers/build mode with a bounded read-only Architect,
+  Builder, and Synthesizer workflow using provider-scoped ephemeral credentials
+  and mechanically repository-confined read tools.
 - Prepared organization-neutral open-source packaging and community policies.
 - Pinned executable dependencies and added a release-included npm shrinkwrap.
 - Added packed-artifact startup, release metadata, SBOM, and security gates.

@@ -5,7 +5,7 @@ not a backlog of unfinished ideas.
 
 ## In (implemented)
 
-1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, xAI Grok via Pi `/login` (API keys as fallback). `/doctor` reports status without printing secrets.
+1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, xAI Grok via Pi `/login`. API keys authenticate matching API routes; `OPENAI_API_KEY` is for `openai/...`, not `openai-codex/...`. `/doctor` reports status without printing secrets.
 2. **Durable memory** — User + project facts survive `/new` and new processes (`/remember`, `/memory`).
 3. **Skills** — Create, compose (skills using skills), capture → approve → promote (`/skill-capture`, `/skill-promote`).
 4. **MCP** — Config + live **stdio**, **HTTP (streamable)**, and **SSE** bridges (`/mcp connect`); tools share the central capability gate. Headers support `${ENV}` expansion.
@@ -14,7 +14,7 @@ not a backlog of unfinished ideas.
 7. **Worktrees** — Isolated builder trees under `~/.pi/alloy/worktrees/` with dirty-baseline seeding.
 8. **Diagnostics** — `/diagnose` + `alloy_diagnostics` (typecheck/lint/test when present).
 9. **Auto** — `/auto` multi-role pipeline (scout → plan → checkpoint → build → diagnostics → review) with **fix loops** on review FAIL / bad diagnostics.
-10. **Fusion** — `/fusion [plan|build]` independent workers + attributed merger.
+10. **Fusion** — `/fusion <objective>` runs read-only Architect and Builder proposals concurrently, then one attributed Synthesizer call.
 11. **Sub-agents** — `/agent`, `/agents`, profiles, live agent panel.
 12. **Docker sandbox** — `/permissions sandbox` routes bash through a session container (`node:22-bookworm`, network none by default). Fail closed if Docker is missing.
 13. **Permissions UX** — Shift+Tab cycles ask-all / ask-some / ask-dangerous / ask-none; `/effort` for thinking levels.
@@ -45,6 +45,7 @@ Operator adoption: see **[OPERATIONS.md](./OPERATIONS.md)** and
 - [ ] `/checkpoint` + `/undo` round-trip on a dirty file (including untracked)
 - [ ] `/permissions sandbox` + `/sandbox status` with Docker present; fails closed without
 - [ ] `/auto` small feature request writes run artifacts under `~/.pi/alloy/runs/`
+- [ ] `/fusion` records two valid proposals, one attributed synthesis, usage, and truthful status without leaking credentials
 - [ ] No secrets in memory files, drafts, doctor output, or child env (see credential audit)
 
 ## Verification (CI / local)

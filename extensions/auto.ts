@@ -1,6 +1,6 @@
 /**
  * /auto orchestration with live agent panel + fix loops.
- * /fusion multi-model merge.
+ * /fusion read-only Architect-Builder synthesis.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -34,21 +34,44 @@ function paintPanel(panel: unknown, ctx?: { ui?: ExtensionContext["ui"] }) {
       : renderPanelLines(panel);
     ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
     const phase = (panel as { phase?: string })?.phase || "run";
+    const isFusion = (panel as { title?: string })?.title === "ALLOY FUSION";
+    const statusKey = isFusion ? "alloy-fusion" : "alloy-auto";
+    const statusPrefix = isFusion ? "fusion" : "auto";
     const fix = (panel as { fixRound?: number; maxFixRounds?: number })?.maxFixRounds
       ? ` fix${(panel as { fixRound?: number }).fixRound || 0}/${(panel as { maxFixRounds?: number }).maxFixRounds}`
       : "";
     ui.setStatus?.(
-      "alloy-auto",
+      statusKey,
       (ui as { theme?: { fg: (c: string, t: string) => string } }).theme?.fg
         ? (ui as { theme: { fg: (c: string, t: string) => string } }).theme.fg(
             "accent",
-            `auto:${phase}${fix}`,
+            `${statusPrefix}:${phase}${fix}`,
           )
-        : `auto:${phase}${fix}`,
+        : `${statusPrefix}:${phase}${fix}`,
     );
   } catch {
     // ignore UI paint errors
   }
+}
+
+function formatFusionLines(summary: any) {
+  const models = summary.models || {};
+  const usage = summary.usage || {};
+  const lines = [
+    `Fusion ${summary.status} (${summary.runId})`,
+    `Architect: ${models.architect || "n/a"}`,
+    `Builder: ${models.builder || "n/a"}`,
+    `Synthesizer: ${models.synthesizer || "n/a"}`,
+    `Usage: ${Number(usage.input) || 0} input, ${Number(usage.output) || 0} output, ${Number(usage.turns) || 0} turns, $${(Number(usage.cost) || 0).toFixed(4)}`,
+    `Artifacts: ${summary.runDir}`,
+    "",
+    "Synthesis:",
+    summary.synthesis || "(not produced)",
+  ];
+  if (summary.synthesizer) {
+    lines.splice(6, 0, `Synthesis artifact: ${join(summary.runDir, "fusion", "synthesis.md")}`);
+  }
+  return lines;
 }
 
 function clearPanel(ctx?: { ui?: ExtensionContext["ui"] }) {
@@ -150,33 +173,21 @@ export function registerAuto(pi: ExtensionAPI) {
 
   pi.registerCommand("fusion", {
     description:
-      "Multi-model fusion: /fusion [plan|build] <request> — independent workers + merger",
+      "Plan-only fusion: /fusion <objective> - Architect + Builder + Synthesizer",
     handler: async (args, ctx) => {
-      let raw = (args || "").trim();
-      if (!raw) {
+      const request = (args || "").trim();
+      if (!request) {
         ctx.ui.notify(
-          "Usage: /fusion [plan|build] <request>\nDefault mode: plan (read-only workers).",
+          "Usage: /fusion <objective>\nRuns read-only Architect and Builder proposals, then synthesis.",
           "warning",
         );
-        return;
-      }
-      let mode: "plan" | "build" = "plan";
-      if (/^build\b/i.test(raw)) {
-        mode = "build";
-        raw = raw.replace(/^build\s+/i, "");
-      } else if (/^plan\b/i.test(raw)) {
-        mode = "plan";
-        raw = raw.replace(/^plan\s+/i, "");
-      }
-      if (!raw.trim()) {
-        ctx.ui.notify("Provide a request after /fusion [plan|build]", "warning");
         return;
       }
 
       if (ctx.hasUI) {
         const ok = await ctx.ui.confirm(
           "Start fusion?",
-          `Mode: ${mode}\nIndependent workers + attributed merge.\n\n${raw.slice(0, 280)}`,
+          `Read-only Architect + Builder proposals, then attributed synthesis.\n\n${request.slice(0, 280)}`,
         );
         if (!ok) return;
       }
@@ -184,10 +195,9 @@ export function registerAuto(pi: ExtensionAPI) {
       panelUi = ctx.ui;
       ctx.ui.setWorkingMessage?.("Alloy fusion running…");
       try {
-        const parentOpts = resolveParentChildSpawnOpts();
+        const parentOpts = resolveParentChildSpawnOpts({ mode: "plan" });
         const summary = await runFusion({
-          request: raw,
-          mode,
+          request,
           cwd: process.cwd(),
           ...parentOpts,
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
@@ -199,17 +209,14 @@ export function registerAuto(pi: ExtensionAPI) {
             }
           },
         });
-        const lines = [
-          `status: ${summary.status}`,
-          `mode: ${summary.mode}`,
-          `run: ${summary.runId}`,
-          `dir: ${summary.runDir}`,
-          "",
-          ...(summary.panel || []),
-          "",
-          "Merged write-up: fusion/merged.md in the run dir",
-        ];
-        await ctx.ui.select("Fusion complete", lines);
+        const lines = formatFusionLines(summary);
+        pi.sendMessage({
+          customType: "alloy-fusion",
+          content: lines.join("\n"),
+          display: true,
+          details: summary,
+        });
+        await ctx.ui.select(`Fusion ${summary.status}`, lines);
       } catch (err) {
         ctx.ui.notify(String((err as Error).message || err), "error");
       } finally {
@@ -223,6 +230,7 @@ export function registerAuto(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       clearPanel(ctx);
       ctx.ui.setStatus("alloy-auto", undefined);
+      ctx.ui.setStatus("alloy-fusion", undefined);
       ctx.ui.notify("Agent panel cleared.", "info");
     },
   });
@@ -291,20 +299,16 @@ export function registerAuto(pi: ExtensionAPI) {
     name: "alloy_fusion",
     label: "Alloy Fusion",
     description:
-      "Run multi-model fusion: independent workers then an attributed merger. mode=plan (default) or build.",
-    promptSnippet: "Multi-model fusion with provenance",
+      "Run plan-only multi-model fusion: read-only Architect and Builder proposals followed by attributed synthesis.",
+    promptSnippet: "Architect-Builder synthesis with provenance",
     parameters: Type.Object({
       request: Type.String(),
-      mode: Type.Optional(
-        Type.Union([Type.Literal("plan"), Type.Literal("build")]),
-      ),
     }),
     async execute(_id, params, signal) {
       try {
-        const parentOpts = resolveParentChildSpawnOpts();
+        const parentOpts = resolveParentChildSpawnOpts({ mode: "plan" });
         const summary = await runFusion({
           request: params.request,
-          mode: params.mode === "build" ? "build" : "plan",
           cwd: process.cwd(),
           signal,
           ...parentOpts,
@@ -314,22 +318,18 @@ export function registerAuto(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: [
-                `Fusion ${summary.status} (${summary.runId})`,
-                `mode: ${summary.mode}`,
-                `artifacts: ${summary.runDir}`,
-                ...(summary.panel || []),
-              ].join("\n"),
+              text: formatFusionLines(summary).join("\n"),
             },
           ],
           details: summary,
         };
       } catch (err) {
+        const message = (err as Error).message || String(err);
         return {
           content: [
-            { type: "text", text: `Fusion failed: ${(err as Error).message || err}` },
+            { type: "text", text: `Fusion failed: ${message}` },
           ],
-          details: { error: true },
+          details: { error: true, message },
         };
       }
     },

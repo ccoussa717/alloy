@@ -45,3 +45,13 @@ test("formatTopic", () => {
   assert.match(text, /\/auto/);
   assert.match(text, /\/help/);
 });
+
+test("fusion help documents the plan-only three-role workflow", () => {
+  const topic = help.getTopic("fusion");
+  assert.match(topic.body, /\/fusion <objective>/);
+  assert.match(topic.body, /Architect.*Builder.*Synthesizer/s);
+  assert.match(topic.body, /architectModel/);
+  assert.match(topic.body, /builderModel/);
+  assert.match(topic.body, /synthesizerModel/);
+  assert.doesNotMatch(topic.body, /\[plan\|build\]|workers|mergerModel/i);
+});

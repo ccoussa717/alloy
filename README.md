@@ -143,7 +143,7 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
 | **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
 | **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
-| **Fusion** | `/fusion [plan\|build]` — independent workers + attributed merger |
+| **Fusion** | `/fusion <objective>` — read-only Architect + Builder proposals with attributed synthesis |
 | **Sub-agents** | `/agent` free-form multi-model agents · `/agents` browser · `alloy_task` |
 | **Profiles** | research=Grok · code=Codex · review=Opus · plan=Sonnet (configurable) |
 | **Agent panel** | Live widget below the editor during agents / auto / fusion |
@@ -248,7 +248,9 @@ Inside the TUI:
 /remember project uses pnpm
 ```
 
-API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`), but the **MVP target is subscriptions**.
+API keys work for the matching API provider routes (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` for `openai/...`, and `XAI_API_KEY`). The `openai-codex/...`
+route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subscriptions**.
 
 ---
 
@@ -282,7 +284,7 @@ API keys still work as a fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_A
 | Live panel ticker | Streaming tool lines while agents run |
 | `/profiles` | Multi-model profile map |
 | `/auto <request>` | Multi-agent pipeline + fix loops |
-| `/fusion [plan\|build] <request>` | Multi-model fusion |
+| `/fusion <objective>` | Plan-only Architect-Builder fusion |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
 | **`Shift+Tab`** | Cycle permission ask-levels |
@@ -552,30 +554,35 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-  R[request] --> W1[worker 1 model A]
-  R --> W2[worker 2 model B]
-  R --> W3[worker 3 model C]
-  W1 --> M[merger]
-  W2 --> M
-  W3 --> M
-  M --> O[consensus · unique · conflicts · decision]
+  R[objective] --> A[Architect model]
+  R --> B[Builder model]
+  A --> S[Synthesizer model]
+  B --> S
+  S --> O[attributed recommendation]
 ```
 
-Configure workers in `~/.pi/alloy/config.json`:
+The Architect and Builder inspect the repository concurrently with read-only
+tools. Synthesis runs only after both structured proposals validate. Configure
+the three explicit model routes in `~/.pi/alloy/config.json`:
 
 ```json
 {
   "fusion": {
-    "models": [
-      "anthropic/claude-sonnet-4-6",
-      "openai-codex/gpt-5.4",
-      "xai/grok-4.5"
-    ],
-    "mergerModel": "anthropic/claude-sonnet-4-6"
+    "architectModel": "anthropic/claude-sonnet-4-6",
+    "builderModel": "openai-codex/gpt-5.4",
+    "synthesizerModel": "anthropic/claude-opus-4-6"
   },
-  "budgets": { "maxFixRounds": 2 }
+  "budgets": { "maxCostUsd": 25 }
 }
 ```
+
+An eligible successful Fusion run performs exactly three model calls. Auth,
+proposal validation, abort, or proposal-budget failures stop before synthesis.
+Fusion never implements or merges code.
+Each child receives only the selected provider credential in its ephemeral Pi
+home, and its read tools are mechanically confined to the repository root. Run
+artifacts contain proposals, synthesis, model identity, usage, and a truthful
+terminal status, but never credential values.
 
 The immediate product goal is a reliable daily harness for Claude, Codex, and
 Grok users.

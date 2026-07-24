@@ -33,7 +33,7 @@ test("detects auth.json subscription-like credentials", () => {
     join(agentDir, "auth.json"),
     JSON.stringify({
       anthropic: { type: "oauth", accessToken: secretA },
-      openai: { type: "oauth", accessToken: secretB },
+      "openai-codex": { type: "oauth", accessToken: secretB },
       xai: { type: "subscription", token: secretC },
     }),
     "utf8",
@@ -69,6 +69,27 @@ test("env key path reports name only, never value", () => {
   assert.ok(!report.includes(envSecret));
   assert.ok(!full.includes(envSecret));
   delete process.env.XAI_API_KEY;
+});
+
+test("OPENAI_API_KEY does not claim openai-codex subscription health", () => {
+  writeFileSync(join(agentDir, "auth.json"), "{}", "utf8");
+  process.env.OPENAI_API_KEY = "synthetic-openai-key";
+  const codex = mod.diagnoseProviders().find((result) => result.id === "openai-codex");
+  assert.equal(codex.ok, false);
+  assert.equal(codex.status, "missing");
+  delete process.env.OPENAI_API_KEY;
+});
+
+test("legacy OpenAI auth aliases do not claim openai-codex health", () => {
+  for (const alias of ["openai", "chatgpt", "codex"]) {
+    writeFileSync(
+      join(agentDir, "auth.json"),
+      JSON.stringify({ [alias]: { type: "oauth", accessToken: "synthetic" } }),
+      "utf8",
+    );
+    const codex = mod.diagnoseProviders().find((result) => result.id === "openai-codex");
+    assert.equal(codex.ok, false, `${alias} must not satisfy openai-codex`);
+  }
 });
 
 test("cleanup", () => {

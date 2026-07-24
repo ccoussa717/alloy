@@ -40,7 +40,7 @@ isolation and Docker for stronger containment.
 | MCP bypasses policy | Native and MCP tools share the same gate | MCP and policy tests |
 | Child exceeds parent | Mechanical child policy manifest and enforcer | child-policy tests |
 | Required sandbox falls back to host | Docker path fails closed | Docker integration test |
-| Child inherits credentials | Allowlisted environment and isolated home | child-runner tests |
+| Child inherits broad credentials | Provider keys stripped from env; isolated home; Fusion leases only the selected provider | child-runner and credential-broker tests |
 | Checkpoint path escape or clobber | Authenticated anchors, containment checks, collision preflight | checkpoint tests |
 | Worktree escapes managed root | Canonical containment and hardened removal | worktree tests |
 | Doctor leaks credentials | Presence and shape only; never values | provider tests |
@@ -52,6 +52,16 @@ isolation and Docker for stronger containment.
 Pi owns interactive provider authentication. Alloy does not copy the host's Pi
 authentication into child homes by default. Child processes receive an
 allowlisted environment with known provider credential variables removed.
+
+Fusion is the narrow exception to credential-free child homes. For each role,
+Alloy selects only the provider entry required by that configured model and
+writes it to the child's ephemeral `auth.json` with mode `0600`. Environment-key
+references must resolve before a lease is valid. The broker payload stays in
+memory until child provisioning and must not be logged, prompted, or persisted
+in Fusion artifacts. Fusion policy manifests mechanically confine `read`,
+`grep`, `find`, and `ls` to the canonical repository root, including realpath
+checks that block symlink escapes, so model tools cannot read the lease or host
+credential paths.
 
 Remote MCP headers can expand environment variables from `~/.pi/alloy/env`.
 That file must be a regular file owned by the current user with mode `0600` and
@@ -67,6 +77,7 @@ other executable. Published examples never execute floating npm packages.
 |---|---|---|
 | Provider keys absent from child env | Yes | Yes |
 | Host Pi auth copied by default | No | No |
+| Fusion selected-provider lease | Ephemeral child `auth.json` only | Ephemeral child `auth.json` only |
 | Arbitrary same-user host paths blocked | No | Yes, outside mounts |
 | Network blocked by default | No | Yes |
 | Linux capabilities dropped | No | Yes |
