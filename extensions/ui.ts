@@ -3,14 +3,14 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   Rostex "alloy" wordmark dead-center (accent green, ~6-row FIGlet size)
+ *   bold "alloy" wordmark dead-center (accent green, double-height)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: word "alloy", accent #1FE07A.
- * Wordmark typeface: Rostex Regular (bitmap only; same scale as prior outline).
- * https://www.1001fonts.com/rostex-font.html
+ * Wordmark is real terminal glyphs (bold + DECDHL), not block/pixel art.
+ * Custom OTFs (e.g. Rostex) cannot be loaded into cell text by a TUI.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -130,40 +130,30 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: Rostex Regular "alloy" at FIGlet-Standard scale (~6 rows).
-// Rasterized half-blocks (█▀▄) — same height as the outline mark Chris liked.
-// https://www.1001fonts.com/rostex-font.html
+// Splash wordmark: regular bold terminal letters, double-height.
+// No block/pixel art. DECDHL (ESC #3 / #4) scales the terminal face ~2×;
+// many emulators also double the width. Falls back gracefully where ignored.
 // ---------------------------------------------------------------------------
 
-/** Pre-rasterized Rostex "alloy" — 6×46, half-block cells. */
-const ALLOY_MARK: readonly string[] = [
-  "   ▄▄▄▄   ▄▄       ▄        ▄▄▄▄▄▄▄ ▄▄      ▄▄",
-  "  ██▀▀█   ██       █       ▄█▀▀▀▀▀█▄ █      █▀",
-  "  █   ██  ██       █       █▀     ▀█ ██▄▄▄▄██ ",
-  " ██▄▄▄▄█  ██       █       █▄     ▄█  ▀▀██▀▀  ",
-  "▄█▀▀▀▀▀██ ██▄▄▄▄▄▄ █▄▄▄▄▄▄ ▀█▄▄▄▄▄█▀    ██    ",
-  "▀▀      ▀ ▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀     ▀▀    ",
-];
-
-/** Centered accent-green Rostex wordmark (preserves half-blocks). */
+/** Centered bold accent "alloy" — real glyphs, double-height (~2× first splash). */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const markW = Math.max(...ALLOY_MARK.map((r) => r.length));
-  const left = Math.max(0, Math.floor((width - markW) / 2));
+  const plain = "alloy";
+  let word = plain;
+  if (theme.bold) word = theme.bold(word);
+  word = theme.fg("accent", word);
+  // Double-height lines use ~2 columns per character (xterm DECDHL ⇒ double-width).
+  const slots = Math.max(1, Math.floor(width / 2));
+  const left = Math.max(0, Math.floor((slots - plain.length) / 2));
   const pad = " ".repeat(left);
-  return ALLOY_MARK.map((row) => {
-    let painted = "";
-    for (const ch of row) {
-      painted += ch === " " ? " " : theme.fg("accent", ch);
-    }
-    return pad + painted;
-  });
+  // ESC #3 = top half, ESC #4 = bottom half (same content on both lines).
+  return [`\x1b#3${pad}${word}`, `\x1b#4${pad}${word}`];
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = ALLOY_MARK.length;
+const SPLASH_LOGO_ROWS = 2;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -541,7 +531,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · Rostex alloy wordmark · green #1FE07A",
+        "OpenCode splash · bold double-height alloy · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
