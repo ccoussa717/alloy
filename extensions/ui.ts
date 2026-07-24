@@ -3,7 +3,7 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   plain bold "alloy" wordmark dead-center (accent green)
+ *   large outline "alloy" wordmark dead-center (accent green, ~5× line height)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
@@ -128,25 +128,40 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: plain terminal text (terminal face, bold + accent).
-// No block/pixel art — the TUI already has a real font.
+// Splash wordmark: large outline "alloy" (~5× one-line height).
+// Terminals can't scale the cell font per widget, so we use a clean FIGlet
+// Standard outline (regular ASCII strokes — not █ pixel fills / grain).
 // ---------------------------------------------------------------------------
 
-/** Centered bold accent "alloy" — one line, uses the terminal's typeface. */
+/** FIGlet Standard "alloy" — 6 rows × 24 cols outline. */
+const ALLOY_MARK: readonly string[] = [
+  "        _ _",
+  "   __ _| | | ___  _   _",
+  "  / _` | | |/ _ \\| | | |",
+  " | (_| | | | (_) | |_| |",
+  "  \\__,_|_|_|\\___/ \\__, |",
+  "                  |___/",
+];
+
+/** Centered accent-green outline wordmark. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const plain = "alloy";
-  let word = plain;
-  if (theme.bold) word = theme.bold(word);
-  word = theme.fg("accent", word);
-  const left = Math.max(0, Math.floor((width - plain.length) / 2));
-  return [" ".repeat(left) + word];
+  const markW = Math.max(...ALLOY_MARK.map((r) => r.length));
+  const left = Math.max(0, Math.floor((width - markW) / 2));
+  const pad = " ".repeat(left);
+  return ALLOY_MARK.map((row) => {
+    let painted = "";
+    for (const ch of row) {
+      painted += ch === " " ? " " : theme.fg("accent", ch);
+    }
+    return pad + painted;
+  });
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = 1;
+const SPLASH_LOGO_ROWS = ALLOY_MARK.length;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -524,7 +539,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · plain alloy wordmark · green #1FE07A",
+        "OpenCode splash · large outline alloy wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
