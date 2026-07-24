@@ -3,13 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   bold "alloy harness" wordmark dead-center (accent green)
+ *   bold fullwidth "alloy harness" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: "alloy harness", accent #1FE07A.
- * Wordmark is real terminal glyphs (bold), not block/pixel art or DECDHL.
+ * Wordmark is real terminal glyphs (bold + fullwidth, fusion-harness style).
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -129,20 +129,32 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: one bold line of regular terminal letters, centered.
-// No DECDHL (duplicates on terminals that ignore it), no block/pixel art.
+// Splash wordmark: one bold line, centered.
+// Same trick as fusion-harness: fullwidth Unicode (2 cells/letter) so it
+// reads larger without DECDHL, block art, or image protocols. Falls back
+// to ASCII if the terminal is too narrow.
 // ---------------------------------------------------------------------------
 
 const SPLASH_WORDMARK = "alloy harness";
 
-/** Single centered bold accent wordmark — real glyphs, once. */
+/** ASCII → fullwidth letters/digits (U+FF01..) and ideographic space. */
+function toFullwidth(s: string): string {
+  return s
+    .replace(/[A-Za-z0-9]/g, (c) =>
+      String.fromCharCode(c.charCodeAt(0) + 0xfee0),
+    )
+    .replace(/ /g, "\u3000");
+}
+
+/** Single centered bold accent wordmark — fullwidth when it fits. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const plain = SPLASH_WORDMARK;
+  const full = toFullwidth(SPLASH_WORDMARK);
+  // Prefer fullwidth (~2× cell width); ASCII if the pane is too narrow.
+  const plain = visibleWidth(full) <= width ? full : SPLASH_WORDMARK;
   let word = plain;
   if (theme.bold) word = theme.bold(word);
   word = theme.fg("accent", word);
-  // Center against full terminal width (plain length = visible width for ASCII).
-  const left = Math.max(0, Math.floor((width - plain.length) / 2));
+  const left = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
   return [" ".repeat(left) + word];
 }
 
@@ -528,7 +540,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · bold centered “alloy harness” · green #1FE07A",
+        "OpenCode splash · bold fullwidth “alloy harness” · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
