@@ -16,6 +16,8 @@ const {
   FUSION_EFFORT_LEVELS,
   getFusionRoleModelDefaults,
   getFusionArgumentCompletions,
+  groupFusionModelRoutes,
+  resolveFusionSessionCredentialLease,
   resolveFusionRoleEfforts,
   resolveFusionRoleModels,
   runFusion,
@@ -26,7 +28,7 @@ const {
   saveGlobalFusionConfig,
 } = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
-const { renderPanelThemed, renderPanelLines } = require(
+const { renderFusionPaneLines, renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
 );
 const { resolveParentChildSpawnOpts } = require(
@@ -41,12 +43,33 @@ function paintPanel(panel: unknown, ctx?: { ui?: ExtensionContext["ui"] }) {
   if (!ui?.setWidget) return;
   try {
     const theme = (ui as { theme?: unknown }).theme;
-    const lines = theme
-      ? renderPanelThemed(panel, theme)
-      : renderPanelLines(panel);
-    ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
     const phase = (panel as { phase?: string })?.phase || "run";
     const isFusion = (panel as { title?: string })?.title === "ALLOY FUSION";
+    if (isFusion) {
+      ui.setWidget(
+        "alloy-agents",
+        (_tui: unknown, widgetTheme: any) => ({
+          render(width: number) {
+            const lines = renderFusionPaneLines(panel, width);
+            if (!widgetTheme?.fg) return lines;
+            return lines.map((line: string, index: number) =>
+              index === 0
+                ? widgetTheme.fg("accent", line)
+                : /^[┌├└].*[┐┤┘]$/.test(line)
+                  ? widgetTheme.fg("dim", line)
+                  : line,
+            );
+          },
+          invalidate() {},
+        }),
+        { placement: "belowEditor" },
+      );
+    } else {
+      const lines = theme
+        ? renderPanelThemed(panel, theme)
+        : renderPanelLines(panel);
+      ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
+    }
     const statusKey = isFusion ? "alloy-fusion" : "alloy-auto";
     const statusPrefix = isFusion ? "fusion" : "auto";
     const fix = (panel as { fixRound?: number; maxFixRounds?: number })?.maxFixRounds
@@ -82,6 +105,13 @@ function formatFusionLines(summary: any) {
   ];
   if (summary.synthesizer) {
     lines.splice(6, 0, `Synthesis artifact: ${join(summary.runDir, "fusion", "synthesis.md")}`);
+  }
+  if (summary.error === "provider_unavailable") {
+    lines.splice(
+      6,
+      0,
+      `Provider unavailable in this Alloy session: ${(summary.missingProviders || []).join(", ")}`,
+    );
   }
   return lines;
 }
@@ -130,7 +160,7 @@ async function setupFusion(ctx: ExtensionContext) {
     return;
   }
   const global = loadGlobalConfig();
-  const allowed = new Set<string>(global.providers?.allow || []);
+  const allowed = (global.providers?.allow || []).filter(Boolean);
   const defaults = getFusionRoleModelDefaults(global);
   const favorites = (global.providers?.favorites || []).filter(Boolean);
   const current: Record<string, string> = {
@@ -140,8 +170,7 @@ async function setupFusion(ctx: ExtensionContext) {
   };
   const routes = ctx.modelRegistry
     .getAll()
-    .map((model) => `${model.provider}/${model.id}`)
-    .filter((route) => !allowed.size || allowed.has(route.split("/", 1)[0]));
+    .map((model) => `${model.provider}/${model.id}`);
   const configuredRoutes = [
     ...Object.values(current),
     ...favorites,
@@ -149,25 +178,44 @@ async function setupFusion(ctx: ExtensionContext) {
   ].filter(
     (route): route is string =>
       typeof route === "string" &&
-      route.includes("/") &&
-      (!allowed.size || allowed.has(route.split("/", 1)[0])),
+      route.includes("/"),
   );
-  const uniqueRoutes = [
-    ...new Set<string>([...configuredRoutes, ...routes]),
-  ].sort();
+  const providerGroups = groupFusionModelRoutes(
+    [...configuredRoutes, ...routes],
+    allowed,
+  );
+  if (!providerGroups.length) {
+    ctx.ui.notify("No allowed Fusion models are available.", "warning");
+    return;
+  }
   const models: Record<string, string> = {};
   const efforts: Record<string, string | null> = {};
 
   for (const role of FUSION_ROLES) {
+    const providerLabel = await ctx.ui.select(
+      `Fusion ${role} provider (current: ${current[role]})`,
+      providerGroups.map((provider) => provider.label),
+    );
+    if (!providerLabel) {
+      ctx.ui.notify("Fusion setup cancelled; no settings changed.", "info");
+      return;
+    }
+    const provider = providerGroups.find(
+      (candidate) => candidate.label === providerLabel,
+    );
+    if (!provider) {
+      ctx.ui.notify("Fusion setup cancelled; no settings changed.", "info");
+      return;
+    }
     const model = await ctx.ui.select(
-      `Fusion ${role} model (current: ${current[role]})`,
-      uniqueRoutes,
+      `Fusion ${role} ${provider.label} model (current: ${current[role]})`,
+      provider.models,
     );
     if (!model) {
       ctx.ui.notify("Fusion setup cancelled; no settings changed.", "info");
       return;
     }
-    models[role] = model;
+    models[role] = `${provider.id}/${model}`;
 
     const effort = await ctx.ui.select(`Fusion ${role} effort`, [
       "default (model/provider default)",
@@ -358,6 +406,8 @@ export function registerAuto(pi: ExtensionAPI) {
           request,
           cwd: process.cwd(),
           ...parentOpts,
+          loadCredentialLease: (models: string[]) =>
+            resolveFusionSessionCredentialLease(models, ctx.modelRegistry),
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
           onProgress: (msg: string) => {
             try {
@@ -462,7 +512,7 @@ export function registerAuto(pi: ExtensionAPI) {
     parameters: Type.Object({
       request: Type.String(),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const parentOpts = resolveParentChildSpawnOpts({ mode: "plan" });
         const summary = await runFusion({
@@ -470,7 +520,9 @@ export function registerAuto(pi: ExtensionAPI) {
           cwd: process.cwd(),
           signal,
           ...parentOpts,
-          onPanel: (panel: unknown) => paintPanel(panel),
+          loadCredentialLease: (models: string[]) =>
+            resolveFusionSessionCredentialLease(models, ctx.modelRegistry),
+          onPanel: (panel: unknown) => paintPanel(panel, ctx),
         });
         return {
           content: [

@@ -49,3 +49,52 @@ test("fusion roles render as Architect, Builder, then Synthesizer", () => {
   assert.match(roleLines[1], /Builder/);
   assert.match(roleLines[2], /Synthesizer/);
 });
+
+test("fusion proposal view renders Architect and Builder output side by side", () => {
+  const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-2" });
+  panel.setPhase(p, "PROPOSING");
+  panel.upsertAgent(p, {
+    role: "architect",
+    status: "running",
+    output: "Architecture boundaries and risks",
+  });
+  panel.upsertAgent(p, {
+    role: "builder",
+    status: "running",
+    output: "Implementation steps and tests",
+  });
+
+  const lines = panel.renderFusionPaneLines(p, 100);
+  assert.match(lines.join("\n"), /Architect.*Builder/);
+  assert.ok(
+    lines.some(
+      (line) =>
+        line.includes("Architecture boundaries") &&
+        line.includes("Implementation steps"),
+    ),
+  );
+  assert.ok(lines.every((line) => panel.visibleWidth(line) <= 100));
+});
+
+test("fusion panes stack on narrow terminals and synthesis uses full width", () => {
+  const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-3" });
+  panel.setPhase(p, "PROPOSING");
+  panel.upsertAgent(p, { role: "architect", status: "ok", output: "ARCH OUTPUT" });
+  panel.upsertAgent(p, { role: "builder", status: "ok", output: "BUILD OUTPUT" });
+  let lines = panel.renderFusionPaneLines(p, 50);
+  assert.ok(lines.findIndex((line) => line.includes("ARCH OUTPUT")) < lines.findIndex((line) => line.includes("BUILD OUTPUT")));
+
+  panel.setPhase(p, "SYNTHESIZING");
+  panel.upsertAgent(p, {
+    role: "synthesizer",
+    status: "running",
+    output: "Combined recommendation",
+  });
+  lines = panel.renderFusionPaneLines(p, 100);
+  assert.match(lines.join("\n"), /Synthesizer/);
+  assert.match(lines.join("\n"), /Combined recommendation/);
+  assert.doesNotMatch(lines[1], /Architect.*Builder/);
+
+  lines = panel.renderFusionPaneLines(p, 12);
+  assert.ok(lines.every((line) => panel.visibleWidth(line) <= 12));
+});
