@@ -3,14 +3,12 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   Rostex-raster "alloy" wordmark dead-center (full green, no glow)
+ *   plain bold "alloy" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: word "alloy", accent #1FE07A.
- * Wordmark typeface: Rostex Regular (Roomspace; desktop EULA; bitmap only).
- * https://www.1001fonts.com/rostex-font.html
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -130,45 +128,25 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: "alloy" in Rostex Regular (Roomspace Creative Lab)
-// Rasterized from Rostex-Regular.otf → terminal half-blocks (█▀▄).
-// Full accent green, no glow. Readable letterforms (not lattice mush).
-// https://www.1001fonts.com/rostex-font.html
+// Splash wordmark: plain terminal text (terminal face, bold + accent).
+// No block/pixel art — the TUI already has a real font.
 // ---------------------------------------------------------------------------
 
-/** Pre-rasterized Rostex "alloy" (█/▀/▄ = ink, space = empty). 10×62. */
-const ROSTEX_ALLOY: readonly string[] = [
-  "    ▄███▄    ▄█▄         ██           ▄▄█████▄▄  █▄         ██",
-  "   ▄█████▄   ███         ██          ▄█████████▄ ██        ██▀",
-  "   ██▀ ▀██   ███         ██         ▄██▀     ▀██ ██▄       ██ ",
-  "   ██   ██   ███         ██         ██▀       ███ ██      ▄█▀ ",
-  "  ██▀   ▀██  ███         ██         ██        ▀██ ██████████  ",
-  "  ██     ██  ███         ██         ██        ▄██  ████████▀  ",
-  " ███████████ ███         ██         ██▄       ███     ██▀     ",
-  " ███████████ ███         ██         ▀██▄     ▄██      ██      ",
-  "▄██       ██  ██████████ ███████████ ▀█████████▀      ██      ",
-  "██         ██ ██████████ ██████████▀  ▀▀█████▀        ██      ",
-];
-
-/** Paint the Rostex bitmap in full accent green, centered. Preserves half-blocks. */
+/** Centered bold accent "alloy" — one line, uses the terminal's typeface. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const ink = (ch: string) => (ch === " " ? " " : theme.fg("accent", ch));
-  const lines: string[] = [];
-  for (const row of ROSTEX_ALLOY) {
-    let painted = "";
-    for (const cell of row) painted += ink(cell);
-    const plain = stripAnsi(painted);
-    const left = Math.max(0, Math.floor((width - plain.length) / 2));
-    lines.push(" ".repeat(left) + painted);
-  }
-  return lines;
+  const plain = "alloy";
+  let word = plain;
+  if (theme.bold) word = theme.bold(word);
+  word = theme.fg("accent", word);
+  const left = Math.max(0, Math.floor((width - plain.length) / 2));
+  return [" ".repeat(left) + word];
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = ROSTEX_ALLOY.length;
+const SPLASH_LOGO_ROWS = 1;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -546,7 +524,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · Rostex alloy wordmark · green #1FE07A",
+        "OpenCode splash · plain alloy wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
