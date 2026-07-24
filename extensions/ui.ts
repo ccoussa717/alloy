@@ -3,13 +3,15 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   bold "alloy harness" wordmark dead-center (accent green)
+ *   bold "alloy harness" wordmark dead-center (accent green, ~3× cell size)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: "alloy harness", accent #1FE07A.
- * Wordmark is real terminal glyphs (bold), not block/pixel art or DECDHL.
+ * Wordmark: Rostex Regular as a PNG via Kitty/iTerm image protocol when
+ * available (~3 terminal rows tall). Bold cell-text fallback otherwise.
+ * Not block/pixel cell art.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -20,8 +22,18 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
-import { Key, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  Key,
+  allocateImageId,
+  getCapabilities,
+  getCellDimensions,
+  getPngDimensions,
+  renderImage,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,35 +141,131 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: one bold line of regular terminal letters, centered.
-// No DECDHL (duplicates on terminals that ignore it), no block/pixel art.
+// Splash wordmark: "alloy harness"
+// Prefer a ~3×-cell Rostex PNG (smooth letters via Kitty/iTerm). Cell-text
+// bold fallback when the terminal has no image protocol.
 // ---------------------------------------------------------------------------
 
 const SPLASH_WORDMARK = "alloy harness";
+/** Target height in terminal rows ≈ three steps above 1-cell text. */
+const SPLASH_IMAGE_ROWS = 3;
 
-/** Single centered bold accent wordmark — real glyphs, once. */
-function buildWordmark(theme: ThemeLike, width: number): string[] {
+type SplashPng = {
+  base64: string;
+  widthPx: number;
+  heightPx: number;
+};
+
+let splashPng: SplashPng | null | undefined;
+let splashImageId: number | undefined;
+
+function loadSplashPng(): SplashPng | null {
+  if (splashPng !== undefined) return splashPng;
+  try {
+    const path = join(root, "assets", "splash-wordmark.png");
+    const base64 = readFileSync(path).toString("base64");
+    const dims = getPngDimensions(base64);
+    if (!dims) {
+      splashPng = null;
+      return null;
+    }
+    splashPng = {
+      base64,
+      widthPx: dims.widthPx,
+      heightPx: dims.heightPx,
+    };
+    return splashPng;
+  } catch {
+    splashPng = null;
+    return null;
+  }
+}
+
+function imageCellSize(
+  widthPx: number,
+  heightPx: number,
+  maxWidthCells: number,
+  maxHeightCells: number,
+): { columns: number; rows: number } {
+  const cell = getCellDimensions();
+  const maxW = Math.max(1, Math.floor(maxWidthCells));
+  const maxH = Math.max(1, Math.floor(maxHeightCells));
+  const wScale = (maxW * cell.widthPx) / Math.max(1, widthPx);
+  const hScale = (maxH * cell.heightPx) / Math.max(1, heightPx);
+  const scale = Math.min(wScale, hScale);
+  return {
+    columns: Math.max(
+      1,
+      Math.min(maxW, Math.ceil((widthPx * scale) / cell.widthPx)),
+    ),
+    rows: Math.max(
+      1,
+      Math.min(maxH, Math.ceil((heightPx * scale) / cell.heightPx)),
+    ),
+  };
+}
+
+/** Centered bold text fallback — 1 cell tall (terminal default face). */
+function buildTextWordmark(theme: ThemeLike, width: number): string[] {
   const plain = SPLASH_WORDMARK;
   let word = plain;
   if (theme.bold) word = theme.bold(word);
   word = theme.fg("accent", word);
-  // Center against full terminal width (plain length = visible width for ASCII).
   const left = Math.max(0, Math.floor((width - plain.length) / 2));
   return [" ".repeat(left) + word];
+}
+
+/**
+ * Centered wordmark. Uses image protocol at ~3× cell height when available;
+ * otherwise bold cell text (1×).
+ */
+function buildWordmark(theme: ThemeLike, width: number): string[] {
+  const png = loadSplashPng();
+  const caps = getCapabilities();
+  if (png && caps.images) {
+    if (caps.images === "kitty" && splashImageId === undefined) {
+      splashImageId = allocateImageId();
+    }
+    const maxW = Math.max(20, width - 2);
+    const size = imageCellSize(
+      png.widthPx,
+      png.heightPx,
+      maxW,
+      SPLASH_IMAGE_ROWS,
+    );
+    const result = renderImage(
+      png.base64,
+      { widthPx: png.widthPx, heightPx: png.heightPx },
+      {
+        maxWidthCells: maxW,
+        maxHeightCells: SPLASH_IMAGE_ROWS,
+        imageId: splashImageId,
+        moveCursor: false,
+      },
+    );
+    if (result) {
+      const left = Math.max(0, Math.floor((width - size.columns) / 2));
+      const lines = [" ".repeat(left) + result.sequence];
+      for (let i = 1; i < result.rows; i++) lines.push("");
+      return lines;
+    }
+  }
+  return buildTextWordmark(theme, width);
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = 1;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
 const SPLASH_PANEL_ROWS = SPLASH_INPUT_ROWS + 1;
 const SPLASH_HINT_ROWS = 1;
-const SPLASH_UNIT =
-  SPLASH_LOGO_ROWS + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
+
+function splashUnit(logoRows: number): number {
+  return logoRows + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
+}
 
 // ---------------------------------------------------------------------------
 // Register
@@ -337,10 +445,13 @@ export function registerUi(pi: ExtensionAPI) {
             render(width: number) {
               if (!splashMode) return [];
               const rows = tui.terminal?.rows || 24;
-              // Top pad so logo+panel+hints sit in the vertical middle
-              const pad = Math.max(0, Math.floor((rows - SPLASH_UNIT) / 2));
-              const blanks = Array.from({ length: pad }, () => "");
               const mark = buildWordmark(theme, width);
+              // Top pad so logo+panel+hints sit in the vertical middle
+              const pad = Math.max(
+                0,
+                Math.floor((rows - splashUnit(mark.length)) / 2),
+              );
+              const blanks = Array.from({ length: pad }, () => "");
               // Gap under logo before the chat panel (editor is next)
               const gap = Array.from({ length: SPLASH_GAP }, () => "");
               return [...blanks, ...mark, ...gap];
@@ -528,7 +639,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · bold centered “alloy harness” · green #1FE07A",
+        "OpenCode splash · “alloy harness” ~3× (image or bold text) · #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
