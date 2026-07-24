@@ -11,9 +11,10 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -29,8 +30,47 @@ type ChildManifest = {
   readOnly?: boolean;
   sandbox?: boolean;
   tools?: string[] | null;
+  readRoot?: string | null;
   mechanical?: boolean;
 };
+
+const PATH_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+function normalizePiToolPath(input: string): string {
+  let normalized = input.replace(UNICODE_SPACES, " ");
+  if (normalized.startsWith("@")) normalized = normalized.slice(1);
+  if (normalized === "~") return homedir();
+  if (
+    normalized.startsWith("~/") ||
+    (process.platform === "win32" && normalized.startsWith("~\\"))
+  ) {
+    normalized = join(homedir(), normalized.slice(2));
+  }
+  if (/^file:\/\//.test(normalized)) return fileURLToPath(normalized);
+  return normalized;
+}
+
+function readEscapesRoot(
+  manifest: ChildManifest,
+  toolName: string,
+  input: Record<string, unknown>,
+): string | null {
+  if (!manifest.readRoot || !PATH_READ_TOOLS.has(toolName)) return null;
+  const rawPath = input.path == null ? "." : input.path;
+  if (typeof rawPath !== "string") return "Child enforcer: read path must be a string";
+  try {
+    const root = realpathSync(manifest.readRoot);
+    const target = realpathSync(resolve(process.cwd(), normalizePiToolPath(rawPath)));
+    const rel = relative(root, target);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      return `Child enforcer: ${toolName} path escapes the allowed repository root`;
+    }
+    return null;
+  } catch {
+    return `Child enforcer: ${toolName} path could not be verified inside the allowed repository root`;
+  }
+}
 
 function loadManifest(): ChildManifest | null {
   const path = process.env.ALLOY_CHILD_POLICY;
@@ -63,6 +103,11 @@ export function enforceChildToolCall(
   const approval = toApprovalProfile(manifest.permissionProfile || "ask-dangerous");
   const sandbox = Boolean(manifest.sandbox);
   const inDocker = env.ALLOY_CHILD_IN_DOCKER === "1";
+
+  const readRootViolation = readEscapesRoot(manifest, toolName, input);
+  if (readRootViolation) {
+    return { block: true, reason: readRootViolation, decision: "deny" };
+  }
 
   // Sandbox children must not run host bash outside the container.
   if (sandbox && toolName === "bash" && !inDocker) {

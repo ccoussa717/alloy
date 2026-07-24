@@ -161,6 +161,14 @@ describe("trust boundary", () => {
     assert.equal(detail.config.permissionProfile, "ask-all");
   });
 
+  it("trusted project cannot configure a negative cost budget", () => {
+    writeProjectAlloy({ budgets: { maxCostUsd: -1 } });
+    setRuntimeProjectTrust(project, true);
+    const detail = loadConfigDetailed(project, { trusted: true });
+    assert.equal(detail.config.budgets.maxCostUsd, 25);
+    assert.ok(detail.rejected.some((item) => /maxCostUsd.*non-negative/.test(item)));
+  });
+
   it("getSandboxConfig ignores project sandbox overrides even when trusted", () => {
     writeProjectAlloy({
       sandbox: {

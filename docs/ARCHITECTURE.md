@@ -60,9 +60,16 @@ Children (`/auto`, `/fusion`, `/agent`) spawn via `lib/child-runner.mjs`:
 | **Approval ceiling** | Child cannot exceed parent ask-level; `child-enforcer` extension clamps mechanically |
 | **Sandbox** | Orthogonal to approval. Parent sandbox or child request → Docker spawn only; fail closed if Docker missing |
 | **Env** | Allowlisted keys only; provider API keys stripped |
-| **HOME** | Isolated temp HOME / `PI_CODING_AGENT_DIR` (host `auth.json` not shared) |
+| **HOME** | Isolated temp HOME / `PI_CODING_AGENT_DIR`; host `auth.json` is never mounted or copied wholesale |
+| **Fusion credentials** | Only the selected model provider entry is leased into each child's ephemeral `0600 auth.json`; read tools are repository-root confined so the lease and host auth are inaccessible |
 | **Credential boundary claim** | `docker-fs` when sandboxed (mount policy); `env-home-isolation` on host (same-uid absolute paths remain a host OS limit — not over-claimed) |
 | **Lifecycle** | Process-group kill; stream limits; policy manifest recorded per run |
+
+Fusion is a bounded plan-only coordinator: Architect and Builder children run
+concurrently with read-only tools, and a Synthesizer runs only after both output
+contracts validate. An eligible successful run performs exactly three model
+calls; preflight, proposal, abort, and budget failures stop earlier. Fusion has
+no code-writing or automatic validation phase.
 
 ## Docker sandbox (session)
 

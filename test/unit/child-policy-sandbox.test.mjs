@@ -8,12 +8,14 @@ import assert from "node:assert/strict";
 import {
   mkdtempSync,
   mkdirSync,
+  symlinkSync,
+  realpathSync,
   writeFileSync,
   readFileSync,
   rmSync,
   existsSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -100,6 +102,13 @@ try {
     }
     if (manifest.sandbox && toolName === "bash" && env.ALLOY_CHILD_IN_DOCKER !== "1") {
       return { block: true, reason: "host bash blocked", decision: "deny" };
+    }
+    if (manifest.readRoot && ["read", "grep", "find", "ls"].includes(toolName)) {
+      const target = realpathSync(resolve(process.cwd(), String(input.path || ".")));
+      const rel = relative(realpathSync(manifest.readRoot), target);
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        return { block: true, reason: "read root escape", decision: "deny" };
+      }
     }
     const approval = tap(manifest.permissionProfile || "ask-dangerous");
     const result = evaluateToolPolicy({
@@ -242,6 +251,79 @@ describe("mechanical enforcer consumption", () => {
     });
     const d = enforceChildToolCall(manifest, "read", { path: "a.ts" }, {});
     assert.equal(d.block, false);
+  });
+
+  it("enforcer confines Fusion read tools to the repository root", () => {
+    const outside = mkdtempSync(join(tmpdir(), "alloy-child-outside-"));
+    const outsideFile = join(outside, "auth.json");
+    writeFileSync(outsideFile, "secret", { mode: 0o600 });
+    const escapeLink = join(project, "outside-link");
+    symlinkSync(outsideFile, escapeLink);
+    const manifest = buildChildPolicyManifest({
+      parentCwd: project,
+      readRoot: project,
+      mode: "plan",
+      permissionProfile: "ask-none",
+    });
+
+    assert.equal(
+      enforceChildToolCall(manifest, "read", { path: join(project, "inside.txt") }, {})
+        .block,
+      true,
+      "missing paths fail closed",
+    );
+    writeFileSync(join(project, "inside.txt"), "safe");
+    assert.equal(
+      enforceChildToolCall(manifest, "read", { path: join(project, "inside.txt") }, {})
+        .block,
+      false,
+    );
+    assert.equal(
+      enforceChildToolCall(manifest, "read", { path: outsideFile }, {}).block,
+      true,
+    );
+    assert.equal(
+      enforceChildToolCall(manifest, "read", { path: escapeLink }, {}).block,
+      true,
+    );
+
+    const tildeMirror = join(project, "~", ".pi", "agent");
+    mkdirSync(tildeMirror, { recursive: true });
+    writeFileSync(join(tildeMirror, "auth.json"), "mirror");
+
+    const atMirror = join(project, `@${outsideFile}`);
+    mkdirSync(join(atMirror, ".."), { recursive: true });
+    writeFileSync(atMirror, "mirror");
+
+    const fileUrl = pathToFileURL(outsideFile).href;
+    const fileUrlMirror = join(project, fileUrl);
+    mkdirSync(join(fileUrlMirror, ".."), { recursive: true });
+    writeFileSync(fileUrlMirror, "mirror");
+    const originalCwd = process.cwd();
+    process.chdir(project);
+    try {
+      assert.equal(
+        enforceChildToolCall(manifest, "read", { path: "~/.pi/agent/auth.json" }, {})
+          .block,
+        true,
+      );
+      assert.equal(
+        enforceChildToolCall(manifest, "read", { path: `@${outsideFile}` }, {}).block,
+        true,
+      );
+      assert.equal(
+        enforceChildToolCall(manifest, "read", { path: fileUrl }, {}).block,
+        true,
+      );
+    } finally {
+      process.chdir(originalCwd);
+    }
+    rmSync(escapeLink, { force: true });
+    rmSync(join(project, "inside.txt"), { force: true });
+    rmSync(join(project, "~"), { recursive: true, force: true });
+    rmSync(join(project, "@"), { recursive: true, force: true });
+    rmSync(join(project, "file:"), { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   });
 
   it("runChildAgent dryRun loads enforcer path in spawn plan", async () => {
@@ -562,6 +644,21 @@ describe("parent propagation for model-callable tools", () => {
     // must spread parent opts into runAutoWorkflow / runFusion
     assert.match(autoToolBody, /\.\.\.parentOpts/);
     assert.match(fusionToolBody, /\.\.\.parentOpts/);
+    assert.match(fusionToolBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
+    assert.doesNotMatch(fusionToolBody, /Type\.Literal\(["']build["']\)/);
+    assert.match(fusionToolBody, /formatFusionLines\(summary\)/);
+
+    const fusionCommandIdx = autoSrc.indexOf('registerCommand("fusion"');
+    const panelCommandIdx = autoSrc.indexOf('registerCommand("panel"');
+    const fusionCommandBody = autoSrc.slice(fusionCommandIdx, panelCommandIdx);
+    assert.match(fusionCommandBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
+    assert.doesNotMatch(fusionCommandBody, /\^build\\b|\^plan\\b|plan\|build/);
+    assert.match(fusionCommandBody, /formatFusionLines\(summary\)/);
+    assert.match(autoSrc, /function formatFusionLines[\s\S]*summary\.synthesis/);
+    assert.match(
+      autoSrc,
+      /function formatFusionLines[\s\S]*join\(summary\.runDir, "fusion", "synthesis\.md"\)/,
+    );
 
     // agents.ts alloy_task tool similarly
     const agentsSrc = readFileSync(join(root, "extensions/agents.ts"), "utf8");
