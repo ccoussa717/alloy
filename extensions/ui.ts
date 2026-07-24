@@ -3,14 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   bold "alloy" wordmark dead-center (accent green, double-height)
+ *   bold "alloy harness" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
- * Brand: word "alloy", accent #1FE07A.
- * Wordmark is real terminal glyphs (bold + DECDHL), not block/pixel art.
- * Custom OTFs (e.g. Rostex) cannot be loaded into cell text by a TUI.
+ * Brand: "alloy harness", accent #1FE07A.
+ * Wordmark is real terminal glyphs (bold), not block/pixel art or DECDHL.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -130,30 +129,28 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: regular bold terminal letters, double-height.
-// No block/pixel art. DECDHL (ESC #3 / #4) scales the terminal face ~2×;
-// many emulators also double the width. Falls back gracefully where ignored.
+// Splash wordmark: one bold line of regular terminal letters, centered.
+// No DECDHL (duplicates on terminals that ignore it), no block/pixel art.
 // ---------------------------------------------------------------------------
 
-/** Centered bold accent "alloy" — real glyphs, double-height (~2× first splash). */
+const SPLASH_WORDMARK = "alloy harness";
+
+/** Single centered bold accent wordmark — real glyphs, once. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const plain = "alloy";
+  const plain = SPLASH_WORDMARK;
   let word = plain;
   if (theme.bold) word = theme.bold(word);
   word = theme.fg("accent", word);
-  // Double-height lines use ~2 columns per character (xterm DECDHL ⇒ double-width).
-  const slots = Math.max(1, Math.floor(width / 2));
-  const left = Math.max(0, Math.floor((slots - plain.length) / 2));
-  const pad = " ".repeat(left);
-  // ESC #3 = top half, ESC #4 = bottom half (same content on both lines).
-  return [`\x1b#3${pad}${word}`, `\x1b#4${pad}${word}`];
+  // Center against full terminal width (plain length = visible width for ASCII).
+  const left = Math.max(0, Math.floor((width - plain.length) / 2));
+  return [" ".repeat(left) + word];
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = 2;
+const SPLASH_LOGO_ROWS = 1;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -531,7 +528,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · bold double-height alloy · green #1FE07A",
+        "OpenCode splash · bold centered “alloy harness” · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
