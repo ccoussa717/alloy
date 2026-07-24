@@ -3,14 +3,14 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   Nerdropol-raster "alloy" wordmark dead-center (full green, no glow)
+ *   Rostex-raster "alloy" wordmark dead-center (full green, no glow)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: word "alloy", accent #1FE07A.
- * Wordmark typeface: Typodermic Nerdropol Lattice (desktop EULA; bitmap only).
- * https://www.1001fonts.com/nerdropol-font.html
+ * Wordmark typeface: Rostex Regular (Roomspace; desktop EULA; bitmap only).
+ * https://www.1001fonts.com/rostex-font.html
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -130,41 +130,31 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: "alloy" in Typodermic Nerdropol Lattice
-// Rasterized from nerdropol lattice.otf (free desktop license) → terminal cells.
-// Full accent green, no glow.
-// https://www.1001fonts.com/nerdropol-font.html
+// Splash wordmark: "alloy" in Rostex Regular (Roomspace Creative Lab)
+// Rasterized from Rostex-Regular.otf → terminal half-blocks (█▀▄).
+// Full accent green, no glow. Readable letterforms (not lattice mush).
+// https://www.1001fonts.com/rostex-font.html
 // ---------------------------------------------------------------------------
 
-/** Pre-rasterized Nerdropol lattice "alloy" (█ = ink, space = empty). */
-const NERDROPOL_ALLOY: readonly string[] = [
-  "                  ██  ███",
-  "                  ██  ███",
-  "                  ██  ███",
-  "                  ██  ███",
-  "        ██████    ██  ████  █████████████   ███            ██",
-  "        ███████   ██  █████████████████████████            ██",
-  "            ████  ██  █████████       █████████            ██",
-  "            ████  ██  ████████         ████████            ██",
-  "  ██████████████  ██  ███████           ███████            ██",
-  " ███████████████  ██  ███████           ███████            ██",
-  "████        ████  ██  ███████           ███████            ██",
-  "███          ███  ██  ███████           ███████            ██",
-  "███          ███  ██  ████████         █████████          ███",
-  "████        ████  ██  █████████       ███████████        ████",
-  " ██████████████   ██  █████████████████████ █████████████████",
-  "  ████████████    ██  ███   █████████████     ███████████████",
-  "                                                         ████",
-  "                                                         ████",
-  "                                                     ███████",
-  "                                                     ██████",
+/** Pre-rasterized Rostex "alloy" (█/▀/▄ = ink, space = empty). 10×62. */
+const ROSTEX_ALLOY: readonly string[] = [
+  "    ▄███▄    ▄█▄         ██           ▄▄█████▄▄  █▄         ██",
+  "   ▄█████▄   ███         ██          ▄█████████▄ ██        ██▀",
+  "   ██▀ ▀██   ███         ██         ▄██▀     ▀██ ██▄       ██ ",
+  "   ██   ██   ███         ██         ██▀       ███ ██      ▄█▀ ",
+  "  ██▀   ▀██  ███         ██         ██        ▀██ ██████████  ",
+  "  ██     ██  ███         ██         ██        ▄██  ████████▀  ",
+  " ███████████ ███         ██         ██▄       ███     ██▀     ",
+  " ███████████ ███         ██         ▀██▄     ▄██      ██      ",
+  "▄██       ██  ██████████ ███████████ ▀█████████▀      ██      ",
+  "██         ██ ██████████ ██████████▀  ▀▀█████▀        ██      ",
 ];
 
-/** Paint the Nerdropol bitmap in full accent green, centered. */
+/** Paint the Rostex bitmap in full accent green, centered. Preserves half-blocks. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const ink = (ch: string) => (ch === " " ? " " : theme.fg("accent", "█"));
+  const ink = (ch: string) => (ch === " " ? " " : theme.fg("accent", ch));
   const lines: string[] = [];
-  for (const row of NERDROPOL_ALLOY) {
+  for (const row of ROSTEX_ALLOY) {
     let painted = "";
     for (const cell of row) painted += ink(cell);
     const plain = stripAnsi(painted);
@@ -178,7 +168,7 @@ function buildWordmark(theme: ThemeLike, width: number): string[] {
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_LOGO_ROWS = NERDROPOL_ALLOY.length;
+const SPLASH_LOGO_ROWS = ROSTEX_ALLOY.length;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -556,7 +546,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · Nerdropol lattice alloy wordmark · green #1FE07A",
+        "OpenCode splash · Rostex alloy wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
