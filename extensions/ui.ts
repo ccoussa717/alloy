@@ -3,12 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   cyberpunk block "alloy" wordmark dead-center (full green + soft glow)
+ *   bold fullwidth "alloy harness" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
- * Brand: word "alloy", accent #1FE07A, neon glow on splash logo.
+ * Brand: "alloy harness", accent #1FE07A.
+ * Wordmark is real terminal glyphs (bold + fullwidth, fusion-harness style).
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -128,135 +129,40 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cyberpunk block "alloy" wordmark — full green + soft neon glow
-// Angular 6-row glyphs (modern tech / cyberpunk silhouette in pure terminal
-// cells; the host font is fixed, so shape is the "typeface").
+// Splash wordmark: one bold line, centered.
+// Same trick as fusion-harness: fullwidth Unicode (2 cells/letter) so it
+// reads larger without DECDHL, block art, or image protocols. Falls back
+// to ASCII if the terminal is too narrow.
 // ---------------------------------------------------------------------------
 
-const GLYPHS: Record<string, string[]> = {
-  // Sharp, modern block forms (6 rows × 5–6 cols)
-  a: [
-    " ███ ",
-    "█   █",
-    "█   █",
-    "█████",
-    "█   █",
-    "█   █",
-  ],
-  l: [
-    "█    ",
-    "█    ",
-    "█    ",
-    "█    ",
-    "█    ",
-    "█████",
-  ],
-  o: [
-    " ███ ",
-    "█   █",
-    "█   █",
-    "█   █",
-    "█   █",
-    " ███ ",
-  ],
-  y: [
-    "█   █",
-    "█   █",
-    " █ █ ",
-    "  █  ",
-    "  █  ",
-    "  █  ",
-  ],
-};
+const SPLASH_WORDMARK = "alloy harness";
 
-/** Truecolor FG for glow layers (brand greens; independent of theme ramp). */
-function rgbFg(r: number, g: number, b: number, text: string): string {
-  return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
+/** ASCII → fullwidth letters/digits (U+FF01..) and ideographic space. */
+function toFullwidth(s: string): string {
+  return s
+    .replace(/[A-Za-z0-9]/g, (c) =>
+      String.fromCharCode(c.charCodeAt(0) + 0xfee0),
+    )
+    .replace(/ /g, "\u3000");
 }
 
-// #1FE07A core sits on a soft #0FB863 / #0A5C38 halo
-const GLOW_MID = (s: string) => rgbFg(15, 184, 99, s); // inner glow
-const GLOW_DIM = (s: string) => rgbFg(10, 92, 56, s); // outer soft halo
-
-/**
- * Build a solid mask for "alloy", expand a 1-cell glow ring, then paint:
- * core = theme accent █, inner glow = mid green ▓, outer glow = dim green ░
- */
+/** Single centered bold accent wordmark — fullwidth when it fits. */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const word = "alloy";
-  const gap = "  "; // slightly airier modern tracking
-  const rows = 6;
-
-  // Compose the solid bitmap for the full word, then pad 1 cell so outer glow fits
-  const core: boolean[][] = Array.from({ length: rows }, () => [] as boolean[]);
-  for (let i = 0; i < word.length; i++) {
-    const glyph = GLYPHS[word[i]!];
-    if (!glyph) continue;
-    if (i > 0) {
-      for (let r = 0; r < rows; r++) {
-        for (let g = 0; g < gap.length; g++) core[r]!.push(false);
-      }
-    }
-    for (let r = 0; r < rows; r++) {
-      const row = glyph[r] ?? "";
-      for (const cell of row) core[r]!.push(cell !== " ");
-    }
-  }
-
-  const coreH = core.length;
-  const coreW = core[0]?.length ?? 0;
-  const pad = 1;
-  const h = coreH + pad * 2;
-  const w = coreW + pad * 2;
-  const solid: boolean[][] = Array.from({ length: h }, () =>
-    Array.from({ length: w }, () => false),
-  );
-  for (let r = 0; r < coreH; r++) {
-    for (let c = 0; c < coreW; c++) {
-      solid[r + pad]![c + pad] = core[r]![c]!;
-    }
-  }
-
-  // Glow distance: 1 = adjacent (slight), count neighbors for intensity
-  const neighborCount = (r: number, c: number): number => {
-    let n = 0;
-    for (let dr = -1; dr <= 1; dr++) {
-      for (let dc = -1; dc <= 1; dc++) {
-        if (dr === 0 && dc === 0) continue;
-        const rr = r + dr;
-        const cc = c + dc;
-        if (rr >= 0 && rr < h && cc >= 0 && cc < w && solid[rr]![cc]) n++;
-      }
-    }
-    return n;
-  };
-
-  const lines: string[] = [];
-  for (let r = 0; r < h; r++) {
-    let line = "";
-    for (let c = 0; c < w; c++) {
-      if (solid[r]![c]) {
-        line += theme.fg("accent", "█");
-      } else {
-        const n = neighborCount(r, c);
-        if (n >= 3) line += GLOW_MID("▓");
-        else if (n >= 1) line += GLOW_DIM("░");
-        else line += " ";
-      }
-    }
-    const plain = stripAnsi(line);
-    const left = Math.max(0, Math.floor((width - plain.length) / 2));
-    lines.push(" ".repeat(left) + line);
-  }
-  return lines;
+  const full = toFullwidth(SPLASH_WORDMARK);
+  // Prefer fullwidth (~2× cell width); ASCII if the pane is too narrow.
+  const plain = visibleWidth(full) <= width ? full : SPLASH_WORDMARK;
+  let word = plain;
+  if (theme.bold) word = theme.bold(word);
+  word = theme.fg("accent", word);
+  const left = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
+  return [" ".repeat(left) + word];
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-// 6 glyph rows + 1-cell glow pad top/bottom
-const SPLASH_LOGO_ROWS = 8;
+const SPLASH_LOGO_ROWS = 1;
 const SPLASH_GAP = 2;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
@@ -634,7 +540,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · green cyberpunk alloy wordmark + glow · accent #1FE07A",
+        "OpenCode splash · bold fullwidth “alloy harness” · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
