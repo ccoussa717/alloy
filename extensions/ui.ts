@@ -3,12 +3,14 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   large outline "alloy" wordmark dead-center (accent green, ~5× line height)
+ *   Rostex "alloy" wordmark dead-center (accent green, ~6-row FIGlet size)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: word "alloy", accent #1FE07A.
+ * Wordmark typeface: Rostex Regular (bitmap only; same scale as prior outline).
+ * https://www.1001fonts.com/rostex-font.html
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -128,22 +130,22 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: large outline "alloy" (~5× one-line height).
-// Terminals can't scale the cell font per widget, so we use a clean FIGlet
-// Standard outline (regular ASCII strokes — not █ pixel fills / grain).
+// Splash wordmark: Rostex Regular "alloy" at FIGlet-Standard scale (~6 rows).
+// Rasterized half-blocks (█▀▄) — same height as the outline mark Chris liked.
+// https://www.1001fonts.com/rostex-font.html
 // ---------------------------------------------------------------------------
 
-/** FIGlet Standard "alloy" — 6 rows × 24 cols outline. */
+/** Pre-rasterized Rostex "alloy" — 6×46, half-block cells. */
 const ALLOY_MARK: readonly string[] = [
-  "        _ _",
-  "   __ _| | | ___  _   _",
-  "  / _` | | |/ _ \\| | | |",
-  " | (_| | | | (_) | |_| |",
-  "  \\__,_|_|_|\\___/ \\__, |",
-  "                  |___/",
+  "   ▄▄▄▄   ▄▄       ▄        ▄▄▄▄▄▄▄ ▄▄      ▄▄",
+  "  ██▀▀█   ██       █       ▄█▀▀▀▀▀█▄ █      █▀",
+  "  █   ██  ██       █       █▀     ▀█ ██▄▄▄▄██ ",
+  " ██▄▄▄▄█  ██       █       █▄     ▄█  ▀▀██▀▀  ",
+  "▄█▀▀▀▀▀██ ██▄▄▄▄▄▄ █▄▄▄▄▄▄ ▀█▄▄▄▄▄█▀    ██    ",
+  "▀▀      ▀ ▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀     ▀▀    ",
 ];
 
-/** Centered accent-green outline wordmark. */
+/** Centered accent-green Rostex wordmark (preserves half-blocks). */
 function buildWordmark(theme: ThemeLike, width: number): string[] {
   const markW = Math.max(...ALLOY_MARK.map((r) => r.length));
   const left = Math.max(0, Math.floor((width - markW) / 2));
@@ -539,7 +541,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · large outline alloy wordmark · green #1FE07A",
+        "OpenCode splash · Rostex alloy wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
