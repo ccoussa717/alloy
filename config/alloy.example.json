@@ -29,6 +29,9 @@
   "fusion": {
     "architectModel": "anthropic/claude-sonnet-4-6",
     "builderModel": "openai-codex/gpt-5.4",
-    "synthesizerModel": "anthropic/claude-opus-4-6"
+    "synthesizerModel": "anthropic/claude-opus-4-6",
+    "architectEffort": "high",
+    "builderEffort": "medium",
+    "synthesizerEffort": "high"
   }
 }

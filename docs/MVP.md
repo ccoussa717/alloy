@@ -14,11 +14,11 @@ not a backlog of unfinished ideas.
 7. **Worktrees** — Isolated builder trees under `~/.pi/alloy/worktrees/` with dirty-baseline seeding.
 8. **Diagnostics** — `/diagnose` + `alloy_diagnostics` (typecheck/lint/test when present).
 9. **Auto** — `/auto` multi-role pipeline (scout → plan → checkpoint → build → diagnostics → review) with **fix loops** on review FAIL / bad diagnostics.
-10. **Fusion** — `/fusion <objective>` runs read-only Architect and Builder proposals concurrently, then one attributed Synthesizer call.
+10. **Fusion** — `/fusion <objective>` runs read-only Architect and Builder proposals concurrently, then one attributed Synthesizer call. `/fusion setup` and `/fusion status` manage each role's model and reasoning effort.
 11. **Sub-agents** — `/agent`, `/agents`, profiles, live agent panel.
 12. **Docker sandbox** — `/permissions sandbox` routes bash through a session container (`node:22-bookworm`, network none by default). Fail closed if Docker is missing.
 13. **Permissions UX** — Shift+Tab cycles ask-all / ask-some / ask-dangerous / ask-none; `/effort` for thinking levels.
-14. **Help** — `/help`, `/help <topic>`, `/help search <query>`.
+14. **Help** — `/help`, `/help <topic>`, `/help search <query>`, and `/help commands` for the complete active command registry.
 15. **Honesty policy** — Mandatory no-fabrication policy; `/whoami` for harness identity.
 16. **Child isolation** — Scrubbed env, policy ceiling, credential boundary, process-group kill (see `docs/SECURITY.md`).
 17. **Base harness** — Pi TUI, tools, sessions, tree, compact, `@files`, AGENTS.md, model switch.

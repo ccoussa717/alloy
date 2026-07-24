@@ -25,7 +25,11 @@ const config = {
     favorites: ["anthropic/architect", "openai-codex/builder"],
   },
   roles: { reviewer: { model: "anthropic/synthesizer" } },
-  fusion: {},
+  fusion: {
+    architectEffort: "high",
+    builderEffort: "medium",
+    synthesizerEffort: "low",
+  },
   budgets: { maxCostUsd: 10 },
 };
 
@@ -137,6 +141,11 @@ test("architect and builder run in parallel before attributed synthesis", async 
     "anthropic/architect",
     "openai-codex/builder",
   ]);
+  assert.deepEqual(calls.map((call) => call.thinkingLevel), [
+    "high",
+    "medium",
+    "low",
+  ]);
   assert.ok(calls.every((call) => call.mode === "plan"));
   assert.ok(calls.every((call) => call.tools.every((tool) => tool !== "bash")));
   assert.ok(calls.every((call) => call.credentialBroker === "ephemeral-json"));
@@ -157,6 +166,11 @@ test("architect and builder run in parallel before attributed synthesis", async 
   assert.equal(summary.synthesis, synthesis);
   assert.equal(summary.proposals.length, 2);
   assert.equal(summary.usage.cost, 0.3);
+  assert.deepEqual(summary.requestedEfforts, {
+    architect: "high",
+    builder: "medium",
+    synthesizer: "low",
+  });
 
   const artifactText = [
     "request.md",
@@ -170,6 +184,8 @@ test("architect and builder run in parallel before attributed synthesis", async 
     .join("\n");
   assert.equal(artifactText.includes("secret-a"), false);
   assert.equal(artifactText.includes("secret-b"), false);
+  assert.match(artifactText, /"requestedEfforts"/);
+  assert.match(artifactText, /"architect": "high"/);
 });
 
 test("invalid proposal skips synthesis and cannot complete", async () => {

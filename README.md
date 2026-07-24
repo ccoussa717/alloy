@@ -143,7 +143,7 @@ Alloy is **not** trying to replace your editor, GitLab, or CI. It replaces the *
 | **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
 | **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
 | **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
-| **Fusion** | `/fusion <objective>` — read-only Architect + Builder proposals with attributed synthesis |
+| **Fusion** | `/fusion <objective>` - read-only Architect + Builder proposals with attributed synthesis; `/fusion setup` configures each role |
 | **Sub-agents** | `/agent` free-form multi-model agents · `/agents` browser · `alloy_task` |
 | **Profiles** | research=Grok · code=Codex · review=Opus · plan=Sonnet (configurable) |
 | **Agent panel** | Live widget below the editor during agents / auto / fusion |
@@ -285,6 +285,7 @@ route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subsc
 | `/profiles` | Multi-model profile map |
 | `/auto <request>` | Multi-agent pipeline + fix loops |
 | `/fusion <objective>` | Plan-only Architect-Builder fusion |
+| `/fusion setup` / `/fusion status` / `/fusion help` | Configure, inspect, and explain Fusion role models and effort |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
 | **`Shift+Tab`** | Cycle permission ask-levels |
@@ -292,6 +293,7 @@ route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subsc
 | `/effort [off\|…\|max]` | Thinking / reasoning effort |
 | `/sandbox [status\|start\|stop\|doctor]` | Docker sandbox controls |
 | `/help [topic\|search <q>]` | Feature help + search |
+| `/help commands` | Complete active slash-command registry with descriptions |
 
 ### Still Pi (unchanged)
 
@@ -562,15 +564,20 @@ flowchart TB
 ```
 
 The Architect and Builder inspect the repository concurrently with read-only
-tools. Synthesis runs only after both structured proposals validate. Configure
-the three explicit model routes in `~/.pi/alloy/config.json`:
+tools. Synthesis runs only after both structured proposals validate. Use
+`/fusion setup` to select each role's model and requested reasoning effort, `/fusion
+status` to inspect the effective settings, or configure the same values in
+`~/.pi/alloy/config.json`:
 
 ```json
 {
   "fusion": {
     "architectModel": "anthropic/claude-sonnet-4-6",
     "builderModel": "openai-codex/gpt-5.4",
-    "synthesizerModel": "anthropic/claude-opus-4-6"
+    "synthesizerModel": "anthropic/claude-opus-4-6",
+    "architectEffort": "high",
+    "builderEffort": "medium",
+    "synthesizerEffort": "high"
   },
   "budgets": { "maxCostUsd": 25 }
 }
@@ -579,6 +586,7 @@ the three explicit model routes in `~/.pi/alloy/config.json`:
 An eligible successful Fusion run performs exactly three model calls. Auth,
 proposal validation, abort, or proposal-budget failures stop before synthesis.
 Fusion never implements or merges code.
+Pi clamps requested effort levels to each selected model's capabilities.
 Each child receives only the selected provider credential in its ephemeral Pi
 home, and its read tools are mechanically confined to the repository root. Run
 artifacts contain proposals, synthesis, model identity, usage, and a truthful

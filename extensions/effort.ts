@@ -47,9 +47,27 @@ function normalize(raw: string): Level | null {
 }
 
 export function registerEffort(pi: ExtensionAPI) {
+  const completeEffort = (prefix: string) => {
+    const options = ["status", "cycle", ...LEVELS];
+    const matches = options.filter((option) =>
+      option.startsWith(prefix.toLowerCase()),
+    );
+    return matches.length
+      ? matches.map((value) => ({ value, label: value }))
+      : null;
+  };
+  const completeThinking = (prefix: string) => {
+    const matches = LEVELS.filter((level) =>
+      level.startsWith(prefix.toLowerCase()),
+    );
+    return matches.length
+      ? matches.map((value) => ({ value, label: value }))
+      : null;
+  };
   pi.registerCommand("effort", {
     description:
       "Thinking/effort level: /effort [off|minimal|low|medium|high|xhigh|max]  (replaces Shift+Tab for thinking)",
+    getArgumentCompletions: completeEffort,
     handler: async (args, ctx) => {
       const raw = (args || "").trim();
       const current = (() => {
@@ -124,6 +142,7 @@ export function registerEffort(pi: ExtensionAPI) {
   // Alias
   pi.registerCommand("thinking", {
     description: "Alias for /effort",
+    getArgumentCompletions: completeThinking,
     handler: async (args, ctx) => {
       // Delegate by re-invoking is awkward; duplicate thin call
       const raw = (args || "").trim();

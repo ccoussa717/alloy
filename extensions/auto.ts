@@ -12,7 +12,19 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { runAutoWorkflow } = require(join(root, "lib", "auto-workflow.mjs"));
-const { runFusion } = require(join(root, "lib", "fusion.mjs"));
+const {
+  FUSION_EFFORT_LEVELS,
+  getFusionRoleModelDefaults,
+  getFusionArgumentCompletions,
+  resolveFusionRoleEfforts,
+  resolveFusionRoleModels,
+  runFusion,
+} = require(join(root, "lib", "fusion.mjs"));
+const {
+  loadConfig,
+  loadGlobalConfig,
+  saveGlobalFusionConfig,
+} = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
 const { renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
@@ -81,6 +93,120 @@ function clearPanel(ctx?: { ui?: ExtensionContext["ui"] }) {
   } catch {
     // ignore
   }
+}
+
+const FUSION_ROLES = ["architect", "builder", "synthesizer"] as const;
+
+function formatFusionStatus(cwd: string) {
+  const global = loadGlobalConfig();
+  const effective = loadConfig(cwd);
+  const globalModels = getFusionRoleModelDefaults(global);
+  const models = resolveFusionRoleModels(effective);
+  const efforts = resolveFusionRoleEfforts(effective);
+  return [
+    "Fusion role settings:",
+    ...FUSION_ROLES.map((role) => {
+      const configured = globalModels[role] || "not configured";
+      const effort = efforts[role] || "model default";
+      return `${role}: ${models[role]} | requested effort ${effort} | global/default ${configured}`;
+    }),
+    "",
+    "Use /fusion setup to change global defaults.",
+  ];
+}
+
+async function showFusionLines(
+  ctx: ExtensionContext,
+  title: string,
+  lines: string[],
+) {
+  if (ctx.hasUI) await ctx.ui.select(title, lines);
+  else console.log(lines.join("\n"));
+}
+
+async function setupFusion(ctx: ExtensionContext) {
+  if (!ctx.hasUI) {
+    console.log("/fusion setup requires the interactive TUI.");
+    return;
+  }
+  const global = loadGlobalConfig();
+  const allowed = new Set<string>(global.providers?.allow || []);
+  const defaults = getFusionRoleModelDefaults(global);
+  const favorites = (global.providers?.favorites || []).filter(Boolean);
+  const current: Record<string, string> = {
+    architect: defaults.architect || "not configured",
+    builder: defaults.builder || "not configured",
+    synthesizer: defaults.synthesizer || "not configured",
+  };
+  const routes = ctx.modelRegistry
+    .getAll()
+    .map((model) => `${model.provider}/${model.id}`)
+    .filter((route) => !allowed.size || allowed.has(route.split("/", 1)[0]));
+  const configuredRoutes = [
+    ...Object.values(current),
+    ...favorites,
+    ...Object.values(global.roles || {}).map((role: any) => role?.model),
+  ].filter(
+    (route): route is string =>
+      typeof route === "string" &&
+      route.includes("/") &&
+      (!allowed.size || allowed.has(route.split("/", 1)[0])),
+  );
+  const uniqueRoutes = [
+    ...new Set<string>([...configuredRoutes, ...routes]),
+  ].sort();
+  const models: Record<string, string> = {};
+  const efforts: Record<string, string | null> = {};
+
+  for (const role of FUSION_ROLES) {
+    const model = await ctx.ui.select(
+      `Fusion ${role} model (current: ${current[role]})`,
+      uniqueRoutes,
+    );
+    if (!model) {
+      ctx.ui.notify("Fusion setup cancelled; no settings changed.", "info");
+      return;
+    }
+    models[role] = model;
+
+    const effort = await ctx.ui.select(`Fusion ${role} effort`, [
+      "default (model/provider default)",
+      ...FUSION_EFFORT_LEVELS,
+    ]);
+    if (!effort) {
+      ctx.ui.notify("Fusion setup cancelled; no settings changed.", "info");
+      return;
+    }
+    efforts[role] = effort.startsWith("default") ? null : effort;
+  }
+
+  if (models.architect === models.builder) {
+    ctx.ui.notify(
+      "Architect and Builder must use distinct models; no settings changed.",
+      "warning",
+    );
+    return;
+  }
+
+  const saved = saveGlobalFusionConfig({
+    architectModel: models.architect,
+    builderModel: models.builder,
+    synthesizerModel: models.synthesizer,
+    architectEffort: efforts.architect,
+    builderEffort: efforts.builder,
+    synthesizerEffort: efforts.synthesizer,
+  });
+  const savedModels = resolveFusionRoleModels(saved);
+  const savedEfforts = resolveFusionRoleEfforts(saved);
+  await showFusionLines(ctx, "Fusion setup saved", [
+    "Global Fusion setup saved:",
+    ...FUSION_ROLES.map(
+      (role) =>
+        `${role}: ${savedModels[role]} | requested effort ${savedEfforts[role] || "model default"}`,
+    ),
+    "",
+    "Use /fusion status to inspect project overrides.",
+  ]);
 }
 
 export function registerAuto(pi: ExtensionAPI) {
@@ -173,14 +299,46 @@ export function registerAuto(pi: ExtensionAPI) {
 
   pi.registerCommand("fusion", {
     description:
-      "Plan-only fusion: /fusion <objective> - Architect + Builder + Synthesizer",
+      "Plan-only fusion: /fusion <objective|setup|status|help>",
+    getArgumentCompletions: getFusionArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
       if (!request) {
         ctx.ui.notify(
-          "Usage: /fusion <objective>\nRuns read-only Architect and Builder proposals, then synthesis.",
+          "Usage: /fusion <objective|setup|status|help>",
           "warning",
         );
+        return;
+      }
+
+      if (request.toLowerCase() === "help") {
+        await showFusionLines(ctx, "Fusion help", [
+          "/fusion <objective>  Run read-only Architect + Builder + Synthesizer",
+          "/fusion setup        Select persistent role models and effort",
+          "/fusion status       Show effective role settings",
+        ]);
+        return;
+      }
+      if (request.toLowerCase() === "status") {
+        try {
+          await showFusionLines(
+            ctx,
+            "Fusion status",
+            formatFusionStatus(ctx.cwd),
+          );
+        } catch (err) {
+          const message = String((err as Error).message || err);
+          if (ctx.hasUI) ctx.ui.notify(message, "warning");
+          else console.error(message);
+        }
+        return;
+      }
+      if (request.toLowerCase() === "setup") {
+        try {
+          await setupFusion(ctx);
+        } catch (err) {
+          ctx.ui.notify(String((err as Error).message || err), "warning");
+        }
         return;
       }
 

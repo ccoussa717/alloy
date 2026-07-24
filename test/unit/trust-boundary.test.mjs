@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   writeFileSync,
   rmSync,
   existsSync,
@@ -23,7 +24,7 @@ process.env.HOME = home;
 process.env.ALLOY_HOME = join(home, ".pi", "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
-const { ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
+const { ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
   await import(pathToFileURL(join(root, "lib/config.mjs")).href);
 const { loadMcpConfig, listAutoConnectServers, listMcpServers } = await import(
   pathToFileURL(join(root, "lib/mcp-config.mjs")).href
@@ -94,6 +95,44 @@ after(() => {
 });
 
 describe("trust boundary", () => {
+  it("saveGlobalFusionConfig preserves unrelated operator settings", () => {
+    saveGlobalFusionConfig({
+      architectModel: "anthropic/architect",
+      builderModel: "openai-codex/builder",
+      synthesizerModel: "anthropic/synthesizer",
+      architectEffort: "high",
+      builderEffort: null,
+      synthesizerEffort: "low",
+    });
+    const global = loadGlobalConfig();
+    assert.equal(global.permissionProfile, "ask-dangerous");
+    assert.equal(global.mcp.connectOnStart, false);
+    assert.deepEqual(global.fusion, {
+      architectModel: "anthropic/architect",
+      builderModel: "openai-codex/builder",
+      synthesizerModel: "anthropic/synthesizer",
+      architectEffort: "high",
+      builderEffort: null,
+      synthesizerEffort: "low",
+    });
+  });
+
+  it("saveGlobalFusionConfig fails closed on malformed operator config", () => {
+    const path = join(home, ".pi", "alloy", "config.json");
+    const valid = readFileSync(path, "utf8");
+    const malformed = '{"permissionProfile":"ask-all",';
+    writeFileSync(path, malformed);
+    try {
+      assert.throws(
+        () => saveGlobalFusionConfig({ architectEffort: "high" }),
+        /invalid.*config/i,
+      );
+      assert.equal(readFileSync(path, "utf8"), malformed);
+    } finally {
+      writeFileSync(path, valid);
+    }
+  });
+
   it("isWeakerPermission detects ask-none weaker than ask-dangerous", () => {
     assert.equal(isWeakerPermission("ask-none", "ask-dangerous"), true);
     assert.equal(isWeakerPermission("ask-all", "ask-dangerous"), false);

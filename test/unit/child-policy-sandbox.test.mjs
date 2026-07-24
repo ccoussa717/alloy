@@ -342,6 +342,22 @@ describe("mechanical enforcer consumption", () => {
     assert.match(joined, /child-enforcer/);
     assert.match(joined, /--no-extensions|--extension/);
   });
+
+  it("runChildAgent passes an explicit thinking level as one Pi argument", async () => {
+    const result = await runChildAgent({
+      prompt: "hello",
+      cwd: project,
+      permissionProfile: "ask-dangerous",
+      parentPermissionProfile: "ask-dangerous",
+      sandbox: false,
+      thinkingLevel: "high",
+      dryRun: true,
+    });
+    const index = result.spawnPlan.args.indexOf("--thinking");
+    assert.ok(index >= 0);
+    assert.equal(result.spawnPlan.args[index + 1], "high");
+    assert.equal(result.policy.thinkingLevel, "high");
+  });
 });
 
 describe("docker-positive sandbox children execute in container", () => {
