@@ -57,6 +57,47 @@ test("resolveFusionRoleModels routes architect, builder, and synthesizer", () =>
   );
 });
 
+test("resolveFusionRoleEfforts returns optional role-specific thinking levels", () => {
+  assert.deepEqual(
+    fusion.resolveFusionRoleEfforts({
+      fusion: {
+        architectEffort: "high",
+        builderEffort: "medium",
+        synthesizerEffort: null,
+      },
+    }),
+    {
+      architect: "high",
+      builder: "medium",
+      synthesizer: null,
+    },
+  );
+  assert.deepEqual(fusion.resolveFusionRoleEfforts({ fusion: {} }), {
+    architect: null,
+    builder: null,
+    synthesizer: null,
+  });
+  assert.throws(
+    () =>
+      fusion.resolveFusionRoleEfforts({
+        fusion: { architectEffort: "unlimited" },
+      }),
+    /invalid.*effort/i,
+  );
+});
+
+test("fusion argument completions expose setup, status, and help", () => {
+  assert.deepEqual(
+    fusion.getFusionArgumentCompletions("").map((item) => item.value),
+    ["setup", "status", "help"],
+  );
+  assert.deepEqual(
+    fusion.getFusionArgumentCompletions("st").map((item) => item.value),
+    ["status"],
+  );
+  assert.equal(fusion.getFusionArgumentCompletions("design the feature"), null);
+});
+
 test("resolveFusionRoleModels supports legacy models without allowing duplicate roles", () => {
   assert.deepEqual(
     fusion.resolveFusionRoleModels({

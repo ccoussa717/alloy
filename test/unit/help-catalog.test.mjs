@@ -6,6 +6,19 @@ import { join } from "node:path";
 const help = await import(
   pathToFileURL(join(new URL("../..", import.meta.url).pathname, "lib", "help-catalog.mjs")).href
 );
+const piSlashCommands = await import(
+  pathToFileURL(
+    join(
+      new URL("../..", import.meta.url).pathname,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+      "dist",
+      "core",
+      "slash-commands.js",
+    ),
+  ).href
+);
 
 test("catalog has core topics", () => {
   const ids = help.listTopics().map((t) => t.id);
@@ -42,8 +55,8 @@ test("searchHelp memory", () => {
 
 test("formatTopic", () => {
   const text = help.formatTopic(help.getTopic("commands"));
-  assert.match(text, /\/auto/);
-  assert.match(text, /\/help/);
+  assert.match(text, /\/help commands/);
+  assert.match(text, /live command registry/);
 });
 
 test("fusion help documents the plan-only three-role workflow", () => {
@@ -54,4 +67,50 @@ test("fusion help documents the plan-only three-role workflow", () => {
   assert.match(topic.body, /builderModel/);
   assert.match(topic.body, /synthesizerModel/);
   assert.doesNotMatch(topic.body, /\[plan\|build\]|workers|mergerModel/i);
+});
+
+test("native command catalog stays complete for the pinned Pi runtime", () => {
+  assert.deepEqual(
+    help.PI_NATIVE_COMMANDS,
+    piSlashCommands.BUILTIN_SLASH_COMMANDS,
+  );
+});
+
+test("formatCommandCatalog merges native and live commands without duplicates", () => {
+  const text = help.formatCommandCatalog([
+    {
+      name: "fusion",
+      description: "Run Fusion",
+      source: "extension",
+    },
+    {
+      name: "skill:testing",
+      description: "Test a change",
+      source: "skill",
+    },
+    {
+      name: "model",
+      description: "Extension collision",
+      source: "extension",
+    },
+  ]);
+
+  assert.match(text, /Pi native/);
+  assert.match(text, /\/model <provider\/model> .*Select model/);
+  assert.match(text, /Extensions/);
+  assert.match(text, /\/fusion .*Run Fusion/);
+  assert.match(text, /Skills/);
+  assert.equal(text.match(/^\/model\b/gm)?.length, 1);
+});
+
+test("help argument completions expose search and every topic", () => {
+  const all = help.getHelpArgumentCompletions("");
+  assert.ok(all.some((item) => item.value === "search "));
+  assert.ok(all.some((item) => item.value === "commands"));
+  assert.ok(all.some((item) => item.value === "fusion"));
+  assert.deepEqual(
+    help.getHelpArgumentCompletions("fus").map((item) => item.value),
+    ["fusion"],
+  );
+  assert.equal(help.getHelpArgumentCompletions("search docker"), null);
 });

@@ -16,11 +16,14 @@ const {
   getTopic,
   searchHelp,
   formatTopic,
+  formatCommandCatalog,
+  getHelpArgumentCompletions,
 } = require(join(root, "lib", "help-catalog.mjs"));
 
 export function registerHelp(pi: ExtensionAPI) {
   pi.registerCommand("help", {
     description: "Alloy help: /help [topic|search <query>]",
+    getArgumentCompletions: getHelpArgumentCompletions,
     handler: async (args, ctx) => {
       const raw = (args || "").trim();
 
@@ -28,7 +31,6 @@ export function registerHelp(pi: ExtensionAPI) {
       if (!raw) {
         const items = [
           "search <query>  — search all help",
-          "commands        — slash cheatsheet",
           ...listTopics().map(
             (t: { id: string; title: string }) => `${t.id.padEnd(14)} ${t.title}`,
           ),
@@ -42,6 +44,10 @@ export function registerHelp(pi: ExtensionAPI) {
           return;
         }
         const id = picked.split(/\s+/)[0];
+        if (id === "commands") {
+          await showCommands(pi.getCommands(), ctx);
+          return;
+        }
         await showTopic(id, ctx);
         return;
       }
@@ -53,6 +59,11 @@ export function registerHelp(pi: ExtensionAPI) {
           return;
         }
         await showSearch(q, ctx);
+        return;
+      }
+
+      if (raw.toLowerCase() === "commands") {
+        await showCommands(pi.getCommands(), ctx);
         return;
       }
 
@@ -97,6 +108,13 @@ export function registerHelp(pi: ExtensionAPI) {
     }),
     async execute(_id, params) {
       if (params.topic) {
+        if (params.topic.toLowerCase() === "commands") {
+          const commands = pi.getCommands();
+          return {
+            content: [{ type: "text", text: formatCommandCatalog(commands) }],
+            details: { topic: "commands", commands },
+          };
+        }
         const t = getTopic(params.topic);
         return {
           content: [{ type: "text", text: formatTopic(t) }],
@@ -115,6 +133,13 @@ export function registerHelp(pi: ExtensionAPI) {
       }
       const direct = getTopic(q);
       if (direct) {
+        if (direct.id === "commands") {
+          const commands = pi.getCommands();
+          return {
+            content: [{ type: "text", text: formatCommandCatalog(commands) }],
+            details: { topic: "commands", commands },
+          };
+        }
         return {
           content: [{ type: "text", text: formatTopic(direct) }],
           details: { topic: direct.id },
@@ -136,6 +161,21 @@ export function registerHelp(pi: ExtensionAPI) {
       return { content: [{ type: "text", text }], details: { hits } };
     },
   });
+}
+
+async function showCommands(
+  commands: Array<{ name: string; description?: string; source: string }>,
+  ctx: {
+    ui: { select: (t: string, o: string[]) => Promise<string | undefined> };
+    hasUI?: boolean;
+  },
+) {
+  const text = formatCommandCatalog(commands);
+  if (ctx.hasUI !== false) {
+    await ctx.ui.select("All slash commands", text.split("\n"));
+  } else {
+    console.log(text);
+  }
 }
 
 async function showTopic(
