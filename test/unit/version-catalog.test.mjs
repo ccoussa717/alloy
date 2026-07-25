@@ -65,7 +65,7 @@ describe("version and model catalog", () => {
     assert.equal(resolveModelInCatalog("xai/grok-4.5", catalog).ok, true);
   });
 
-  it("doctor report is honest about Claude economics and never leaks secrets", () => {
+  it("doctor reports current Claude subscription economics without leaking secrets", () => {
     const report = formatFullDoctorReport({
       results: [
         {
@@ -79,8 +79,12 @@ describe("version and model catalog", () => {
       ],
       dockerText: null,
     });
-    assert.match(report, /extra usage/i);
-    assert.ok(CLAUDE_ECONOMICS_NOTE.includes("extra usage"));
+    assert.match(report, /subscription usage limits/i);
+    assert.match(report, /June 15, 2026/i);
+    assert.match(report, /usage credits/i);
+    assert.match(report, /12429409/);
+    assert.doesNotMatch(report, /NOT the included/i);
+    assert.ok(CLAUDE_ECONOMICS_NOTE.includes("subscription usage limits"));
     assert.ok(!report.includes("sk-"));
     assert.ok(!report.includes("accessToken"));
     assert.match(report, /Default model catalog check/);
