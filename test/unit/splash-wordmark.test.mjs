@@ -4,21 +4,18 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
   buildWordmark,
+  buildSplashHintLine,
+  panelRow,
+  panelWidth,
+  splashHorizontalLayout,
   splashTopPadding,
 } from "../../extensions/ui.ts";
-
-const LARGE_WORDMARK = [
-  "  ⣶⣶  ⢰⡆   ⣶   ⢠⡶⠶⠶⣶ ⢶⡄ ⣰⡆  ⢰⡆  ⣶  ⢰⣶⣆  ⣶⠶⠶⣶ ⢰⣶⡀ ⣶ ⢰⡶⠶⠶⠆⢰⡶⠶⠶ ⣰⡶⠶⠶",
-  " ⢸⡏⢸⡇ ⢸⡇   ⣿   ⢸⡇  ⣿⡇⠈⣿⣴⡟   ⢸⣧⣤⣤⣿  ⣿⠁⣿⡀ ⣿  ⣿ ⢸⡟⣷⡀⣿ ⢸⣧⣤⣤⡀⢸⣧⣀⣀ ⢻⣧⣀⡀",
-  " ⣿⣧⣼⣿⡀⢸⡇   ⣿   ⢸⡇  ⣿⡇ ⢘⣿    ⢸⡏⠉⠉⣿ ⢸⣿⣤⣼⣇ ⣿⠛⢿⡏ ⢸⡇⠘⣷⣿ ⢸⡏⠉⠉⠁ ⠉⠉⣿⡆ ⠉⠉⣿⡆",
-  "⠸⠏  ⠹⠇⠸⠷⠶⠶ ⠿⠶⠶⠶⠘⠷⠶⠶⠿  ⠨⠿    ⠸⠇  ⠿ ⠿⠁ ⠈⠿ ⠿ ⠈⠿⠄⠸⠇ ⠘⠿ ⠸⠷⠶⠶⠆⠰⠶⠶⠿⠃⠲⠶⠶⠿⠁",
-];
 
 function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function greenTheme(calls) {
+function greenTheme(calls = []) {
   return {
     bold: (text) => `\x1b[1m${text}\x1b[22m`,
     fg: (color, text) => {
@@ -28,57 +25,39 @@ function greenTheme(calls) {
   };
 }
 
-test("wide splash renders the four-row Oxanium wordmark", () => {
+test("wide splash renders one letter-spaced ASCII wordmark", () => {
   const colors = [];
   const lines = buildWordmark(greenTheme(colors), 80);
+  const title = "A L L O Y   H A R N E S S";
 
-  assert.equal(lines.length, 4);
-  assert.deepEqual(colors, ["accent", "accent", "accent", "accent"]);
-  assert.ok(lines.every((line) => line.includes("\x1b[32m")));
-  assert.ok(lines.every((line) => line.includes("\x1b[1m")));
-  assert.deepEqual(
-    lines.map(stripAnsi),
-    LARGE_WORDMARK.map(
-      (line) =>
-        " ".repeat(Math.floor((80 - visibleWidth(line)) / 2)) + line,
-    ),
+  assert.equal(lines.length, 1);
+  assert.deepEqual(colors, ["accent"]);
+  assert.equal(
+    stripAnsi(lines[0]),
+    " ".repeat(Math.floor((80 - title.length) / 2)) + title,
   );
+  assert.ok(lines[0].includes("\x1b[1m"));
 });
 
-test("wordmark changes to the fullwidth fallback below 66 columns", () => {
-  const colors = [];
-  const wide = buildWordmark(greenTheme(colors), 66);
-  const narrow = buildWordmark(greenTheme(colors), 65);
-
-  assert.equal(wide.length, 4);
-  assert.equal(narrow.length, 1);
-  assert.match(stripAnsi(narrow[0]), /ａｌｌｏｙ　ｈａｒｎｅｓｓ/);
-  assert.ok(narrow[0].includes("\x1b[32m"));
+test("narrow splash removes letter spacing before truncating the name", () => {
+  assert.equal(stripAnsi(buildWordmark(greenTheme(), 20)[0]).trim(), "ALLOY HARNESS");
+  assert.equal(stripAnsi(buildWordmark(greenTheme(), 8)[0]).trim(), "ALLOY");
 });
 
-test("very narrow splash retains the ASCII fallback", () => {
-  const lines = buildWordmark(greenTheme([]), 13);
-
-  assert.equal(lines.length, 1);
-  assert.equal(stripAnsi(lines[0]), "alloy harness");
-});
-
-test("splash wordmark never exceeds the terminal width", () => {
-  for (let width = 1; width <= 80; width += 1) {
-    const lines = buildWordmark(greenTheme([]), width);
-    assert.ok(
-      lines.every((line) => visibleWidth(line) <= width),
-      `wordmark overflowed at ${width} columns`,
-    );
+test("splash rows never exceed their component width", () => {
+  for (let width = 1; width <= 120; width += 1) {
+    const lines = buildWordmark(greenTheme(), width);
+    const panel = splashHorizontalLayout(width);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+    assert.ok(panel.boxWidth <= width);
+    assert.ok(panelWidth(width, false) <= width);
+    assert.ok(visibleWidth(panelRow(greenTheme(), "input", panel.boxWidth)) <= width);
+    assert.ok(visibleWidth(buildSplashHintLine(greenTheme(), width)) <= width);
+    assert.equal(panel.width, width);
   }
-
-  const lines = buildWordmark(greenTheme([]), 8);
-  assert.equal(lines.length, 1);
-  assert.equal(stripAnsi(lines[0]).trim(), "alloy");
 });
 
-test("vertical centering accounts for the rendered wordmark rows", () => {
-  assert.equal(splashTopPadding(24, 4), 7);
+test("vertical centering includes Pi's quiet-startup spacer", () => {
   assert.equal(splashTopPadding(24, 1), 9);
-  assert.equal(splashTopPadding(4, 3), 0);
+  assert.equal(splashTopPadding(4, 1), 0);
 });
