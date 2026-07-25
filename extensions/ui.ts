@@ -3,13 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   large 3-row "alloy harness" wordmark dead-center (accent green)
+ *   large "alloy harness" wordmark dead-center (accent green)
  *   compact 2-row chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
  * Brand: "alloy harness", accent #1FE07A.
- * Wordmark uses portable terminal glyphs with a fullwidth narrow fallback.
+ * Wordmark uses portable terminal glyphs with narrow fallbacks.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -129,16 +129,20 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: three display rows on wide terminals, centered.
+// Splash wordmark: four display rows on wide terminals, centered.
 // Narrow terminals retain the fullwidth/ASCII fallback without relying on
 // terminal-specific font sizing or image protocols.
 // ---------------------------------------------------------------------------
 
 const SPLASH_WORDMARK = "alloy harness";
+const COMPACT_SPLASH_WORDMARK = "alloy";
+// Rasterized from Oxanium SemiBold by Severin Meyer, licensed under OFL-1.1.
+// https://github.com/sevmeyer/oxanium
 const LARGE_SPLASH_WORDMARK = [
-  "█▀█ █   █   █▀█ █ █   █ █ █▀█ █▀▄ █▄ █ █▀▀ █▀▀ █▀▀",
-  "█▀█ █   █   █ █  █    █▀█ █▀█ █▀▄ █ ▀█ █▀  ▀▀█ ▀▀█",
-  "▀ ▀ ▀▀▀ ▀▀▀ ▀▀▀  ▀    ▀ ▀ ▀ ▀ ▀ ▀ ▀  ▀ ▀▀▀ ▀▀▀ ▀▀▀",
+  "  ⣶⣶  ⢰⡆   ⣶   ⢠⡶⠶⠶⣶ ⢶⡄ ⣰⡆  ⢰⡆  ⣶  ⢰⣶⣆  ⣶⠶⠶⣶ ⢰⣶⡀ ⣶ ⢰⡶⠶⠶⠆⢰⡶⠶⠶ ⣰⡶⠶⠶",
+  " ⢸⡏⢸⡇ ⢸⡇   ⣿   ⢸⡇  ⣿⡇⠈⣿⣴⡟   ⢸⣧⣤⣤⣿  ⣿⠁⣿⡀ ⣿  ⣿ ⢸⡟⣷⡀⣿ ⢸⣧⣤⣤⡀⢸⣧⣀⣀ ⢻⣧⣀⡀",
+  " ⣿⣧⣼⣿⡀⢸⡇   ⣿   ⢸⡇  ⣿⡇ ⢘⣿    ⢸⡏⠉⠉⣿ ⢸⣿⣤⣼⣇ ⣿⠛⢿⡏ ⢸⡇⠘⣷⣿ ⢸⡏⠉⠉⠁ ⠉⠉⣿⡆ ⠉⠉⣿⡆",
+  "⠸⠏  ⠹⠇⠸⠷⠶⠶ ⠿⠶⠶⠶⠘⠷⠶⠶⠿  ⠨⠿    ⠸⠇  ⠿ ⠿⠁ ⠈⠿ ⠿ ⠈⠿⠄⠸⠇ ⠘⠿ ⠸⠷⠶⠶⠆⠰⠶⠶⠿⠃⠲⠶⠶⠿⠁",
 ];
 
 /** ASCII → fullwidth letters/digits (U+FF01..) and ideographic space. */
@@ -153,7 +157,12 @@ function toFullwidth(s: string): string {
 /** Center the large green wordmark, with a single-line narrow fallback. */
 export function buildWordmark(theme: ThemeLike, width: number): string[] {
   const full = toFullwidth(SPLASH_WORDMARK);
-  const fallback = visibleWidth(full) <= width ? full : SPLASH_WORDMARK;
+  const fallback =
+    visibleWidth(full) <= width
+      ? full
+      : visibleWidth(SPLASH_WORDMARK) <= width
+        ? SPLASH_WORDMARK
+        : truncateToWidth(COMPACT_SPLASH_WORDMARK, width, "");
   const lines = LARGE_SPLASH_WORDMARK.every(
     (line) => visibleWidth(line) <= width,
   )
@@ -554,7 +563,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · large terminal-art “alloy harness” · green #1FE07A",
+        "OpenCode splash · Oxanium terminal wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
