@@ -7,6 +7,7 @@ import {
   assertAgentConcurrency,
   remainingAgentBudget,
 } from "../../lib/agent-registry.mjs";
+import * as agentRegistry from "../../lib/agent-registry.mjs";
 import {
   accumulateAssistantUsage,
   emptyUsage,
@@ -154,6 +155,28 @@ describe("free-agent orchestration", () => {
     assert.equal(second.ok, true);
     assert.equal(first.budgetUsd, 2.5);
     assert.equal(second.budgetUsd, 2.5);
+  });
+
+  it("routes an explicit workflow role without treating its profile model as requested", async () => {
+    const result = await prepareAgentLaunch(
+      {
+        task: "Use the approved workflow role",
+        profile: "research",
+        requestedRole: "planning",
+        partitionBudget: false,
+        cwd: "/project",
+        activeChildren: 0,
+        spentCostUsd: 1.25,
+      },
+      deps(async (model) => inspected(model)),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.decision.role, "planning");
+    assert.equal(result.decision.reason, "primary");
+    assert.equal(result.spec.profile, "research");
+    assert.equal(result.spec.model, "anthropic/claude-sonnet-4-6");
+    assert.equal(result.budgetUsd, 3.75);
   });
 
   it("treats a profile model as an explicit configured request", async () => {
@@ -408,6 +431,70 @@ describe("free-agent orchestration", () => {
     assert.equal(remainingAgentBudget(1.25, 5), 3.75);
     assert.throws(() => remainingAgentBudget(5, 5), /budget.*exhausted/i);
     assert.throws(() => remainingAgentBudget(Number.NaN, 5), /invalid.*budget/i);
+  });
+
+  it("atomically reserves shared workflow capacity and retains settled observed cost", async () => {
+    assert.equal(typeof agentRegistry.reserveAgentLaunch, "function");
+    assert.equal(typeof agentRegistry.settleAgentLaunch, "function");
+    assert.equal(typeof agentRegistry.resetAgentLedgerForTests, "function");
+    agentRegistry.resetAgentLedgerForTests();
+    const cwd = "/shared-ledger-project";
+
+    const first = agentRegistry.reserveAgentLaunch({
+      cwd,
+      maxConcurrency: 2,
+      budgetUsd: 4,
+      budgetLimitUsd: 5,
+      owner: "auto:scout",
+    });
+    assert.equal(agentRegistry.getRunningAgentCount(cwd), 1);
+    assert.equal(agentRegistry.getAgentSpentCost(cwd), 4);
+    await assert.rejects(
+      agentRegistry.spawnAgent({
+        cwd,
+        name: "free-agent-race",
+        task: "must not spawn",
+        maxConcurrency: 1,
+      }),
+      /concurrency/i,
+    );
+
+    const second = agentRegistry.reserveAgentLaunch({
+      cwd,
+      maxConcurrency: 2,
+      budgetUsd: 4,
+      budgetLimitUsd: 5,
+      owner: "fusion:builder",
+    });
+    assert.equal(second.budgetUsd, 1);
+    assert.equal(agentRegistry.getRunningAgentCount(cwd), 2);
+    assert.equal(agentRegistry.getAgentSpentCost(cwd), 5);
+    assert.throws(
+      () => agentRegistry.reserveAgentLaunch({
+        cwd,
+        maxConcurrency: 2,
+        budgetUsd: 1,
+        budgetLimitUsd: 5,
+      }),
+      /concurrency/i,
+    );
+
+    agentRegistry.settleAgentLaunch(first, { cost: 0.75, costKnown: true });
+    assert.equal(agentRegistry.getRunningAgentCount(cwd), 1);
+    assert.equal(agentRegistry.getAgentSpentCost(cwd), 1.75);
+    agentRegistry.settleAgentLaunch(second, { cost: 0.25, costKnown: true });
+    assert.equal(agentRegistry.getRunningAgentCount(cwd), 0);
+    assert.equal(agentRegistry.getAgentSpentCost(cwd), 1);
+
+    const unknown = agentRegistry.reserveAgentLaunch({
+      cwd,
+      maxConcurrency: 2,
+      budgetUsd: 1,
+      budgetLimitUsd: 5,
+    });
+    agentRegistry.settleAgentLaunch(unknown, { cost: null, costKnown: false });
+    assert.equal(Number.isNaN(agentRegistry.getAgentSpentCost(cwd)), true);
+    agentRegistry.resetAgentLedgerForTests();
   });
 
   it("passes the same routed credential and parent boundary to the shared spawner", async () => {

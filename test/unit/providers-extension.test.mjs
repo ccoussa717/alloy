@@ -86,7 +86,7 @@ test("session startup registers Claude Opus 5 on the live Anthropic provider", (
   );
 });
 
-test("Claude Opus 5 preserves live proxy and custom model composition", () => {
+test("Claude Opus 5 preserves custom models but keeps its canonical transport", () => {
   const anthropic = anthropicProvider();
   const custom = {
     ...anthropic.getModels()[0],
@@ -110,7 +110,7 @@ test("Claude Opus 5 preserves live proxy and custom model composition", () => {
   assert.ok(models.some((model) => model.id === custom.id));
   assert.equal(
     models.find((model) => model.id === "claude-opus-5").baseUrl,
-    proxied.baseUrl,
+    "https://api.anthropic.com",
   );
 
   liveModels = anthropic.getModels();

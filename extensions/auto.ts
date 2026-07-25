@@ -91,7 +91,7 @@ function paintPanel(panel: unknown, ctx?: { ui?: ExtensionContext["ui"] }) {
   }
 }
 
-function formatFusionLines(summary: any) {
+export function formatFusionLines(summary: any) {
   const models = summary.models || {};
   const usage = summary.usage || {};
   const lines = [
@@ -109,10 +109,14 @@ function formatFusionLines(summary: any) {
     lines.splice(6, 0, `Synthesis artifact: ${join(summary.runDir, "fusion", "synthesis.md")}`);
   }
   if (summary.error === "provider_unavailable") {
+    const reasons = Object.values(summary.routing || {})
+      .map((route: any) => route?.reason)
+      .filter(Boolean);
     lines.splice(
       6,
       0,
       `Provider unavailable in this Alloy session: ${(summary.missingProviders || []).join(", ")}`,
+      ...reasons.map((reason) => `Route reason: ${reason}`),
     );
   }
   return lines;
@@ -293,6 +297,7 @@ export function registerAuto(pi: ExtensionAPI) {
         const summary = await runAutoWorkflow({
           request,
           cwd: process.cwd(),
+          modelRegistry: ctx.modelRegistry,
           ...parentOpts,
           onProgress: (msg: string) => {
             try {
@@ -407,6 +412,7 @@ export function registerAuto(pi: ExtensionAPI) {
         const summary = await runFusion({
           request,
           cwd: process.cwd(),
+          modelRegistry: ctx.modelRegistry,
           ...parentOpts,
           loadCredentialLease: (models: string[]) =>
             resolveSessionCredentialLease(models, ctx.modelRegistry),
@@ -469,7 +475,7 @@ export function registerAuto(pi: ExtensionAPI) {
       useWorktree: Type.Optional(Type.Boolean()),
       maxFixRounds: Type.Optional(Type.Number()),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const parentOpts = resolveParentChildSpawnOpts();
         const summary = await runAutoWorkflow({
@@ -478,6 +484,7 @@ export function registerAuto(pi: ExtensionAPI) {
           useWorktree: params.useWorktree !== false,
           maxFixRounds: params.maxFixRounds,
           signal,
+          modelRegistry: ctx.modelRegistry,
           ...parentOpts,
           onPanel: (panel: unknown) => paintPanel(panel),
         });
@@ -521,6 +528,7 @@ export function registerAuto(pi: ExtensionAPI) {
           request: params.request,
           cwd: process.cwd(),
           signal,
+          modelRegistry: ctx.modelRegistry,
           ...parentOpts,
           loadCredentialLease: (models: string[]) =>
             resolveSessionCredentialLease(models, ctx.modelRegistry),

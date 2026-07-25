@@ -791,6 +791,25 @@ describe("credential isolation — host auth.json unreadability", () => {
     );
   });
 
+  it("registers canonical Claude Opus 5 for isolated no-extension children", () => {
+    const calls = [];
+    installRuntimeCredential(
+      { registerProvider: (...args) => calls.push(args) },
+      buildChildRuntimeCredentialEnvelope({
+        provider: "anthropic",
+        apiKey: "synthetic-opus-token",
+      }),
+      "anthropic/claude-opus-5",
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "anthropic");
+    assert.equal(calls[0][1].apiKey, "synthetic-opus-token");
+    assert.equal(calls[0][1].baseUrl, "https://api.anthropic.com");
+    assert.equal(calls[0][1].models.length, 1);
+    assert.equal(calls[0][1].models[0].id, "claude-opus-5");
+  });
+
   it("runtime credentials never appear in child argv or returned spawn diagnostics", async () => {
     const result = await runChildAgent({
       prompt: "hello",
@@ -1010,13 +1029,19 @@ describe("parent propagation for model-callable tools", () => {
     // must spread parent opts into runAutoWorkflow / runFusion
     assert.match(autoToolBody, /\.\.\.parentOpts/);
     assert.match(fusionToolBody, /\.\.\.parentOpts/);
+    assert.match(autoToolBody, /modelRegistry:\s*ctx\.modelRegistry/);
+    assert.match(fusionToolBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionToolBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionToolBody, /Type\.Literal\(["']build["']\)/);
     assert.match(fusionToolBody, /formatFusionLines\(summary\)/);
 
     const fusionCommandIdx = autoSrc.indexOf('registerCommand("fusion"');
     const panelCommandIdx = autoSrc.indexOf('registerCommand("panel"');
+    const autoCommandIdx = autoSrc.indexOf('registerCommand("auto"');
+    const autoCommandBody = autoSrc.slice(autoCommandIdx, fusionCommandIdx);
     const fusionCommandBody = autoSrc.slice(fusionCommandIdx, panelCommandIdx);
+    assert.match(autoCommandBody, /modelRegistry:\s*ctx\.modelRegistry/);
+    assert.match(fusionCommandBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionCommandBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionCommandBody, /\^build\\b|\^plan\\b|plan\|build/);
     assert.match(fusionCommandBody, /formatFusionLines\(summary\)/);

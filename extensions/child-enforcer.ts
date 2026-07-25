@@ -30,6 +30,9 @@ const { toApprovalProfile } = require(join(root, "lib", "project-trust.mjs"));
 const { createDockerBashOperations, ensureSandboxContainer } = require(
   join(root, "lib", "docker-sandbox.mjs"),
 );
+const { ALLOY_CLAUDE_OPUS_5_MODEL } = require(
+  join(root, "lib", "alloy-models.mjs"),
+);
 
 type ChildManifest = {
   permissionProfile?: string;
@@ -41,6 +44,7 @@ type ChildManifest = {
   readRoot?: string | null;
   credentialBroker?: string;
   mechanical?: boolean;
+  model?: string | null;
 };
 
 const PATH_CONFINED_TOOLS = new Set([
@@ -188,6 +192,7 @@ export function enforceChildToolCall(
 export function installRuntimeCredential(
   pi: ExtensionAPI,
   rawEnvelope: string,
+  selectedModel?: string | null,
 ) {
   if (!rawEnvelope || rawEnvelope.length > 64 * 1024) {
     throw new Error("Invalid runtime credential envelope");
@@ -242,23 +247,39 @@ export function installRuntimeCredential(
       headers[name] = value;
     }
   }
+  const canonicalModel =
+    selectedModel === "anthropic/claude-opus-5" && provider === "anthropic"
+      ? ALLOY_CLAUDE_OPUS_5_MODEL
+      : null;
+  const providerModel = canonicalModel
+    ? Object.fromEntries(
+        Object.entries(canonicalModel).filter(([key]) => key !== "provider"),
+      )
+    : null;
   pi.registerProvider(provider, {
     apiKey,
     ...(Object.keys(headers).length ? { headers } : {}),
+    ...(providerModel
+      ? {
+          baseUrl: canonicalModel.baseUrl,
+          api: canonicalModel.api,
+          models: [providerModel],
+        }
+      : {}),
   });
 }
 
 export default function childEnforcerExtension(pi: ExtensionAPI) {
+  const manifest = loadManifest();
   if (process.env.ALLOY_CHILD_CREDENTIAL_STDIN === "1") {
     try {
-      installRuntimeCredential(pi, readFileSync(0, "utf8"));
+      installRuntimeCredential(pi, readFileSync(0, "utf8"), manifest?.model);
     } catch {
       console.error(
         "Alloy child-enforcer: runtime credential handoff failed closed",
       );
     }
   }
-  const manifest = loadManifest();
   if (!manifest) {
     console.error(
       "Alloy child-enforcer: ALLOY_CHILD_POLICY missing or unreadable — all tools will be blocked",

@@ -206,6 +206,27 @@ test("session credential broker rejects resolved environment propagation", async
   });
 });
 
+test("session credential broker rejects provider-auth environment overrides", async () => {
+  const model = getBuiltinModel("openai", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "must-not-be-leased",
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "must-not-be-leased" },
+        env: { OPENAI_BASE_URL: "https://proxy.invalid/v1" },
+      }),
+    },
+  );
+
+  assert.equal(lease.mode, "none");
+  assert.equal(lease.runtimeCredential, null);
+});
+
 test("session credential broker rejects model-specific resolved headers", async () => {
   const model = getBuiltinModel("openai", "gpt-5.4");
   const lease = await broker.resolveSessionCredentialLease(
@@ -379,4 +400,106 @@ test("candidate inspection separates non-secret facts from the runtime lease", a
   });
   assert.equal(JSON.stringify(inspected.candidate).includes("synthetic-session-token"), false);
   assert.equal(inspected.lease.runtimeCredential.apiKey, "synthetic-session-token");
+});
+
+test("canonical Alloy Claude Opus 5 receives a session-scoped lease", async () => {
+  const model = {
+    ...getBuiltinModel("anthropic", "claude-opus-4-8"),
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: {
+      input: 5,
+      output: 25,
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+    thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+      supportsStrictTools: true,
+    },
+  };
+  const registry = {
+    find: () => model,
+    getApiKeyAndHeaders: async () => ({
+      ok: true,
+      apiKey: "synthetic-opus-token",
+    }),
+    getProviderAuth: async () => ({
+      auth: { apiKey: "synthetic-opus-token" },
+    }),
+  };
+
+  const inspected = await broker.inspectSessionModelCandidate(
+    "anthropic/claude-opus-5",
+    registry,
+  );
+
+  assert.equal(inspected.candidate.authenticated, true);
+  assert.equal(inspected.candidate.transport, "builtin");
+  assert.equal(inspected.lease.mode, "runtime-key");
+  assert.equal(inspected.lease.runtimeCredential.apiKey, "synthetic-opus-token");
+  assert.equal(JSON.stringify(inspected.candidate).includes("synthetic-opus-token"), false);
+});
+
+test("canonical Opus 5 rejects unsafe model and auth transports before credential access", async () => {
+  const canonical = {
+    ...getBuiltinModel("anthropic", "claude-opus-4-8"),
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+    thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+      supportsStrictTools: true,
+    },
+  };
+
+  for (const model of [
+    { ...canonical, baseUrl: "https://proxy.invalid/v1" },
+    { ...canonical, headers: { "x-forward-secret": "unsafe" } },
+  ]) {
+    let authCalls = 0;
+    const inspected = await broker.inspectSessionModelCandidate(
+      "anthropic/claude-opus-5",
+      {
+        find: () => model,
+        getApiKeyAndHeaders: async () => {
+          authCalls++;
+          return { ok: true, apiKey: "must-not-be-read" };
+        },
+      },
+    );
+    assert.equal(authCalls, 0);
+    assert.equal(inspected.candidate.transport, "custom");
+    assert.equal(JSON.stringify(inspected.candidate).includes("unsafe"), false);
+  }
+
+  for (const auth of [
+    { apiKey: "must-not-be-leased", baseUrl: "https://proxy.invalid/v1" },
+    { apiKey: "must-not-be-leased", headers: { "x-auth-override": "unsafe" } },
+  ]) {
+    const lease = await broker.resolveSessionCredentialLease(
+      ["anthropic/claude-opus-5"],
+      {
+        find: () => canonical,
+        getApiKeyAndHeaders: async () => ({
+          ok: true,
+          apiKey: "must-not-be-leased",
+        }),
+        getProviderAuth: async () => ({ auth }),
+      },
+    );
+    assert.equal(lease.mode, "none");
+  }
 });

@@ -19,6 +19,19 @@ test("render panel shows agent statuses", () => {
   assert.ok(lines.some((l) => l.includes("Builder") && l.includes("●")));
 });
 
+test("render panel shows compact routing reason and fallback evidence", () => {
+  const p = panel.createPanelState({ title: "ALLOY AUTO", runId: "routed" });
+  panel.upsertAgent(p, {
+    role: "planner",
+    status: "ok",
+    model: "anthropic/claude-sonnet-4-6",
+    routing: { reason: "fallback", fallbackUsed: true },
+  });
+
+  const line = panel.renderPanelLines(p).find((item) => item.includes("planner"));
+  assert.match(line, /route:fallback/);
+});
+
 test("themed render falls back without theme", () => {
   const p = panel.createPanelState({ title: "X" });
   panel.upsertAgent(p, { role: "reviewer", status: "fail", detail: "FAIL" });
