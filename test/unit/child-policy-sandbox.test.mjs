@@ -14,11 +14,12 @@ import {
   readFileSync,
   rmSync,
   existsSync,
-  statSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 const root = join(import.meta.dirname, "..", "..");
 
@@ -44,9 +45,9 @@ const {
   resolveChildExecutionPolicy,
   runChildAgent,
   buildChildSpawnPlan,
+  buildChildRuntimeCredentialEnvelope,
   createIsolatedChildHome,
   provisionChildAuthBroker,
-  provisionChildRuntimeCredential,
   PROVIDER_CREDENTIAL_ENV_KEYS,
   CHILD_ENV_ALLOWLIST,
 } = await import(pathToFileURL(join(root, "lib/child-runner.mjs")).href);
@@ -88,11 +89,13 @@ const { resolveParentChildSpawnOpts } = await import(
 // Instead import the enforce function by evaluating the file as module via
 // node --experimental-strip-types if available.
 let enforceChildToolCall;
+let installRuntimeCredential;
 try {
   const enforcerMod = await import(
     pathToFileURL(join(root, "extensions/child-enforcer.ts")).href
   );
   enforceChildToolCall = enforcerMod.enforceChildToolCall;
+  installRuntimeCredential = enforcerMod.installRuntimeCredential;
 } catch {
   // Node without strip-types: load a tiny inline equivalent using evaluateToolPolicy
   const { toApprovalProfile: tap } = await import(
@@ -102,11 +105,25 @@ try {
     if (!manifest?.mechanical) {
       return { block: true, reason: "missing mechanical manifest" };
     }
+    if (Array.isArray(manifest.tools) && !manifest.tools.includes(toolName)) {
+      return { block: true, reason: "tool outside allowlist", decision: "deny" };
+    }
     if (manifest.sandbox && toolName === "bash" && env.ALLOY_CHILD_IN_DOCKER !== "1") {
       return { block: true, reason: "host bash blocked", decision: "deny" };
     }
-    if (manifest.readRoot && ["read", "grep", "find", "ls"].includes(toolName)) {
-      const target = realpathSync(resolve(process.cwd(), String(input.path || ".")));
+    if (
+      manifest.readRoot &&
+      ["read", "grep", "find", "ls", "write", "edit"].includes(toolName)
+    ) {
+      let target = resolve(
+        process.cwd(),
+        String(input.path || input.file_path || "."),
+      );
+      if (!existsSync(target) && !["write", "edit"].includes(toolName)) {
+        return { block: true, reason: "missing read path", decision: "deny" };
+      }
+      while (!existsSync(target)) target = dirname(target);
+      target = realpathSync(target);
       const rel = relative(realpathSync(manifest.readRoot), target);
       if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
         return { block: true, reason: "read root escape", decision: "deny" };
@@ -124,6 +141,13 @@ try {
       return { block: true, reason: result.reason, decision: result.decision };
     }
     return { block: false, decision: "allow" };
+  };
+  installRuntimeCredential = (pi, raw) => {
+    const credential = JSON.parse(raw);
+    pi.registerProvider(credential.provider, {
+      apiKey: credential.apiKey,
+      ...(credential.headers ? { headers: credential.headers } : {}),
+    });
   };
 }
 
@@ -360,6 +384,136 @@ describe("mechanical enforcer consumption", () => {
     assert.equal(result.spawnPlan.args[index + 1], "high");
     assert.equal(result.policy.thinkingLevel, "high");
   });
+
+  it("brokered build agents isolate bash in Docker while Pi retains provider egress", async () => {
+    const denied = await runChildAgent({
+      prompt: "implement the change",
+      cwd: project,
+      mode: "build",
+      tools: ["read", "write", "edit", "bash"],
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "openai-codex",
+        apiKey: "synthetic-runtime-token",
+      },
+      sandboxDiagnostics: { daemon: false, detail: "docker missing" },
+    });
+    assert.equal(denied.error, "sandbox_unavailable");
+
+    const isolated = await runChildAgent({
+      prompt: "implement the change",
+      cwd: project,
+      mode: "build",
+      tools: ["read", "write", "edit", "bash"],
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "openai-codex",
+        apiKey: "synthetic-runtime-token",
+      },
+      sandboxDiagnostics: { daemon: true },
+      dryRun: true,
+    });
+    assert.equal(isolated.policy.sandbox, false);
+    assert.equal(isolated.policy.sandboxBash, true);
+    assert.equal(isolated.spawnPlan.backend, "host");
+  });
+
+  it("removes the brokered bash sandbox after successful host-Pi completion", async () => {
+    const child = new EventEmitter();
+    child.pid = 424242;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.killed = false;
+    const removed = [];
+
+    const result = await runChildAgent({
+      prompt: "implement the change",
+      cwd: project,
+      mode: "build",
+      tools: ["read", "write", "edit", "bash"],
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "openai-codex",
+        apiKey: "synthetic-runtime-token",
+      },
+      sandboxDiagnostics: { daemon: true },
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.stdout.write(
+            `${JSON.stringify({
+              type: "tool_execution_start",
+              toolName: "bash",
+            })}\n`,
+          );
+          child.stdout.write(
+            `${JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "implemented" }],
+                usage: {
+                  input: 10,
+                  output: 5,
+                  cost: { total: 0.01 },
+                },
+              },
+            })}\n`,
+          );
+          child.emit("close", 0);
+        });
+        return child;
+      },
+      dockerStopImpl: (_command, args) => {
+        removed.push(args.at(-1));
+        return { status: 0, stderr: "" };
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(removed.length, 1);
+    assert.match(removed[0], /^alloy-sbx-/);
+  });
+
+  it("an empty tool allowlist disables Pi defaults and is enforced mechanically", async () => {
+    const manifest = buildChildPolicyManifest({
+      permissionProfile: "ask-dangerous",
+      tools: [],
+      credentialBroker: "runtime-key",
+    });
+    assert.equal(
+      enforceChildToolCall(manifest, "write", { path: join(project, "x") }, {}).block,
+      true,
+    );
+
+    const result = await runChildAgent({
+      prompt: "no tools",
+      cwd: project,
+      tools: [],
+      dryRun: true,
+    });
+    assert.ok(result.spawnPlan.args.includes("--no-tools"));
+  });
+
+  it("translates a sandboxed read root to the container workspace", async () => {
+    const result = await runChildAgent({
+      prompt: "sandboxed read",
+      cwd: project,
+      tools: ["read"],
+      readRoot: project,
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "anthropic",
+        apiKey: "synthetic-runtime-key",
+      },
+      sandbox: true,
+      parentSandbox: true,
+      sandboxDiagnostics: { daemon: true },
+      dryRun: true,
+    });
+    assert.equal(result.policy.readRoot, "/workspace");
+    assert.ok(result.spawnPlan.args.includes("ALLOY_CHILD_CREDENTIAL_STDIN=1"));
+  });
 });
 
 describe("docker-positive sandbox children execute in container", () => {
@@ -468,6 +622,36 @@ describe("docker-positive sandbox children execute in container", () => {
     });
     assert.equal(result.error, "sandbox_unavailable");
   });
+
+  it("removes the sandbox container after an abnormal Docker client exit", async () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.killed = true;
+    let cleanupCalls = 0;
+
+    const result = await runChildAgent({
+      prompt: "review safely",
+      cwd: project,
+      mode: "review",
+      tools: ["read"],
+      parentSandbox: true,
+      sandbox: true,
+      sandboxDiagnostics: { daemon: true },
+      spawnImpl: () => {
+        queueMicrotask(() => child.emit("close", 1));
+        return child;
+      },
+      dockerStopImpl: () => {
+        cleanupCalls += 1;
+        return { status: 0, stderr: "" };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(cleanupCalls, 1);
+  });
 });
 
 function tempdirForHoistedPi() {
@@ -541,31 +725,70 @@ describe("credential isolation — host auth.json unreadability", () => {
     rmSync(iso.home, { recursive: true, force: true });
   });
 
-  it("runtime credentials stay in isolated 0600 files and out of process env", () => {
-    const iso = createIsolatedChildHome();
-    const provisioned = provisionChildRuntimeCredential(iso.piDir, {
+  it("runtime credentials register from a validated memory-only envelope", () => {
+    const envelope = buildChildRuntimeCredentialEnvelope({
       provider: "openai-codex",
       apiKey: "synthetic-runtime-token",
       headers: { "x-account-id": "synthetic-account-id" },
-      env: { SYNTHETIC_PROVIDER_SCOPE: "synthetic-provider-value" },
-      baseUrl: "https://enterprise.example.test/api",
     });
-
-    assert.equal(provisioned.provisioned, true);
-    assert.equal(statSync(provisioned.path).mode & 0o777, 0o600);
-    assert.equal(statSync(provisioned.authPath).mode & 0o777, 0o600);
-    const config = readFileSync(provisioned.path, "utf8");
-    const auth = readFileSync(provisioned.authPath, "utf8");
-    assert.match(config, /openai-codex/);
-    assert.match(config, /https:\/\/enterprise\.example\.test\/api/);
-    assert.doesNotMatch(config, /synthetic-runtime-token/);
-    assert.doesNotMatch(config, /synthetic-account-id/);
-    assert.match(auth, /synthetic-runtime-token/);
-    assert.match(auth, /synthetic-account-id/);
-    assert.match(auth, /synthetic-provider-value/);
-    assert.match(readFileSync(hostAuthPath, "utf8"), /HOST_AUTH_MUST_NOT_LEAK/);
-    assert.equal(existsSync(iso.authPath), true);
-    rmSync(iso.home, { recursive: true, force: true });
+    assert.equal(JSON.parse(envelope).version, 1);
+    const calls = [];
+    installRuntimeCredential(
+      { registerProvider: (...args) => calls.push(args) },
+      envelope,
+    );
+    assert.deepEqual(calls, [
+      [
+        "openai-codex",
+        {
+          apiKey: "synthetic-runtime-token",
+          headers: { "x-account-id": "synthetic-account-id" },
+        },
+      ],
+    ]);
+    assert.throws(
+      () =>
+        buildChildRuntimeCredentialEnvelope({
+          provider: "openai-codex",
+          apiKey: "synthetic-runtime-token",
+          baseUrl: "https://attacker.example",
+        }),
+      /cannot override/i,
+    );
+    assert.throws(
+      () =>
+        installRuntimeCredential(
+          { registerProvider: () => assert.fail("must not register") },
+          JSON.stringify({
+            version: 2,
+            provider: "openai-codex",
+            apiKey: "synthetic-runtime-token",
+          }),
+        ),
+      /invalid runtime credential envelope/i,
+    );
+    assert.throws(
+      () =>
+        buildChildRuntimeCredentialEnvelope({
+          provider: "openai-codex",
+          apiKey: 123,
+          headers: ["x-test"],
+        }),
+      /invalid provider-scoped runtime credential/i,
+    );
+    assert.throws(
+      () =>
+        installRuntimeCredential(
+          { registerProvider: () => assert.fail("must not register") },
+          JSON.stringify({
+            version: 1,
+            provider: "openai-codex",
+            apiKey: "synthetic-runtime-token",
+            unexpected: true,
+          }),
+        ),
+      /invalid runtime credential envelope/i,
+    );
   });
 
   it("runtime credentials never appear in child argv or returned spawn diagnostics", async () => {
@@ -586,6 +809,84 @@ describe("credential isolation — host auth.json unreadability", () => {
     assert.doesNotMatch(JSON.stringify(result.spawnPlan), /synthetic-runtime-token/);
     assert.equal(result.spawnPlan.env.ALLOY_FUSION_RUNTIME_API_KEY, undefined);
     assert.doesNotMatch(JSON.stringify(result.spawnPlan.env), /synthetic-runtime/);
+    assert.equal(result.spawnPlan.env.ALLOY_CHILD_CREDENTIAL_STDIN, "1");
+    assert.equal(
+      existsSync(join(result.spawnPlan.env.PI_CODING_AGENT_DIR, "auth.json")),
+      false,
+    );
+  });
+
+  it("fails cleanly when the child closes credential stdin early", async () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.killed = true;
+
+    const result = await runChildAgent({
+      prompt: "review safely",
+      cwd: project,
+      mode: "review",
+      tools: ["read"],
+      credentialBroker: "runtime-key",
+      brokerRuntimeCredential: {
+        provider: "openai-codex",
+        apiKey: "synthetic-runtime-token",
+      },
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          const error = new Error("write EPIPE");
+          error.code = "EPIPE";
+          child.stdin.emit("error", error);
+          child.emit("close", 1);
+        });
+        return child;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "credential_handoff_failed");
+  });
+
+  it("stops a child after observed usage exceeds its reservation", async () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.killed = true;
+
+    const result = await runChildAgent({
+      prompt: "review safely",
+      cwd: project,
+      mode: "review",
+      tools: ["read"],
+      maxCostUsd: 1,
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.stdout.write(
+            JSON.stringify({
+              type: "message_end",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "reviewed" }],
+                usage: {
+                  input: 10,
+                  output: 5,
+                  cost: { total: 1.01 },
+                },
+              },
+            }),
+          );
+          child.exitCode = 0;
+          child.emit("close", 0);
+        });
+        return child;
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "budget_exceeded");
+    assert.equal(result.usage.cost, 1.01);
   });
 
   it("host dryRun never points env at host auth; boundary is env-home-isolation", async () => {
@@ -729,6 +1030,14 @@ describe("parent propagation for model-callable tools", () => {
     const agentsSrc = readFileSync(join(root, "extensions/agents.ts"), "utf8");
     assert.match(agentsSrc, /resolveParentChildSpawnOpts/);
     assert.match(agentsSrc, /\.\.\.parentOpts/);
+    assert.match(agentsSrc, /prepareAgentLaunch/);
+    assert.match(agentsSrc, /credentialBroker:\s*launch\.credential\.mode/);
+    assert.match(
+      agentsSrc,
+      /brokerRuntimeCredential:\s*launch\.credential\.runtimeCredential/,
+    );
+    assert.match(agentsSrc, /routeDecision:\s*launch\.decision/);
+    assert.match(agentsSrc, /async execute\([^)]*ctx\)/);
   });
 });
 

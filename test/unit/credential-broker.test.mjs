@@ -353,3 +353,30 @@ test("session credential broker rejects malformed routes before auth", async () 
     assert.equal(authCalls, 0);
   }
 });
+
+test("candidate inspection separates non-secret facts from the runtime lease", async () => {
+  const model = getBuiltinModel("openai-codex", "gpt-5.4");
+  const inspected = await broker.inspectSessionModelCandidate(
+    "openai-codex/gpt-5.4",
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "synthetic-session-token",
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "synthetic-session-token" },
+      }),
+    },
+  );
+
+  assert.deepEqual(inspected.candidate, {
+    model: "openai-codex/gpt-5.4",
+    available: true,
+    authenticated: true,
+    transport: "builtin",
+    supportsTools: true,
+  });
+  assert.equal(JSON.stringify(inspected.candidate).includes("synthetic-session-token"), false);
+  assert.equal(inspected.lease.runtimeCredential.apiKey, "synthetic-session-token");
+});
