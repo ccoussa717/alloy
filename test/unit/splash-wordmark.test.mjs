@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-import {
+import * as ui from "../../extensions/ui.ts";
+
+const {
   buildWordmark,
   buildSplashHintLine,
   panelRow,
   panelWidth,
   splashHorizontalLayout,
   splashTopPadding,
-} from "../../extensions/ui.ts";
+} = ui;
 
 function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -57,7 +59,67 @@ test("splash rows never exceed their component width", () => {
   }
 });
 
-test("vertical centering includes Pi's quiet-startup spacer", () => {
-  assert.equal(splashTopPadding(24, 1), 9);
+test("editor body keeps a three-row writing area", () => {
+  assert.equal(typeof ui.ensureMinimumInputRows, "function");
+  assert.deepEqual(ui.ensureMinimumInputRows(["cursor"]), ["cursor", "", ""]);
+  assert.deepEqual(ui.ensureMinimumInputRows(["one", "two", "three", "four"]), [
+    "one",
+    "two",
+    "three",
+    "four",
+  ]);
+});
+
+test("footer adds one blank row below its hints", () => {
+  assert.equal(typeof ui.withBottomPadding, "function");
+  assert.deepEqual(ui.withBottomPadding(["footer"]), ["footer", ""]);
+  assert.deepEqual(ui.withBottomPadding(["footer"], 5), ["footer"]);
+});
+
+test("short terminals collapse the editor before hiding its cursor", () => {
+  assert.equal(typeof ui.inputRowsForTerminal, "function");
+  assert.equal(ui.inputRowsForTerminal(5), 1);
+  assert.equal(ui.inputRowsForTerminal(7), 1);
+  assert.equal(ui.inputRowsForTerminal(8), 1);
+  assert.equal(ui.inputRowsForTerminal(9), 3);
+  assert.equal(ui.inputRowsForTerminal(24), 3);
+  assert.equal(typeof ui.showEditorStatus, "function");
+  assert.equal(ui.showEditorStatus(8), false);
+  assert.equal(ui.showEditorStatus(9), true);
+});
+
+test("Pi autocomplete rows stay outside the editor body", () => {
+  assert.equal(typeof ui.splitEditorRender, "function");
+  assert.deepEqual(
+    ui.splitEditorRender([
+      "────────",
+      "cursor  ",
+      "────────",
+      "first   ",
+      "second  ",
+    ]),
+    { body: ["cursor  "], autocomplete: ["first   ", "second  "] },
+  );
+  assert.deepEqual(
+    ui.splitEditorRender([
+      "──────────",
+      "cursor    ",
+      "─── ↓ 5...",
+      "first     ",
+    ]),
+    { body: ["cursor    "], autocomplete: ["first     "] },
+  );
+});
+
+test("compact editor preserves the cursor before autocomplete rows", () => {
+  assert.equal(typeof ui.fitCompactAutocomplete, "function");
+  const suggestions = ["  first", "→ second"];
+  assert.deepEqual(ui.fitCompactAutocomplete(suggestions, 4, true), suggestions);
+  assert.deepEqual(ui.fitCompactAutocomplete(suggestions, 4, false), ["→ second"]);
+  assert.deepEqual(ui.fitCompactAutocomplete(suggestions, 5, false), suggestions);
+});
+
+test("vertical centering includes the taller editor and bottom padding", () => {
+  assert.equal(splashTopPadding(24, 1), 7);
   assert.equal(splashTopPadding(4, 1), 0);
 });

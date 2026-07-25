@@ -137,6 +137,91 @@ function padVisible(text: string, width: number): string {
   return text + " ".repeat(width - w);
 }
 
+const EDITOR_INPUT_ROWS = 3;
+const BOTTOM_PADDING_ROWS = 1;
+const COMPACT_TERMINAL_ROWS = 9;
+
+export function inputRowsForTerminal(rows: number): number {
+  return Number.isFinite(rows) && rows < COMPACT_TERMINAL_ROWS
+    ? 1
+    : EDITOR_INPUT_ROWS;
+}
+
+export function showEditorStatus(rows: number): boolean {
+  return inputRowsForTerminal(rows) > 1;
+}
+
+export function ensureMinimumInputRows(
+  lines: string[],
+  minimumRows = EDITOR_INPUT_ROWS,
+): string[] {
+  const padded = [...lines];
+  while (padded.length < minimumRows) padded.push("");
+  return padded;
+}
+
+export function withBottomPadding(
+  lines: string[],
+  terminalRows = 24,
+): string[] {
+  const paddingRows = inputRowsForTerminal(terminalRows) === 1
+    ? 0
+    : BOTTOM_PADDING_ROWS;
+  return [
+    ...lines,
+    ...Array.from({ length: paddingRows }, () => ""),
+  ];
+}
+
+function isEditorBorder(line: string): boolean {
+  const plain = stripAnsi(line);
+  return (
+    /^─+$/.test(plain) ||
+    /^─{1,3} [↑↓] \d+(?: more )?(?:─*|\.\.\.)$/.test(plain)
+  );
+}
+
+export function splitEditorRender(raw: string[]): {
+  body: string[];
+  autocomplete: string[];
+} {
+  const bottomBorder = raw.findIndex(
+    (line, index) => index > 0 && isEditorBorder(line),
+  );
+  if (bottomBorder < 0) {
+    return {
+      body: raw.length > 2 ? raw.slice(1, -1) : [...raw],
+      autocomplete: [],
+    };
+  }
+  return {
+    body: raw.slice(1, bottomBorder),
+    autocomplete: raw.slice(bottomBorder + 1),
+  };
+}
+
+export function fitCompactAutocomplete(
+  lines: string[],
+  terminalRows: number,
+  splash: boolean,
+): string[] {
+  const outsideEditorRows = 1 + (splash ? 0 : 1); // footer + active header
+  const availableRows = Math.max(0, terminalRows - outsideEditorRows - 1);
+  if (availableRows === 0 || lines.length <= availableRows) {
+    return lines.slice(0, availableRows);
+  }
+  const selected = lines.findIndex((line) =>
+    stripAnsi(line).trimStart().startsWith("→ "),
+  );
+  if (selected < 0) return lines.slice(0, availableRows);
+  const maxStart = lines.length - availableRows;
+  const start = Math.max(
+    0,
+    Math.min(selected - Math.floor((availableRows - 1) / 2), maxStart),
+  );
+  return lines.slice(start, start + availableRows);
+}
+
 /**
  * OpenCode panel row: thin accent bar + solid gray body.
  * Left bar is 1 cell; body is filled to boxW.
@@ -191,10 +276,10 @@ export function buildWordmark(
  * panel + hints — compact, lots of black field around it).
  */
 const SPLASH_GAP = 1;
-/** OpenCode empty panel is 1 input row + 1 status row. */
-const SPLASH_INPUT_ROWS = 1;
+/** OpenCode-style panel is 3 input rows + 1 status row. */
+const SPLASH_INPUT_ROWS = EDITOR_INPUT_ROWS;
 const SPLASH_PANEL_ROWS = SPLASH_INPUT_ROWS + 1;
-const SPLASH_HINT_ROWS = 1;
+const SPLASH_HINT_ROWS = 1 + BOTTOM_PADDING_ROWS;
 // Alloy enables Pi quiet startup, leaving one above-editor widget spacer.
 const SPLASH_CHROME_ROWS = 1;
 
@@ -311,7 +396,10 @@ export function registerUi(pi: ExtensionAPI) {
               1,
               width - visibleWidth(left) - visibleWidth(right),
             );
-            return [truncateToWidth(left + " ".repeat(gap) + right, width)];
+            return withBottomPadding(
+              [truncateToWidth(left + " ".repeat(gap) + right, width)],
+              tui.terminal?.rows || 24,
+            );
           },
         };
       });
@@ -386,6 +474,7 @@ export function registerUi(pi: ExtensionAPI) {
             render(width: number) {
               if (!splashMode) return [];
               const rows = tui.terminal?.rows || 24;
+              if (inputRowsForTerminal(rows) === 1) return [];
               const mark = buildWordmark(theme, width);
               // Top pad so logo+panel+hints sit in the vertical middle
               const pad = splashTopPadding(rows, mark.length);
@@ -413,7 +502,10 @@ export function registerUi(pi: ExtensionAPI) {
           render(width: number): string[] {
             if (splashMode) {
               // OpenCode: hints sit flush under the panel's left edge
-              return [buildSplashHintLine(theme, width)];
+              return withBottomPadding(
+                [buildSplashHintLine(theme, width)],
+                tui.terminal?.rows || 24,
+              );
             }
             const running = listAgents(process.cwd(), { limit: 20 }).filter(
               (a: { status: string }) => a.status === "running",
@@ -435,7 +527,10 @@ export function registerUi(pi: ExtensionAPI) {
               1,
               width - visibleWidth(left) - visibleWidth(right),
             );
-            return [truncateToWidth(left + " ".repeat(gap) + right, width)];
+            return withBottomPadding(
+              [truncateToWidth(left + " ".repeat(gap) + right, width)],
+              tui.terminal?.rows || 24,
+            );
           },
         };
       });
@@ -481,13 +576,12 @@ export function registerUi(pi: ExtensionAPI) {
           const pad = " ".repeat(padN);
 
           const raw = super.render(boxW);
-          if (raw.length < 2) return raw.map((l) => pad + l);
-
-          // Drop Pi top/bottom ─ borders
-          let body = raw.slice(1, -1);
+          const editorRender = splitEditorRender(raw);
+          let body = editorRender.body;
           const typed = (this.getText?.() || "").length > 0;
+          const terminalRows = this.tui.terminal?.rows || 24;
 
-          // OpenCode splash: single input row only (compact 2-row panel w/ status)
+          // Keep the cursor at the top of the empty splash input area.
           if (splash && !typed) {
             const cursorLine =
               body.find((l) => l.includes("\x1b[7m")) || body[0] || "";
@@ -511,6 +605,11 @@ export function registerUi(pi: ExtensionAPI) {
               body[0] = line + thm.fg("dim", " " + phText);
             }
           }
+
+          body = ensureMinimumInputRows(
+            body,
+            inputRowsForTerminal(terminalRows),
+          );
 
           const out: string[] = [];
           for (const line of body) {
@@ -539,9 +638,22 @@ export function registerUi(pi: ExtensionAPI) {
               thm.fg("dim", " · ") +
               thm.fg("muted", model) +
               thm.fg("dim", thinkBit);
-          out.push(panelRow(thm, statusInner, boxW));
+          if (showEditorStatus(terminalRows)) {
+            out.push(panelRow(thm, statusInner, boxW));
+          }
 
-          return out.map((l) => pad + l);
+          const autocomplete = showEditorStatus(terminalRows)
+            ? editorRender.autocomplete
+            : fitCompactAutocomplete(
+                editorRender.autocomplete,
+                terminalRows,
+                splash,
+              );
+
+          return [
+            ...out.map((l) => pad + l),
+            ...autocomplete.map((l) => pad + l),
+          ];
         }
       }
 
