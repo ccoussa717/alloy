@@ -91,14 +91,36 @@ function shortModel(ctx: ExtensionContext): string {
   return provider ? `${id} ${provider}` : id;
 }
 
-function panelWidth(termW: number, splash: boolean): number {
-  if (!splash) return Math.max(20, termW);
+export function panelWidth(termW: number, splash: boolean): number {
+  const width = Math.max(1, Math.floor(termW));
+  if (!splash) return width;
   // OpenCode empty-state: compact centered box (~half width, not full-bleed)
-  return Math.min(62, Math.max(48, Math.floor(termW * 0.48)));
+  return Math.min(width, 62, Math.max(48, Math.floor(width * 0.48)));
 }
 
 function centerPad(termW: number, boxW: number): number {
   return Math.max(0, Math.floor((termW - boxW) / 2));
+}
+
+export function splashHorizontalLayout(
+  renderWidth: number,
+): { width: number; boxWidth: number; left: number } {
+  const width = Math.max(1, Math.floor(renderWidth));
+  const boxWidth = panelWidth(width, true);
+  return { width, boxWidth, left: centerPad(width, boxWidth) };
+}
+
+export function buildSplashHintLine(theme: ThemeLike, width: number): string {
+  const layout = splashHorizontalLayout(width);
+  const hints =
+    theme.fg("dim", "tab") +
+    theme.fg("muted", " agents") +
+    theme.fg("dim", "  ctrl+p") +
+    theme.fg("muted", " commands");
+  return (
+    " ".repeat(layout.left) +
+    truncateToWidth(hints, layout.boxWidth, "")
+  );
 }
 
 function stripAnsi(s: string): string {
@@ -119,7 +141,12 @@ function padVisible(text: string, width: number): string {
  * OpenCode panel row: thin accent bar + solid gray body.
  * Left bar is 1 cell; body is filled to boxW.
  */
-function panelRow(theme: ThemeLike, body: string, boxW: number): string {
+export function panelRow(
+  theme: ThemeLike,
+  body: string,
+  boxW: number,
+): string {
+  if (boxW <= 1) return theme.fg("accent", "▌");
   const innerW = Math.max(1, boxW - 1);
   const filled = padVisible(" " + body, innerW);
   // Thin bar (OpenCode uses a 1px accent; ▌ reads as a solid strip in terminals)
@@ -129,68 +156,55 @@ function panelRow(theme: ThemeLike, body: string, boxW: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Splash wordmark: four display rows on wide terminals, centered.
-// Narrow terminals retain the fullwidth/ASCII fallback without relying on
-// terminal-specific font sizing or image protocols.
+// Terminal-native wordmark: normal ASCII with deliberate tracking. The user's
+// terminal owns the typeface; Alloy only supplies spacing, weight, and color.
 // ---------------------------------------------------------------------------
 
-const SPLASH_WORDMARK = "alloy harness";
-const COMPACT_SPLASH_WORDMARK = "alloy";
-// Rasterized from Oxanium SemiBold by Severin Meyer, licensed under OFL-1.1.
-// https://github.com/sevmeyer/oxanium
-const LARGE_SPLASH_WORDMARK = [
-  "  ⣶⣶  ⢰⡆   ⣶   ⢠⡶⠶⠶⣶ ⢶⡄ ⣰⡆  ⢰⡆  ⣶  ⢰⣶⣆  ⣶⠶⠶⣶ ⢰⣶⡀ ⣶ ⢰⡶⠶⠶⠆⢰⡶⠶⠶ ⣰⡶⠶⠶",
-  " ⢸⡏⢸⡇ ⢸⡇   ⣿   ⢸⡇  ⣿⡇⠈⣿⣴⡟   ⢸⣧⣤⣤⣿  ⣿⠁⣿⡀ ⣿  ⣿ ⢸⡟⣷⡀⣿ ⢸⣧⣤⣤⡀⢸⣧⣀⣀ ⢻⣧⣀⡀",
-  " ⣿⣧⣼⣿⡀⢸⡇   ⣿   ⢸⡇  ⣿⡇ ⢘⣿    ⢸⡏⠉⠉⣿ ⢸⣿⣤⣼⣇ ⣿⠛⢿⡏ ⢸⡇⠘⣷⣿ ⢸⡏⠉⠉⠁ ⠉⠉⣿⡆ ⠉⠉⣿⡆",
-  "⠸⠏  ⠹⠇⠸⠷⠶⠶ ⠿⠶⠶⠶⠘⠷⠶⠶⠿  ⠨⠿    ⠸⠇  ⠿ ⠿⠁ ⠈⠿ ⠿ ⠈⠿⠄⠸⠇ ⠘⠿ ⠸⠷⠶⠶⠆⠰⠶⠶⠿⠃⠲⠶⠶⠿⠁",
-];
-
-/** ASCII → fullwidth letters/digits (U+FF01..) and ideographic space. */
-function toFullwidth(s: string): string {
-  return s
-    .replace(/[A-Za-z0-9]/g, (c) =>
-      String.fromCharCode(c.charCodeAt(0) + 0xfee0),
-    )
-    .replace(/ /g, "\u3000");
-}
+const SPLASH_WORDMARK = "A L L O Y   H A R N E S S";
+const COMPACT_SPLASH_WORDMARK = "ALLOY HARNESS";
+const NARROW_SPLASH_WORDMARK = "ALLOY";
 
 /** Center the large green wordmark, with a single-line narrow fallback. */
-export function buildWordmark(theme: ThemeLike, width: number): string[] {
-  const full = toFullwidth(SPLASH_WORDMARK);
-  const fallback =
-    visibleWidth(full) <= width
-      ? full
-      : visibleWidth(SPLASH_WORDMARK) <= width
-        ? SPLASH_WORDMARK
-        : truncateToWidth(COMPACT_SPLASH_WORDMARK, width, "");
-  const lines = LARGE_SPLASH_WORDMARK.every(
-    (line) => visibleWidth(line) <= width,
-  )
-    ? LARGE_SPLASH_WORDMARK
-    : [fallback];
-
-  return lines.map((plain) => {
-    let word = plain;
-    if (theme.bold) word = theme.bold(word);
-    word = theme.fg("accent", word);
-    const left = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
-    return " ".repeat(left) + word;
-  });
+export function buildWordmark(
+  theme: ThemeLike,
+  width: number,
+): string[] {
+  const layoutWidth = splashHorizontalLayout(width).width;
+  const plain =
+    visibleWidth(SPLASH_WORDMARK) <= layoutWidth
+      ? SPLASH_WORDMARK
+      : visibleWidth(COMPACT_SPLASH_WORDMARK) <= layoutWidth
+        ? COMPACT_SPLASH_WORDMARK
+        : truncateToWidth(NARROW_SPLASH_WORDMARK, layoutWidth, "");
+  let word = plain;
+  if (theme.bold) word = theme.bold(word);
+  word = theme.fg("accent", word);
+  const left = Math.max(
+    0,
+    Math.floor((layoutWidth - visibleWidth(plain)) / 2),
+  );
+  return [" ".repeat(left) + word];
 }
 
 /**
  * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
  * panel + hints — compact, lots of black field around it).
  */
-const SPLASH_GAP = 2;
+const SPLASH_GAP = 1;
 /** OpenCode empty panel is 1 input row + 1 status row. */
 const SPLASH_INPUT_ROWS = 1;
 const SPLASH_PANEL_ROWS = SPLASH_INPUT_ROWS + 1;
 const SPLASH_HINT_ROWS = 1;
+// Alloy enables Pi quiet startup, leaving one above-editor widget spacer.
+const SPLASH_CHROME_ROWS = 1;
 
 export function splashTopPadding(rows: number, logoRows: number): number {
   const splashUnit =
-    logoRows + SPLASH_GAP + SPLASH_PANEL_ROWS + SPLASH_HINT_ROWS;
+    logoRows +
+    SPLASH_GAP +
+    SPLASH_PANEL_ROWS +
+    SPLASH_HINT_ROWS +
+    SPLASH_CHROME_ROWS;
   return Math.max(0, Math.floor((rows - splashUnit) / 2));
 }
 
@@ -399,14 +413,7 @@ export function registerUi(pi: ExtensionAPI) {
           render(width: number): string[] {
             if (splashMode) {
               // OpenCode: hints sit flush under the panel's left edge
-              const boxW = panelWidth(width, true);
-              const pad = centerPad(width, boxW);
-              const hints =
-                theme.fg("dim", "tab") +
-                theme.fg("muted", " agents") +
-                theme.fg("dim", "  ctrl+p") +
-                theme.fg("muted", " commands");
-              return [" ".repeat(pad) + truncateToWidth(hints, Math.max(boxW, 40))];
+              return [buildSplashHintLine(theme, width)];
             }
             const running = listAgents(process.cwd(), { limit: 20 }).filter(
               (a: { status: string }) => a.status === "running",
@@ -466,8 +473,11 @@ export function registerUi(pi: ExtensionAPI) {
         render(width: number): string[] {
           const thm = ctx.ui.theme as ThemeLike;
           const splash = splashMode;
-          const boxW = panelWidth(width, splash);
-          const padN = splash ? centerPad(width, boxW) : 0;
+          const layout = splash
+            ? splashHorizontalLayout(width)
+            : null;
+          const boxW = layout?.boxWidth || panelWidth(width, false);
+          const padN = layout?.left || 0;
           const pad = " ".repeat(padN);
 
           const raw = super.render(boxW);
@@ -563,7 +573,7 @@ export function registerUi(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · Oxanium terminal wordmark · green #1FE07A",
+        "OpenCode splash · letter-spaced terminal wordmark · green #1FE07A",
         "",
         "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
       ]);
