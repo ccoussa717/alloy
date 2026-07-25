@@ -32,6 +32,12 @@ test("cycle order", () => {
   ]);
 });
 
+test("permission menu keeps approval cycling separate from Shift+Tab", () => {
+  const menu = p.formatPermissionMenu("ask-dangerous");
+  assert.doesNotMatch(menu, /Shift\+Tab/i);
+  assert.match(menu, /permissions cycle/i);
+});
+
 test("inspection vs dangerous bash", () => {
   assert.equal(p.isInspectionBash("git status"), true);
   assert.equal(p.isInspectionBash("ls -la"), true);

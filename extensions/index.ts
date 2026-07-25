@@ -44,8 +44,8 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerHonesty(pi); // anti-hallucination + factual /whoami — before other prompt injectors
   registerHelp(pi);
   registerProviders(pi);
-  registerModes(pi);
-  registerPolicy(pi); // Shift+Tab = permissions
+  registerModes(pi); // Shift+Tab = Build/Plan
+  registerPolicy(pi); // approval profiles remain an independent axis
   registerEffort(pi); // /effort = thinking
   registerSandbox(pi); // Docker routing for bash (display override follows)
   registerToolDisplay(pi); // compact one-line tool UI (includes sandbox-aware bash)

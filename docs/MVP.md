@@ -17,7 +17,7 @@ not a backlog of unfinished ideas.
 10. **Fusion** — `/fusion <objective>` runs read-only Architect and Builder proposals concurrently, then one attributed Synthesizer call. `/fusion setup` and `/fusion status` manage each role's model and reasoning effort.
 11. **Sub-agents** — `/agent`, `/agents`, profiles, live agent panel.
 12. **Docker sandbox** — `/permissions sandbox` routes bash through a session container (`node:22-bookworm`, network none by default). Fail closed if Docker is missing.
-13. **Permissions UX** — Shift+Tab cycles ask-all / ask-some / ask-dangerous / ask-none; `/effort` for thinking levels.
+13. **Mode and permissions UX** — Shift+Tab cycles Build / Plan; `/permissions` controls approval profiles; `/effort` controls thinking levels.
 14. **Help** — `/help`, `/help <topic>`, `/help search <query>`, and `/help commands` for the complete active command registry.
 15. **Honesty policy** — Mandatory no-fabrication policy; `/whoami` for harness identity.
 16. **Child isolation** — Scrubbed env, policy ceiling, credential boundary, process-group kill (see `docs/SECURITY.md`).

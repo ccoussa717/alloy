@@ -1,10 +1,9 @@
 /**
- * Permission levels (Grok Build style) + Shift+Tab cycle.
+ * Approval profiles. Operating-mode cycling lives in extensions/modes.ts.
  * All tool_call decisions go through lib/capabilities.mjs.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Key } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +15,6 @@ const {
   getState,
   setPermissionProfile,
   isReadOnlyMode,
-  isSandboxProfile,
 } = require(join(root, "lib", "state.mjs"));
 const { diagnoseDocker } = require(join(root, "lib", "docker-sandbox.mjs"));
 const {
@@ -25,16 +23,12 @@ const {
   nextPermissionLevel,
   permissionStatusText,
   formatPermissionMenu,
-  listCycleLevels,
 } = require(join(root, "lib", "permissions.mjs"));
 const {
   evaluateToolPolicy,
   formatApprovalDetail,
   capabilitiesForTool,
 } = require(join(root, "lib", "capabilities.mjs"));
-const { ensureAlloyKeybindings } = require(
-  join(root, "lib", "keybindings-patch.mjs"),
-);
 
 function applyProfile(
   raw: string,
@@ -49,7 +43,7 @@ function applyProfile(
   const id = normalizePermissionId(raw);
   if (!id) {
     throw new Error(
-      `Unknown level: ${raw}\nUse: ask-all | ask-some | ask-dangerous | ask-none | sandbox\nOr Shift+Tab to cycle.`,
+      `Unknown level: ${raw}\nUse: ask-all | ask-some | ask-dangerous | ask-none | sandbox\nUse /permissions cycle to cycle approval profiles.`,
     );
   }
 
@@ -111,12 +105,6 @@ async function approve(
 
 export function registerPolicy(pi: ExtensionAPI) {
   try {
-    ensureAlloyKeybindings();
-  } catch {
-    // ignore
-  }
-
-  try {
     const cfg = loadConfig();
     const raw = cfg.permissionProfile || "ask-dangerous";
     const id = normalizePermissionId(raw) || "ask-dangerous";
@@ -125,23 +113,9 @@ export function registerPolicy(pi: ExtensionAPI) {
     setPermissionProfile("ask-dangerous");
   }
 
-  pi.registerShortcut(Key.shift("tab"), {
-    description: "Cycle Alloy permission level (ask everything → … → ask nothing)",
-    handler: async (ctx) => {
-      const cur = getState().permissionProfile;
-      const from = cur === "sandbox" ? "ask-dangerous" : cur;
-      const next = nextPermissionLevel(from);
-      try {
-        applyProfile(next.id, ctx);
-      } catch (err) {
-        ctx.ui.notify(String((err as Error).message || err), "warning");
-      }
-    },
-  });
-
   pi.registerCommand("permissions", {
     description:
-      "Permission level: /permissions [ask-all|ask-some|ask-dangerous|ask-none|sandbox]  (Shift+Tab cycles)",
+      "Approval profile: /permissions [ask-all|ask-some|ask-dangerous|ask-none|sandbox|cycle]",
     handler: async (args, ctx) => {
       const next = (args || "").trim().toLowerCase();
       if (!next) {
@@ -154,7 +128,8 @@ export function registerPolicy(pi: ExtensionAPI) {
           "",
           formatPermissionMenu(cur),
           "",
-          "Shift+Tab cycles the four ask levels.",
+          "Cycle approval profiles with /permissions cycle.",
+          "Shift+Tab cycles Build and Plan modes.",
           "Thinking/effort: /effort [off|minimal|low|medium|high|xhigh|max]",
           "Policy: central capability gate; plan/review deny bash + non-read tools.",
         ];
@@ -181,7 +156,7 @@ export function registerPolicy(pi: ExtensionAPI) {
 
   for (const alias of ["ask", "permission"] as const) {
     pi.registerCommand(alias, {
-      description: `Alias for /permissions (Shift+Tab cycles)`,
+      description: `Alias for /permissions`,
       handler: async (args, ctx) => {
         const next = (args || "").trim().toLowerCase();
         if (!next) {
@@ -259,20 +234,6 @@ export function registerPolicy(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    try {
-      const kb = ensureAlloyKeybindings();
-      if (kb.changed) {
-        ctx.ui.notify(
-          "Alloy: Shift+Tab cycles permissions. Thinking is /effort. Restart or /reload if Shift+Tab still changes thinking.",
-          "info",
-        );
-      }
-    } catch {
-      // ignore
-    }
     updateStatus(ctx);
   });
 }
-
-void listCycleLevels;
-void isSandboxProfile;
