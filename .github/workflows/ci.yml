@@ -41,8 +41,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
       - name: Report dependency advisories
-        continue-on-error: true
-        run: npm audit --omit=dev
+        run: npm audit --omit=dev --audit-level=critical
 
       - name: Enforce release dependency policy
         if: ${{ github.ref_type == 'tag' }}
@@ -54,7 +53,7 @@ jobs:
 
       - name: Upload CycloneDX SBOM
         if: ${{ always() && hashFiles('alloy.cdx.json') != '' }}
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: alloy-sbom
           path: alloy.cdx.json
