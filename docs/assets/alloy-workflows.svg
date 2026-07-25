@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
+  <title id="title">Three Alloy workflows</title>
+  <desc id="desc">Chat routes work to one selected model, Fusion combines two read-only proposals through a synthesizer, and Auto executes a bounded build, diagnostic, review, and fix loop.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10Z" fill="#1FE07A"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="470" rx="20" fill="#0F1115"/>
+  <text x="48" y="52" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="22" font-weight="700" letter-spacing="3">CHOOSE THE WORKFLOW, NOT THE VENDOR</text>
+  <path d="M48 72h1104" stroke="#30353D"/>
+
+  <rect x="48" y="104" width="336" height="308" rx="14" fill="#15191C" stroke="#30353D"/>
+  <text x="76" y="142" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18" font-weight="700">CHAT</text>
+  <text x="76" y="168" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">DIRECT // NATIVE PI LOOP</text>
+  <rect x="92" y="214" width="104" height="48" rx="8" fill="#1A2420" stroke="#1FE07A"/>
+  <text x="144" y="244" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">YOU</text>
+  <path d="M196 238h58" stroke="#1FE07A" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="266" y="214" width="82" height="48" rx="8" fill="#171A20" stroke="#5AEEA0"/>
+  <text x="307" y="244" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">MODEL</text>
+  <text x="76" y="322" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">Fast daily work with your selected</text>
+  <text x="76" y="346" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">Claude, Codex, or Grok route.</text>
+
+  <rect x="432" y="104" width="336" height="308" rx="14" fill="#15191C" stroke="#1FE07A"/>
+  <text x="460" y="142" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18" font-weight="700">FUSION</text>
+  <text x="460" y="168" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">COMPARE // SYNTHESIZE</text>
+  <rect x="460" y="208" width="92" height="42" rx="7" fill="#171A20" stroke="#1FE07A"/>
+  <text x="506" y="234" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">ARCHITECT</text>
+  <rect x="648" y="208" width="92" height="42" rx="7" fill="#171A20" stroke="#5AEEA0"/>
+  <text x="694" y="234" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">BUILDER</text>
+  <path d="M506 250v48h77M694 250v48h-77" fill="none" stroke="#1FE07A" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="552" y="286" width="96" height="44" rx="7" fill="#1A2420" stroke="#1FE07A"/>
+  <text x="600" y="313" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">SYNTHESIS</text>
+  <text x="460" y="372" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">Two independent proposals become one</text>
+  <text x="460" y="396" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">attributed recommendation.</text>
+
+  <rect x="816" y="104" width="336" height="308" rx="14" fill="#15191C" stroke="#30353D"/>
+  <text x="844" y="142" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18" font-weight="700">AUTO</text>
+  <text x="844" y="168" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">BUILD // CHECK // REVIEW</text>
+  <g fill="#171A20" stroke="#5AEEA0">
+    <rect x="842" y="210" width="64" height="38" rx="6"/>
+    <rect x="922" y="210" width="64" height="38" rx="6"/>
+    <rect x="1002" y="210" width="64" height="38" rx="6"/>
+    <rect x="1082" y="210" width="48" height="38" rx="6"/>
+  </g>
+  <g fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="11" text-anchor="middle">
+    <text x="874" y="234">SCOUT</text>
+    <text x="954" y="234">PLAN</text>
+    <text x="1034" y="234">BUILD</text>
+    <text x="1106" y="234">CHECK</text>
+  </g>
+  <g stroke="#1FE07A" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M906 229h14"/>
+    <path d="M986 229h14"/>
+    <path d="M1066 229h14"/>
+  </g>
+  <rect x="884" y="292" width="92" height="42" rx="7" fill="#1A2420" stroke="#1FE07A"/>
+  <text x="930" y="318" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">REVIEW</text>
+  <rect x="1012" y="292" width="92" height="42" rx="7" fill="#211F17" stroke="#E8C547"/>
+  <text x="1058" y="318" text-anchor="middle" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">FIXER</text>
+  <path d="M1106 248v24H930v18" fill="none" stroke="#1FE07A" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M976 313h34" fill="none" stroke="#E8C547" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M1058 292v-20h48v-22" fill="none" stroke="#E8C547" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="992" y="303" text-anchor="middle" fill="#E8C547" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="9">FAIL</text>
+  <text x="844" y="372" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">Bounded implementation with diagnostics,</text>
+  <text x="844" y="396" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">independent review, and fix loops.</text>
+</svg>

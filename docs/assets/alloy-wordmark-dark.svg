@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240" role="img" aria-labelledby="title desc">
+  <title id="title">Alloy</title>
+  <desc id="desc">Alloy multi-model coding harness wordmark for dark backgrounds.</desc>
+  <g fill="none" stroke="#1FE07A" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M72 120 118 54h78l46 66-46 66h-78Z" stroke-width="8"/>
+    <path d="M109 120 137 80h40l28 40-28 40h-40Z" stroke-width="5" opacity=".72"/>
+    <path d="m92 84 130 72M92 156 222 84" stroke-width="4" opacity=".42"/>
+  </g>
+  <circle cx="157" cy="120" r="8" fill="#1FE07A"/>
+  <text x="286" y="132" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="78" font-weight="700" letter-spacing="18">ALLOY</text>
+  <path d="M290 158h548" stroke="#1FE07A" stroke-width="3"/>
+  <text x="292" y="192" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18" letter-spacing="7">MULTI-MODEL CODING HARNESS</text>
+</svg>

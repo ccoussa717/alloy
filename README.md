@@ -1,628 +1,231 @@
-# Alloy
+<p align="center">
+  <picture>
+    <source srcset="docs/assets/alloy-wordmark-dark.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="docs/assets/alloy-wordmark-light.svg" media="(prefers-color-scheme: light)">
+    <img src="docs/assets/alloy-wordmark-light.svg" alt="Alloy multi-model coding harness" width="760">
+  </picture>
+</p>
 
-> **Pre-release:** Alloy is not published to npm. Do not install `alloy-agent`
-> from the npm registry; build from the canonical source repository instead.
+<p align="center"><strong>One terminal. Your best models, working as a system.</strong></p>
 
-**Alloy** is a multi-provider coding agent harness built on [Pi](https://pi.dev).
-One terminal command. Three subscriptions you actually use. Durable memory, skills that improve with approval, and MCP — without forking Pi or reinventing OAuth.
+<p align="center">
+  <a href="https://github.com/ccoussa717/alloy/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/ccoussa717/alloy/ci.yml?branch=main&amp;style=flat-square&amp;label=verify"></a>
+  <img alt="Pre-release" src="https://img.shields.io/badge/status-pre--release-E8C547?style=flat-square">
+  <img alt="Node 22.19 or newer" src="https://img.shields.io/badge/node-%3E%3D22.19-1FE07A?style=flat-square">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1F2937?style=flat-square"></a>
+</p>
 
-```bash
-alloy
-```
+<p align="center">
+  <a href="#quick-start">Quick start</a> &middot;
+  <a href="#three-ways-to-work">Workflows</a> &middot;
+  <a href="#safety-that-travels-with-the-work">Safety</a> &middot;
+  <a href="docs/REFERENCE.md">Reference</a> &middot;
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
+</p>
 
-### Source setup (Linux / macOS)
+Alloy is a multi-provider coding agent harness built on
+[Pi](https://pi.dev). It brings Claude, ChatGPT/Codex, and Grok into one daily
+terminal with durable memory, reusable skills, MCP, bounded multi-agent
+workflows, and one mechanical policy boundary.
 
-Requires **Node.js ≥ 22.19** (Pi engine requirement).
+It does not fork Pi or reimplement provider authentication. Alloy keeps Pi's
+native TUI, tools, sessions, model registry, and `/login`, then adds the product
+layer around them.
 
-```bash
-git clone https://github.com/ccoussa717/alloy.git
-cd alloy
-npm ci
-npm link
-```
+<p align="center">
+  <img src="docs/assets/alloy-terminal.svg" alt="Illustrated Alloy terminal showing parallel Architect and Builder proposals flowing into attributed synthesis" width="1000">
+</p>
 
-Release artifacts include a shrinkwrap, and publication is configured to require
-npm provenance. Avoid mutable `curl | bash` or branch-based installs.
-
-Then:
-
-```bash
-alloy --version   # Alloy X.Y.Z · Pi · Node
-alloy
-```
-
-Inside a session: `/doctor` (providers, catalog defaults, Claude extra-usage economics — never prints secrets).
-
-### CI / verification
-
-GitHub Actions on Node 22.19 verifies:
-
-- `npm ci` + full unit tests + `alloy --version`
-- a clean install and real Pi startup from the packed npm artifact
-- package / shrinkwrap integrity and exact executable dependencies
-- catalog default model resolution
-- historic secret detection and SBOM generation
-- a dependency audit report; high/critical findings block npm publication
-
-Local smoke:
-
-```bash
-npm run ci:local          # unit + integration + pack + security + SBOM
-npm run test:integration  # MCP, packed install, Pi startup, Docker if present
-```
-
-Integration coverage:
-
-| Suite | What it proves |
-|-------|----------------|
-| `mcp-fake.e2e` | Real stdio MCP process: connect, list/call tools, env scrub (no host secrets) |
-| `mcp-http.e2e` | Streamable HTTP MCP: connect, list/call tools against local fixture |
-| `pi-startup.e2e` | Isolated `HOME` / `PI_CODING_AGENT_DIR`: `alloy --version`, `--help`, doctor |
-| `packed-install.e2e` | Actual npm tarball install: hoisted Pi discovery and native Pi startup |
-| `docker-sandbox.e2e` | Live Docker: container start/reuse, bind-mount exec, `network=none` inspect |
-
-Docker integration may skip on developer machines without Docker. GitHub Actions
-sets `ALLOY_REQUIRE_DOCKER_TEST=1` and fails if the sandbox cannot run.
-
-| | |
-|---|---|
-| **Status** | MVP active development (v0.8.2) |
-| **Runtime** | [Pi](https://pi.dev) / `@earendil-works/pi-coding-agent` 0.82.0 · Node **≥22.19** |
-| **npm package** | `alloy-agent` (not published) |
-| **CLI** | `alloy` |
-| **Boundary** | [docs/BOUNDARY.md](./docs/BOUNDARY.md) — what ships vs stays outside |
-| **Security** | [docs/SECURITY.md](./docs/SECURITY.md) · [ATTRIBUTION](./docs/ATTRIBUTION.md) · `npm run security:scan` |
-| **Operations** | [docs/OPERATIONS.md](./docs/OPERATIONS.md) — installation and safety checklist |
-
----
-
-## What Alloy is
-
-Alloy is the **product layer** on top of Pi’s minimal coding agent:
-
-- **Pi** owns the TUI, model registry, authentication, sessions, context compaction, tools, and extension lifecycle.
-- **Alloy** owns the product: subscription-focused first-run, durable memory across sessions, skill capture/promote, MCP config, and safe-by-default policy.
-
-We do **not** fork Pi. We do **not** reimplement provider OAuth. We ship a thin `alloy` executable that launches native Pi with the Alloy package injected.
-
-> **Name:** multi-model and multi-skill work is *alloyed* into one stronger daily harness — not a pile of disconnected tools.
-
----
-
-## What it tries to replace
-
-Day-to-day, Alloy aims to be the single terminal agent you open instead of juggling several product CLIs.
-
-```mermaid
-flowchart LR
-  subgraph before["Before: context-switch tax"]
-    CC["Claude Code"]
-    CX["OpenAI Codex"]
-    GB["Grok / other agents"]
-    CC --- CX --- GB
-  end
-
-  subgraph after["After: one harness"]
-    A["alloy"]
-    A --> P1["Claude sub"]
-    A --> P2["Codex sub"]
-    A --> P3["Grok sub"]
-    A --> M["Durable memory"]
-    A --> S["Skills + MCP"]
-  end
-
-  before -->|"consolidate"| after
-```
-
-| You might use today | Alloy’s stance |
-|---|---|
-| **Claude Code** | Same subscription path; Alloy is provider-neutral and Pi-native |
-| **OpenAI Codex CLI / ChatGPT coding agent** | Codex subscription via Pi `/login` |
-| **Grok / xAI coding flows** | Grok subscription via `/login xai` |
-| **Bare Pi** | Alloy is Pi with a product layer (memory, skills workflow, MCP, policy, doctor) |
-| **Heavy multi-agent IDEs** | Not yet — MVP is the *daily* harness, not a swarm factory |
-
-Alloy is **not** trying to replace your editor, Git hosting, or CI. It replaces the **agent shell** you live in while coding.
-
----
-
-## MVP scope (first go-round)
-
-### In
-
-| Pillar | Behavior |
-|---|---|
-| **Subscriptions** | Claude (Anthropic), Codex/ChatGPT (OpenAI), Grok (xAI) via Pi `/login` |
-| **Durable memory** | Facts survive `/new` and new days (`/remember`, `/memory`) |
-| **Skills** | Create, compose (skills using skills), capture + promote with approval |
-| **MCP** | Config + live **stdio / HTTP / SSE** (`/mcp connect`) — tools registered on the agent |
-| **Modes** | `chat` · `plan` · `build` · `review` with tool gating |
-| **Checkpoints** | `/checkpoint` · `/undo` for recoverable git snapshots |
-| **Worktrees** | Isolated builder trees under `~/.pi/alloy/worktrees/` |
-| **Diagnostics** | `/diagnose` + `alloy_diagnostics` (typecheck/lint/test) |
-| **Auto** | `/auto` with **fix loops** on review FAIL / bad diagnostics |
-| **Fusion** | `/fusion <objective>` - read-only Architect + Builder proposals with attributed synthesis; `/fusion setup` configures each role |
-| **Sub-agents** | `/agent` free-form multi-model agents · `/agents` browser · `alloy_task` |
-| **Profiles** | research=Grok · code=Codex · review=Opus · plan=Sonnet (configurable) |
-| **Agent panel** | Live widget below the editor during agents / auto / fusion |
-| **Docker sandbox** | `/permissions sandbox` — bash in `node:22-bookworm`, **network none** |
-| **Help** | `/help`, `/help <topic>`, `/help search <query>` |
-| **Base harness** | Everything Pi already does well: TUI, tools, sessions, tree, compact, `@files`, AGENTS.md |
-| **Safety** | Ask-levels (`ask-all`…`ask-none`, default `ask-dangerous`) + optional Docker sandbox; plan/review hard read-only |
-
-### Out (for now)
-
-- Micro-VM sandbox product (beyond Docker)
-- Every OpenRouter model and a provider marketplace
-- GUI / hosted control plane
-- Native descriptor-relative `openat` checkpoint helper
-
----
-
-## How it works
-
-```mermaid
-flowchart TB
-  User["You"] --> CLI["alloy CLI"]
-  CLI --> Pi["Native Pi runtime<br/>TUI · auth · models · tools · sessions"]
-  Pi --> Ext["Alloy extension package"]
-
-  Ext --> Prov["providers<br/>/doctor /providers"]
-  Ext --> Mem["memory<br/>/remember /memory"]
-  Ext --> Sk["skills-improve<br/>/skill-capture /skill-promote"]
-  Ext --> Mcp["mcp<br/>/mcp"]
-  Ext --> Pol["policy<br/>/permissions"]
-  Ext --> Ui["ui<br/>/alloy"]
-
-  Prov --> Auth["~/.pi/agent/auth.json<br/>Pi /login only"]
-  Mem --> Disk["~/.pi/alloy/memory/"]
-  Sk --> Skills["~/.pi/agent/skills/ + drafts"]
-  Mcp --> McpCfg["~/.pi/alloy/mcp.json"]
-```
-
-### Runtime boundaries
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant A as alloy launcher
-  participant P as Pi
-  participant E as Alloy extensions
-  participant FS as ~/.pi/alloy
-
-  U->>A: alloy
-  A->>P: spawn pi -e extensions --skill --theme ...
-  P->>E: load ExtensionAPI
-  E->>FS: ensure config, memory, mcp layout
-  P->>U: interactive TUI
-  U->>P: /login (Claude / Codex / Grok)
-  U->>E: /remember, /skill-capture, /mcp, /doctor
-  E->>P: inject memory into system prompt (before_agent_start)
-  E->>P: tool_call policy gate
-```
-
----
+> [!IMPORTANT]
+> Alloy is pre-release source. The `alloy-agent` package is not published to
+> npm; do not install that registry name. Use the source setup below.
 
 ## Quick start
 
-### Prerequisites
-
-- **Node.js ≥ 22.19** (Pi engine requirement)
-- Network access for model providers
-- npm
-
-### Source setup (Linux / macOS)
+**Requires:** Node.js 22.19 or newer, npm, Git, and macOS or Linux.
 
 ```bash
 git clone https://github.com/ccoussa717/alloy.git
 cd alloy
 npm ci
 npm link
-```
 
-Then:
-
-```bash
+cd /path/to/your-project
 alloy
 ```
 
-Run `npm run ci:local` before submitting a pull request.
-
-### First run
-
-```bash
-cd your-project
-alloy
-```
-
-Inside the TUI:
+On first run, connect only the providers you intend to use:
 
 ```text
-/login                 # Claude Pro/Max and/or ChatGPT Codex subscription
-/login xai             # Grok → "Use a subscription"
-/doctor                # green/red for the three providers (never prints secrets)
-/model                 # pick a connected model
-/remember project uses pnpm
+/login                 # Claude and ChatGPT/Codex subscription routes
+/login xai             # Grok subscription route
+/doctor                # provider, model, and path checks; never secret values
+/model                 # choose the active model
 ```
 
-API keys work for the matching API provider routes (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY` for `openai/...`, and `XAI_API_KEY`). The `openai-codex/...`
-route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subscriptions**.
+Then work in native chat or choose a workflow:
 
----
+```text
+/remember this project uses pnpm
+/fusion Plan a safe authentication refactor
+/auto Add the approved health-check endpoint
+```
 
-## Commands
+See the [complete command and configuration reference](docs/REFERENCE.md) for
+provider routing, permission profiles, MCP, paths, and troubleshooting.
 
-### Alloy-added
+## Why Alloy
+
+| One shell | Context that compounds | Orchestration with boundaries |
+|---|---|---|
+| Switch among connected Claude, Codex, and Grok routes without rebuilding your workspace. | Project and user facts survive `/new`, new sessions, and new days. Approved skills become reusable operating knowledge. | Direct chat uses the active policy; child workflows add credential isolation, budget ceilings, and inherited policy limits. |
+
+Most coding agents make you choose a model and rebuild context around it. Alloy
+separates the **harness** from the **model**: use one model directly, route a task
+by role, or combine independent proposals without changing terminals.
+
+## Three ways to work
+
+<p align="center">
+  <img src="docs/assets/alloy-workflows.svg" alt="Alloy Chat, Fusion, and Auto workflow diagrams" width="1000">
+</p>
+
+| Workflow | Use it when | What Alloy does |
+|---|---|---|
+| **Chat** | You want a fast answer or direct implementation from the active model. | Runs the native Pi loop with Alloy memory, skills, MCP, policy, and UI. |
+| **Fusion** | The decision benefits from two independent technical perspectives. | Runs read-only Architect and Builder proposals concurrently, then gives a fresh Synthesizer both validated outputs. |
+| **Auto** | The work has an accepted implementation boundary and should be checked as it progresses. | Runs Scout, Planner, Builder, diagnostics, independent review, and bounded fix rounds with artifacts. |
+
+### Fusion: combine perspectives, keep provenance
+
+`/fusion <objective>` is a plan-only coordinator. Architect and Builder inspect
+the same repository independently with repository-confined read tools. A
+Synthesizer runs only after both proposal contracts validate and returns one
+attributed recommendation.
+
+An eligible successful run launches exactly three routed child-agent roles.
+Each role may take multiple model turns while using read tools. Auth, abort,
+validation, or budget failures stop earlier. Fusion never writes or merges
+project code.
+
+### Auto: build, check, review, repeat
+
+`/auto <request>` attempts a checkpoint in Git repositories, prefers an isolated
+worktree, delegates bounded roles, runs project diagnostics, and asks an
+independent Reviewer for a verdict. A checkpoint failure is recorded but does
+not stop the build. Diagnostic or review failures can trigger a limited Fixer
+loop.
+
+Every run records routing and usage metadata, raw check output, patches, and
+status under `~/.pi/alloy/runs/`. Treat these artifacts as operator data because
+repository diagnostics control what they print. Auto fails closed when Docker
+sandbox isolation is required because its diagnostics execute as host processes.
+
+## The product layer on Pi
+
+| Alloy adds | What that means day to day |
+|---|---|
+| **Provider-aware first run** | `/doctor`, `/providers`, and honest distinction between subscription and API-key routes. |
+| **Durable memory** | `/remember` and `/memory` keep bounded user and project facts across sessions. |
+| **Skills with promotion** | Capture a workflow as a draft; only `/skill-promote` installs it into user skills. |
+| **Live MCP** | Connect reviewed stdio, Streamable HTTP, or SSE servers; MCP tools use the same capability gate. |
+| **Modes and permissions** | Build and Plan are separate from approval profiles, so model tool calls in read-only work stay mechanically read-only. |
+| **Recovery tools** | Authenticated Git checkpoints and isolated worktrees make agent changes easier to inspect and undo. |
+| **Multi-model agents** | `/agent`, `/fusion`, and `/auto` route roles without copying the host's complete credential store. |
+| **Searchable help** | `/help`, `/help <topic>`, and `/help commands` describe the active harness from inside the TUI. |
+
+```mermaid
+flowchart LR
+  You[You] --> Alloy[Alloy product layer]
+  Alloy --> Pi[Native Pi runtime]
+  Pi --> Models[Claude / Codex / Grok]
+  Alloy --> Memory[Durable memory]
+  Alloy --> Skills[Approved skills]
+  Alloy --> MCP[MCP tools]
+  Alloy --> Policy[Modes + permissions]
+  Alloy --> Runs[Agent run artifacts]
+```
+
+Pi owns the interactive runtime, model catalog, authentication, sessions,
+compaction, native tools, and extension lifecycle. Alloy owns the durable
+workflow and safety layer. The full boundary is documented in
+[Architecture](docs/ARCHITECTURE.md) and [Product boundary](docs/BOUNDARY.md).
+
+## Safety that travels with the work
+
+Alloy treats safety as state enforced by code, not a sentence in a prompt.
+
+| Control | Enforcement |
+|---|---|
+| **Plan and Review** | Model tool calls are hard read-only: no bash, edits, writes, or mutating MCP calls. Operator-invoked slash commands remain an explicit control plane. |
+| **Default approvals** | `ask-dangerous` prompts for known dangerous shell patterns, destructive Git, MCP, and tools classified as network or external actions. |
+| **Child policy ceiling** | Child manifests constrain approval profile, sandbox requirement, tools, budget, and concurrency. Model child-tool calls are denied in read-only modes; operator-invoked Auto explicitly launches Build roles and confirms first when interactive. |
+| **Credential boundary** | Child environments are allowlisted; Fusion leases only the selected provider credential into an ephemeral home. |
+| **Project trust** | Project config cannot weaken the operator approval profile, global sandbox controls, MCP enablement, or budget ceilings. |
+| **Docker Bash sandbox** | Optional `network=none` container with dropped Linux capabilities and a mounted workspace; fails closed if required but unavailable. |
+| **Diagnostics disclosure** | Repository-defined host commands have a scrubbed environment and require approval when model-triggered; they are not a filesystem sandbox. |
+
+Trusted projects may still choose their default mode, model profiles including
+tool lists and system prompts, and whether Auto uses a worktree. Host mode is
+not filesystem or network isolation:
+ordinary Bash egress is not an `ask-dangerous` trigger, and MCP servers and
+repository diagnostics are host processes. Read the
+[security model](docs/SECURITY.md) before using Alloy on untrusted code.
+
+## Commands worth knowing
 
 | Command | Purpose |
 |---|---|
-| `/alloy` | Help + version |
-| `/doctor` | Provider + path diagnostics |
-| `/providers` | Quick status for Claude · Codex · Grok |
-| `/remember [user:] <fact>` | Save durable memory (project default, or `user:`) |
-| `/memory list` | Browse durable memory |
-| `/memory search <q>` | Search memory |
-| `/memory forget <id>` | Delete a memory entry |
-| `/skill-capture <name> [desc]` | Draft a skill from a workflow |
-| `/skill-promote <name>` | **Approve** and install draft → `~/.pi/agent/skills/<name>/` |
-| `/skill-drafts` | List drafts awaiting approval |
-| `/mcp connect\|list\|status\|disconnect\|reload\|path` | MCP live bridge |
-| `/mode [chat\|plan\|build\|review]` | Operating mode |
-| `/plan` `/build` `/review` | Mode shortcuts |
-| `/checkpoint [label]` | Create git checkpoint |
-| `/checkpoints` | List checkpoints |
-| `/undo [id]` | Restore checkpoint (confirms) |
-| `/worktree create\|list\|remove\|diff` | Isolated git worktrees |
-| `/diagnose` | Run project diagnostics |
-| `/agent [bg] <name> [profile=\|model=] <task>` | Spawn multi-model sub-agent |
-| `/agents` / `/agents view <id>` | List / view sub-agent transcripts |
-| **Ctrl+Shift+A** | Open last sub-agent transcript |
-| Live panel ticker | Streaming tool lines while agents run |
-| `/profiles` | Multi-model profile map |
-| `/auto <request>` | Multi-agent pipeline + fix loops |
-| `/fusion <objective>` | Plan-only Architect-Builder fusion |
-| `/fusion setup` / `/fusion status` / `/fusion help` | Configure, inspect, and explain Fusion role models and effort |
-| `/panel` | Clear agent panel widget |
-| `/runs` | Show runs artifact directory |
-| **`Shift+Tab`** | Cycle primary operating mode: Build ↔ Plan |
-| `/permissions [ask-all\|ask-some\|ask-dangerous\|ask-none\|sandbox]` | Set permission level |
-| `/effort [off\|…\|max]` | Thinking / reasoning effort |
-| `/sandbox [status\|start\|stop\|doctor]` | Docker sandbox controls |
-| `/help [topic\|search <q>]` | Feature help + search |
-| `/help commands` | Complete active slash-command registry with descriptions |
+| `/doctor` | Check providers, models, versions, and paths without printing secrets. |
+| `/remember <fact>` | Save a durable project fact; prefix with `user:` for cross-project memory. |
+| `/mode plan` / `/mode build` | Switch between mechanical read-only and implementation modes. |
+| `/permissions` | Select approval behavior or the Docker Bash sandbox profile. |
+| `/checkpoint` / `/undo` | Capture and restore a recoverable Git snapshot. |
+| `/agent` / `/agents` | Launch and inspect a free-form routed child agent. |
+| `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
+| `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
+| `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
+| `/help commands` | Show the complete active Pi and Alloy command registry. |
 
-### Still Pi (unchanged)
+The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
+routes, permission profiles, configuration examples, filesystem layout, and
+troubleshooting.
 
-`/login` · `/logout` · `/model` · `/settings` · `/resume` · `/new` · `/tree` · `/fork` · `/clone` · `/compact` · `/export` · `/reload` · `/quit`
+## Project status
 
-Prompt templates shipped with Alloy: `/plan`, `/review`.
+Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.0
+and Node.js 22.19 or newer. npm publication remains disabled until the release
+gates in [RELEASING.md](docs/RELEASING.md) are complete.
 
----
+GitHub Actions runs the unit and integration suites, installs the packed npm
+artifact in isolation, requires the Docker sandbox test, validates package and
+shrinkwrap integrity, scans the complete public history for secret signatures,
+audits dependencies, and uploads a CycloneDX SBOM.
 
-## Durable memory
-
-Pi already persists **session trees** (resume, branch, compact). Alloy adds **durable memory** that survives a brand-new session.
-
-```mermaid
-flowchart LR
-  subgraph session["Session memory (Pi)"]
-    JSONL["JSONL session tree<br/>~/.pi/agent/sessions/"]
-  end
-
-  subgraph durable["Durable memory (Alloy)"]
-    User["user facts<br/>~/.pi/alloy/memory/user/"]
-    Proj["project facts<br/>~/.pi/alloy/memory/projects/&lt;id&gt;/"]
-  end
-
-  JSONL -->|"this conversation"| Turn["Current turn"]
-  User -->|"injected every turn"| Turn
-  Proj -->|"injected every turn"| Turn
-```
-
-- `/remember` or tool `alloy_remember` writes a fact
-- On each agent turn, Alloy injects a bounded memory block into the system prompt
-- **Never** store API keys or secrets in memory
-
----
-
-## Honesty (anti-hallucination)
-
-Alloy injects a **mandatory honesty policy** every turn (and into child agents):
-
-- No fabrication of facts, files, command output, or model identity
-- No confident guessing — if unsure, say so and look it up with tools
-- Model identity is **harness-only** (`provider` + `id` from Pi). Never invent Composer/Cursor/etc.
-- Codebase claims need tool evidence when accuracy matters
-
-| Command | Purpose |
-|---|---|
-| `/whoami` | Authoritative Alloy version + active model (trust this over chat self-description) |
-| `/honesty` | Show the full policy text |
-
-Disable only if you must: `"honesty": { "enabled": false }` in `~/.pi/alloy/config.json`.
-
----
-
-## Skills and self-improve
-
-```mermaid
-stateDiagram-v2
-  [*] --> Working: do real work
-  Working --> Draft: /skill-capture name
-  Draft --> Review: human reads draft
-  Review --> Installed: /skill-promote name
-  Review --> Draft: edit draft
-  Installed --> Working: /skill:name or auto-load
-  Working --> Draft: self-improve proposal
-```
-
-| Rule | Detail |
-|---|---|
-| **Create** | `/skill-capture` writes `~/.pi/alloy/skills-drafts/<name>.md` |
-| **Approve** | `/skill-promote` is the only write into user skills |
-| **Compose** | Skills may load other skills; max depth 3 (documented in skill-capture skill) |
-| **No silent mutation** | Self-improve is always propose → approve → promote |
-
-Starter skills in the package: `testing`, `git-hygiene`, `skill-capture`.
-
----
-
-## MCP
-
-Pi core does **not** ship MCP. Alloy owns MCP as a product concern.
-
-- Global config: `~/.pi/alloy/mcp.json`
-- Project config: `.pi/alloy-mcp.json` (trusted projects only for project entries)
-- Transports: **stdio**, **http** (Streamable HTTP), **sse** (legacy)
-- `/mcp connect` connects enabled servers via `@modelcontextprotocol/sdk`
-- Tools appear as `mcp_<server>_<tool>` and go through Alloy policy
-- Headers support `${ENV}` expansion (keep tokens out of the file)
-- Optional `mcp.connectOnStart` in `~/.pi/alloy/config.json` (global servers only)
-
-Examples (see `config/mcp.example.json`):
-
-```json
-{
-  "version": 1,
-  "servers": {
-    "reviewed-local-server": {
-      "transport": "stdio",
-      "command": "/absolute/path/to/reviewed-mcp-server",
-      "args": [],
-      "enabled": false
-    },
-    "remote-mcp": {
-      "transport": "http",
-      "url": "https://your-host.example/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
-      },
-      "enabled": false
-    }
-  }
-}
-```
-
-```text
-install -m 600 /dev/null ~/.pi/alloy/env
-printf '%s\n' 'MCP_HTTP_TOKEN=replace-me' >> ~/.pi/alloy/env
-/mcp connect
-/mcp list
-```
-
----
-
-## Permission profiles
-
-| Profile | Behavior |
-|---|---|
-| `ask-all` | Approve almost everything non-read |
-| `ask-some` | Approve writes, process, child agents, MCP side-effects |
-| `ask-dangerous` (default) | Approve dangerous bash, destructive Git, MCP, and unknown external actions |
-| `ask-none` | No prompts (headless-friendly) |
-| `sandbox` | Docker isolation for bash (approval defaults to ask-dangerous) |
-
-Approval profiles are independent from Build/Plan mode. Use `/permissions cycle`
-or select a profile directly. Legacy ids `safe` / `workspace` / `readonly` still map.
-
-```text
-/permissions ask-dangerous
-/permissions sandbox
-```
-
----
-
-## On-disk layout
-
-```text
-~/.pi/alloy/
-  config.json              # Alloy settings
-  mcp.json                 # MCP servers
-  memory/user/             # cross-project facts
-  memory/projects/<id>/    # per-repo facts
-  skills-drafts/           # unapproved skill drafts
-  runs/                    # reserved for workflow artifacts
-
-~/.pi/agent/               # Pi home
-  auth.json                # credentials (Pi-managed; mode 0600)
-  sessions/                # session trees
-  skills/                  # promoted skills land here
-```
-
----
-
-## Repository layout
-
-```text
-alloy/
-├── bin/alloy.mjs              # launcher only — no agent logic
-├── extensions/                # Pi ExtensionAPI modules
-│   ├── index.ts
-│   ├── memory.ts
-│   ├── providers.ts
-│   ├── skills-improve.ts
-│   ├── mcp.ts
-│   ├── policy.ts
-│   └── ui.ts
-├── lib/                       # pure Node helpers (.mjs)
-├── skills/                    # package starter skills
-├── prompts/                   # /plan /review templates
-├── themes/alloy-dark.json
-├── config/*.example.json
-├── docs/
-│   ├── BOUNDARY.md          # organization-neutral product line
-│   ├── OPERATIONS.md        # installation and safety checklist
-│   ├── MVP.md
-│   ├── ARCHITECTURE.md
-│   └── SECURITY.md
-└── test/unit/
-```
-
----
-
-## Development
+Local verification:
 
 ```bash
-npm ci
-npm test
-npm link
-alloy --help
+npm run ci:local
 ```
 
-### Scripts
+## Documentation
 
-| Script | Action |
+| Document | Read it for |
 |---|---|
-| `npm test` | Unit tests (memory + provider doctor) |
-| `npm link` | Install `alloy` onto your PATH |
-| `alloy --no-inject ...` | Raw Pi passthrough (debug) |
+| [Reference](docs/REFERENCE.md) | Commands, configuration, provider routes, paths, and troubleshooting. |
+| [MVP contract](docs/MVP.md) | Implemented scope and explicit exclusions. |
+| [Architecture](docs/ARCHITECTURE.md) | Runtime layers, trust boundaries, child execution, checkpoints, and worktrees. |
+| [Security](docs/SECURITY.md) | Threat model, credential handling, sandbox claims, supply chain, and residual risks. |
+| [Operations](docs/OPERATIONS.md) | Installation and daily-use safety checklist. |
+| [Product boundary](docs/BOUNDARY.md) | What belongs in the generic package and what stays outside it. |
+| [Attribution](docs/ATTRIBUTION.md) | Pi and third-party provenance. |
+| [Releasing](docs/RELEASING.md) | Maintainer-only release and publication gates. |
 
-### Design rules
+## Contributing
 
-1. Do not fork Pi.
-2. Do not implement provider OAuth — use Pi `/login`.
-3. Never log or artifact credential values.
-4. Self-improve skills only after explicit approval.
-5. MCP tools share the same policy gate as native tools.
-6. Security and recovery before multi-agent autonomy.
+Alloy is MIT licensed. Start with [CONTRIBUTING.md](CONTRIBUTING.md), add a
+failing test for behavior changes, and run `npm run ci:local` before opening a
+pull request. Security reports belong in the private process described in
+[SECURITY.md](SECURITY.md), not a public issue.
 
----
-
-## Roadmap
-
-```mermaid
-flowchart LR
-  V01["v0.1"] --> V02["v0.2"] --> V03["v0.3"] --> V04["v0.4"] --> V05["v0.5 sandbox · /help"]
-```
-
-### Docker sandbox
-
-```bash
-/permissions sandbox     # enable (requires Docker daemon)
-/sandbox status          # image, network none, container
-/sandbox start|stop
-```
-
-Defaults: **image `node:22-bookworm`**, **network `none`**, project mounted at `/workspace`, 2g/2cpu, cap-drop ALL.
-`/auto` does **not** force sandbox — set the profile first (safest).
-
-### Free-form multi-model agents
-
-```bash
-/agent scout profile=research Map the auth module
-/agent coder profile=code Implement token refresh
-/agent critic model=anthropic/claude-opus-4-6 Review the diff
-/agents
-/agents view <id>
-/profiles
-```
-
-Configure models in `~/.pi/alloy/config.json` → `profiles` (Grok + Claude + Codex after each `/login`).
-
-### Auto pipeline
-
-```mermaid
-flowchart LR
-  A[scout] --> B[plan] --> C[checkpoint] --> D[build] --> E[diagnostics] --> F[review]
-  F -->|FAIL or diag fail| G[fixer]
-  G --> E
-  F -->|PASS| H[artifacts]
-```
-
-### Fusion
-
-```mermaid
-flowchart TB
-  R[objective] --> A[Architect model]
-  R --> B[Builder model]
-  A --> S[Synthesizer model]
-  B --> S
-  S --> O[attributed recommendation]
-```
-
-The Architect and Builder inspect the repository concurrently with read-only
-tools. Synthesis runs only after both structured proposals validate. Use
-`/fusion setup` to select each role's model and requested reasoning effort, `/fusion
-status` to inspect the effective settings, or configure the same values in
-`~/.pi/alloy/config.json`:
-
-```json
-{
-  "fusion": {
-    "architectModel": "anthropic/claude-sonnet-4-6",
-    "builderModel": "openai-codex/gpt-5.4",
-    "synthesizerModel": "anthropic/claude-opus-4-6",
-    "architectEffort": "high",
-    "builderEffort": "medium",
-    "synthesizerEffort": "high"
-  },
-  "budgets": { "maxCostUsd": 25 }
-}
-```
-
-An eligible successful Fusion run performs exactly three model calls. Auth,
-proposal validation, abort, or proposal-budget failures stop before synthesis.
-Fusion never implements or merges code.
-Pi clamps requested effort levels to each selected model's capabilities.
-Each child receives only the selected provider credential in its ephemeral Pi
-home, and its read tools are mechanically confined to the repository root. Run
-artifacts contain proposals, synthesis, model identity, usage, and a truthful
-terminal status, but never credential values.
-
-The immediate product goal is a reliable daily harness for Claude, Codex, and
-Grok users.
-
----
-
-## Troubleshooting
-
-| Symptom | What to try |
-|---|---|
-| `could not find the Pi CLI` | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent` or set `ALLOY_PI_BIN` |
-| `/doctor` shows missing providers | Run `/login` / `/login xai` for subscriptions |
-| Memory not sticking after `/new` | Confirm `~/.pi/alloy/memory/` files exist; `/memory list` |
-| Extension not loading | Run from a linked install; check `alloy` injects `-e` (omit `--no-inject`) |
-| Dangerous command blocked | Expected under `ask-dangerous` / `ask-all`; inspect or change it with `/permissions` |
-| “Update Available” for Pi after `pi update` | Alloy pins Pi in its own `node_modules` — upgrade inside the Alloy clone, not only global `pi` |
-| Host mode “isolation” | Host is not a FS jail — use `/permissions sandbox` + Docker when you need container isolation |
-
----
-
-## Product boundary
-
-Alloy is a **generic** daily terminal agent harness. Company meshes, shared knowledge bases, and private skill packs integrate via **config / MCP / local skills** — they are not required features of this package. Details: [docs/BOUNDARY.md](./docs/BOUNDARY.md).
-
----
-
-## License
-
-MIT
-
----
-
-## Maintainers
-
-The current maintainer is [Chris Coussa](https://github.com/ccoussa717). See
-[GOVERNANCE.md](./GOVERNANCE.md) for project roles and decision-making.
-Contribution instructions are in [CONTRIBUTING.md](./CONTRIBUTING.md).
+Maintainer: [Chris Coussa](https://github.com/ccoussa717)

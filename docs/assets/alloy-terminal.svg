@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Alloy terminal interface illustration</title>
+  <desc id="desc">An illustrated Alloy session showing a fusion request, parallel Architect and Builder analysis, and attributed synthesis.</desc>
+  <rect width="1200" height="650" rx="24" fill="#0F1115"/>
+  <rect x="1" y="1" width="1198" height="648" rx="23" fill="none" stroke="#30353D" stroke-width="2"/>
+  <path d="M0 58h1200" stroke="#30353D"/>
+  <circle cx="30" cy="29" r="7" fill="#F87171"/>
+  <circle cx="55" cy="29" r="7" fill="#E8C547"/>
+  <circle cx="80" cy="29" r="7" fill="#1FE07A"/>
+  <text x="600" y="36" text-anchor="middle" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15" letter-spacing="3">ALLOY // PRODUCT VIEW</text>
+
+  <rect x="28" y="82" width="1144" height="54" rx="8" fill="#171A20" stroke="#30353D"/>
+  <text x="52" y="115" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18">&gt;</text>
+  <text x="80" y="115" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="18">/fusion Design a safe authentication refactor</text>
+  <text x="1138" y="115" text-anchor="end" fill="#5AEEA0" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">PLAN // ASK:DANGER</text>
+
+  <rect x="28" y="158" width="555" height="250" rx="12" fill="#15191C" stroke="#1FE07A" stroke-width="2"/>
+  <text x="52" y="191" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16" font-weight="700" letter-spacing="2">ARCHITECT</text>
+  <text x="558" y="191" text-anchor="end" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">anthropic // high</text>
+  <path d="M52 208h507" stroke="#30353D"/>
+  <text x="52" y="242" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15">read  lib/auth.mjs</text>
+  <text x="52" y="272" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15">grep  session boundary</text>
+  <text x="52" y="320" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16">Maps trust boundaries, migration order,</text>
+  <text x="52" y="348" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16">and failure modes before code changes.</text>
+  <text x="52" y="382" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">COMPLETE // 1 proposal</text>
+
+  <rect x="617" y="158" width="555" height="250" rx="12" fill="#15191C" stroke="#5AEEA0" stroke-width="2"/>
+  <text x="641" y="191" fill="#5AEEA0" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16" font-weight="700" letter-spacing="2">BUILDER</text>
+  <text x="1147" y="191" text-anchor="end" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">openai-codex // medium</text>
+  <path d="M641 208h507" stroke="#30353D"/>
+  <text x="641" y="242" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15">read  test/auth.test.mjs</text>
+  <text x="641" y="272" fill="#E8EAED" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="15">find  credential callers</text>
+  <text x="641" y="320" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16">Finds implementation seams, test strategy,</text>
+  <text x="641" y="348" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16">and the smallest buildable sequence.</text>
+  <text x="641" y="382" fill="#5AEEA0" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">COMPLETE // 1 proposal</text>
+
+  <path d="M305 408v34h295M895 408v34H600" fill="none" stroke="#3A3F4B" stroke-width="2"/>
+  <circle cx="600" cy="442" r="7" fill="#1FE07A"/>
+  <rect x="145" y="462" width="910" height="118" rx="12" fill="#1A2420" stroke="#1FE07A" stroke-width="2"/>
+  <text x="173" y="497" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16" font-weight="700" letter-spacing="2">SYNTHESIS</text>
+  <text x="1027" y="497" text-anchor="end" fill="#8A8A8A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="13">attributed // validated inputs</text>
+  <text x="173" y="532" fill="#F5F6F7" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="16">One recommendation preserving consensus, divergence, risk, and implementation order.</text>
+  <text x="173" y="560" fill="#8FD9A8" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="14">artifact: ~/.pi/alloy/runs/...  // selected credential lease is ephemeral</text>
+
+  <text x="30" y="623" fill="#5A5A5A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">ILLUSTRATED INTERFACE // ACTUAL COMMANDS AND POLICY BOUNDARIES</text>
+  <text x="1170" y="623" text-anchor="end" fill="#1FE07A" font-family="SFMono-Regular,Consolas,Liberation Mono,monospace" font-size="12">ALLOY 0.8.2</text>
+</svg>
