@@ -1,9 +1,12 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -11,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -166,15 +169,116 @@ describe("integration: packed npm artifact", () => {
     ]);
     assert.ok(!plan.args.includes(runtime.cli));
 
-    const prefix = join(temp, "global-prefix");
+  });
+});
+
+function installedPackagePaths(directory, relative = "node_modules") {
+  const nodeModules = join(directory, relative);
+  if (!existsSync(nodeModules)) return [];
+  const paths = [];
+  for (const name of readdirSync(nodeModules)) {
+    if (name.startsWith(".")) continue;
+    if (name.startsWith("@")) {
+      for (const child of readdirSync(join(nodeModules, name))) {
+        const packagePath = join(relative, name, child);
+        paths.push(packagePath);
+        paths.push(...installedPackagePaths(directory, join(packagePath, "node_modules")));
+      }
+      continue;
+    }
+    const packagePath = join(relative, name);
+    paths.push(packagePath);
+    paths.push(...installedPackagePaths(directory, join(packagePath, "node_modules")));
+  }
+  return paths;
+}
+
+describe("integration: source installer", () => {
+  it("installs the exact shrinkwrapped tree from the current worktree", {
+    skip: process.env.ALLOY_RUN_SOURCE_INSTALLER_E2E !== "1",
+  }, () => {
+    const sourceFixture = join(temp, "source-fixture");
+    cpSync(root, sourceFixture, {
+      recursive: true,
+      filter(source) {
+        if (source === root) return true;
+        const first = relative(root, source).split(/[\\/]/)[0];
+        return !new Set([".git", "node_modules", "alloy.cdx.json"]).has(first);
+      },
+    });
+    const sourceArchive = join(temp, "source-fixture.tar.gz");
+    const archived = run(
+      "tar",
+      ["-czf", sourceArchive, "-C", temp, "source-fixture"],
+    );
+    assert.equal(archived.status, 0, archived.stderr || archived.stdout);
+
+    const installerBin = join(temp, "installer-bin");
+    mkdirSync(installerBin, { recursive: true });
+    symlinkSync(process.execPath, join(installerBin, "node"));
+    symlinkSync(realpathSync(hostNpm), join(installerBin, "npm"));
+    const curl = join(installerBin, "curl");
+    writeFileSync(
+      curl,
+      `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|--output) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
+`,
+    );
+    chmodSync(curl, 0o755);
+
+    const installerHome = join(temp, "installer-home");
+    const prefix = join(installerHome, ".local");
+    const dataHome = join(prefix, "share");
+    mkdirSync(installerHome, { recursive: true });
     const installed = run("bash", [join(root, "install.sh")], {
       env: {
-        ALLOY_PACKAGE_SPEC: tarball,
-        npm_config_prefix: prefix,
-        PATH: `${join(prefix, "bin")}:${cleanPath}`,
+        HOME: installerHome,
+        XDG_DATA_HOME: dataHome,
+        ALLOY_PREFIX: prefix,
+        ALLOY_REF: "local-worktree",
+        ALLOY_TEST_SOURCE_ARCHIVE: sourceArchive,
+        PATH: `${installerBin}:/usr/bin:/bin`,
       },
     });
     assert.equal(installed.status, 0, installed.stderr || installed.stdout);
-    assert.match(installed.stdout, /Alloy 0\.8\.2/);
+    const packageVersion = JSON.parse(
+      readFileSync(join(root, "package.json"), "utf8"),
+    ).version;
+    assert.match(installed.stdout, new RegExp(`Alloy ${packageVersion.replaceAll(".", "\\.")}`));
+
+    const app = join(dataHome, "alloy", "app");
+    const lock = JSON.parse(readFileSync(join(app, "npm-shrinkwrap.json"), "utf8"));
+    const packagePaths = installedPackagePaths(app);
+    const installedSet = new Set(packagePaths);
+    assert.ok(packagePaths.length > 300);
+    for (const packagePath of packagePaths) {
+      const expected = lock.packages?.[packagePath]?.version;
+      const actual = JSON.parse(
+        readFileSync(join(app, packagePath, "package.json"), "utf8"),
+      ).version;
+      assert.equal(actual, expected, `${packagePath} must match npm-shrinkwrap.json`);
+    }
+    for (const [packagePath, entry] of Object.entries(lock.packages || {})) {
+      if (!packagePath || entry.optional) continue;
+      assert.equal(
+        installedSet.has(packagePath),
+        true,
+        `${packagePath} is required by npm-shrinkwrap.json`,
+      );
+    }
+
+    const alloy = join(prefix, "bin", "alloy");
+    const version = run(alloy, ["--version"], {
+      env: { PATH: `${toolBin}:${process.env.PATH}` },
+    });
+    assert.equal(version.status, 0, version.stderr || version.stdout);
+    assert.match(version.stdout, /Pi\s+0\.82\.0/);
   });
 });

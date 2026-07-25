@@ -18,6 +18,10 @@ alloy --version
 # Then start Alloy and run /doctor inside the session.
 ```
 
+For installer failures, include the operating system, CPU architecture, existing
+`node --version` output when available, and the complete installer error. Do not
+include shell environment values or credentials.
+
 Never paste `auth.json`, API keys, bearer tokens, private prompts, or customer
 data into an issue.
 

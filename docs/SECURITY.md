@@ -104,7 +104,13 @@ Host mode must never be described as filesystem isolation.
   reachability and residual-risk decision; it does not waive the artifact gate.
 - GitHub Actions generates a CycloneDX SBOM for each release candidate.
 - npm publication requires provenance.
-- Mutable branches and unverified `curl | bash` are not release channels.
+- The convenience installer is fetched from mutable `main` during pre-release,
+  then resolves `main` once and downloads that exact source commit. It
+  checksum-verifies any downloaded Node.js runtime, and npm verifies the
+  shrinkwrapped dependency integrities. Review the installer before piping it
+  or pin both the raw installer URL and `ALLOY_REF` to the same full commit SHA
+  when the script and source must be immutable together. This source path is
+  not a tagged release or npm package.
 - Docker and CI images should be pinned to reviewed release versions. Digest
   pinning remains preferred where the hosting platform supports maintenance of
   those pins.
