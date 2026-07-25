@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
@@ -12,6 +13,9 @@ const {
   splashHorizontalLayout,
   splashTopPadding,
 } = ui;
+const alloyTheme = JSON.parse(
+  readFileSync(new URL("../../themes/alloy-dark.json", import.meta.url), "utf8"),
+);
 
 function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -27,28 +31,52 @@ function greenTheme(calls = []) {
   };
 }
 
-test("wide splash renders one letter-spaced ASCII wordmark", () => {
+test("wide splash renders the compact Alloy brand lockup", () => {
   const colors = [];
   const lines = buildWordmark(greenTheme(colors), 80);
-  const title = "A L L O Y   H A R N E S S";
+  const plain = lines.map(stripAnsi);
 
-  assert.equal(lines.length, 1);
-  assert.deepEqual(colors, ["accent"]);
-  assert.equal(
-    stripAnsi(lines[0]),
-    " ".repeat(Math.floor((80 - title.length) / 2)) + title,
-  );
-  assert.ok(lines[0].includes("\x1b[1m"));
+  assert.equal(lines.length, 3);
+  assert.equal(plain[0], " ".repeat(35) + "A L L O Y" + " ".repeat(9));
+  assert.equal(plain[1], " ".repeat(27) + "─".repeat(26));
+  assert.equal(plain[2], " ".repeat(27) + "MULTI-MODEL CODING HARNESS");
+  assert.deepEqual(colors, ["userMessageText", "accent", "muted"]);
+  assert.ok(lines.some((line) => line.includes("\x1b[1m")));
+});
+
+test("splash color roles resolve to the README brand palette", () => {
+  const resolve = (role) => {
+    const color = alloyTheme.colors[role];
+    return alloyTheme.vars[color] || color;
+  };
+
+  assert.equal(resolve("userMessageText").toUpperCase(), "#F5F6F7");
+  assert.equal(resolve("accent").toUpperCase(), "#1FE07A");
+  assert.equal(resolve("muted").toUpperCase(), "#8A8A8A");
+});
+
+test("constrained terminals collapse the lockup to the Alloy name", () => {
+  const narrowColors = [];
+  const shortColors = [];
+  const narrow = buildWordmark(greenTheme(narrowColors), 20, 24).map(stripAnsi);
+  const short = buildWordmark(greenTheme(shortColors), 80, 10).map(stripAnsi);
+
+  assert.deepEqual(narrow.map((line) => line.trim()), ["A L L O Y"]);
+  assert.deepEqual(short.map((line) => line.trim()), ["A L L O Y"]);
+  assert.deepEqual(narrowColors, ["userMessageText"]);
+  assert.deepEqual(shortColors, ["userMessageText"]);
 });
 
 test("narrow splash removes letter spacing before truncating the name", () => {
-  assert.equal(stripAnsi(buildWordmark(greenTheme(), 20)[0]).trim(), "ALLOY HARNESS");
+  assert.equal(stripAnsi(buildWordmark(greenTheme(), 20)[0]).trim(), "A L L O Y");
   assert.equal(stripAnsi(buildWordmark(greenTheme(), 8)[0]).trim(), "ALLOY");
 });
 
 test("splash rows never exceed their component width", () => {
   for (let width = 1; width <= 120; width += 1) {
-    const lines = buildWordmark(greenTheme(), width);
+    const lines = [10, 11, 24].flatMap((rows) =>
+      buildWordmark(greenTheme(), width, rows),
+    );
     const panel = splashHorizontalLayout(width);
     assert.ok(lines.every((line) => visibleWidth(line) <= width));
     assert.ok(panel.boxWidth <= width);
@@ -121,5 +149,7 @@ test("compact editor preserves the cursor before autocomplete rows", () => {
 
 test("vertical centering includes the taller editor and bottom padding", () => {
   assert.equal(splashTopPadding(24, 1), 7);
+  assert.equal(splashTopPadding(24, 3), 6);
+  assert.equal(splashTopPadding(11, 3), 0);
   assert.equal(splashTopPadding(4, 1), 0);
 });

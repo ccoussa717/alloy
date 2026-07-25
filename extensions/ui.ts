@@ -3,13 +3,13 @@
  *
  * On start (matches OpenCode splash proportions):
  *   terminal cleared · pure black field
- *   large "alloy harness" wordmark dead-center (accent green)
- *   compact 2-row chat panel under it (~half width, centered)
+ *   compact ALLOY brand lockup, centered
+ *   compact chat panel under it (~half width, centered)
  *   thin green left accent bar (OpenCode uses blue; we brand green)
  *   dim key hints flush under the panel's left edge
  *
- * Brand: "alloy harness", accent #1FE07A.
- * Wordmark uses portable terminal glyphs with narrow fallbacks.
+ * Brand: "ALLOY", accent #1FE07A.
+ * Lockup uses portable terminal glyphs with width and height fallbacks.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -137,6 +137,12 @@ function padVisible(text: string, width: number): string {
   return text + " ".repeat(width - w);
 }
 
+function centerVisible(text: string, width: number): string {
+  const w = visibleWidth(text);
+  const left = Math.max(0, Math.floor((width - w) / 2));
+  return padVisible(" ".repeat(left) + text, width);
+}
+
 const EDITOR_INPUT_ROWS = 3;
 const BOTTOM_PADDING_ROWS = 1;
 const COMPACT_TERMINAL_ROWS = 9;
@@ -241,29 +247,41 @@ export function panelRow(
 }
 
 // ---------------------------------------------------------------------------
-// Terminal-native wordmark: normal ASCII with deliberate tracking. The user's
-// terminal owns the typeface; Alloy only supplies spacing, weight, and color.
+// Terminal-native brand lockup. The terminal owns the typeface; Alloy supplies
+// portable spacing, weight, and color that survive SSH and tmux.
 // ---------------------------------------------------------------------------
 
-const SPLASH_WORDMARK = "A L L O Y   H A R N E S S";
-const COMPACT_SPLASH_WORDMARK = "ALLOY HARNESS";
-const NARROW_SPLASH_WORDMARK = "ALLOY";
+const SPLASH_WORDMARK = "A L L O Y";
+const COMPACT_SPLASH_WORDMARK = "ALLOY";
+const SPLASH_SUBTITLE = "MULTI-MODEL CODING HARNESS";
+const FULL_SPLASH_MIN_ROWS = 11;
 
-/** Center the large green wordmark, with a single-line narrow fallback. */
+/** Center the compact brand lockup, with a single-line constrained fallback. */
 export function buildWordmark(
   theme: ThemeLike,
   width: number,
+  terminalRows = 24,
 ): string[] {
   const layoutWidth = splashHorizontalLayout(width).width;
+  const contentWidth = visibleWidth(SPLASH_SUBTITLE);
+
+  if (terminalRows >= FULL_SPLASH_MIN_ROWS && contentWidth <= layoutWidth) {
+    const left = Math.max(0, Math.floor((layoutWidth - contentWidth) / 2));
+    let title = centerVisible(SPLASH_WORDMARK, contentWidth);
+    title = theme.bold ? theme.bold(title) : title;
+    title = theme.fg("userMessageText", title);
+    const divider = theme.fg("accent", "─".repeat(contentWidth));
+    const subtitle = theme.fg("muted", SPLASH_SUBTITLE);
+    return [title, divider, subtitle].map((line) => " ".repeat(left) + line);
+  }
+
   const plain =
     visibleWidth(SPLASH_WORDMARK) <= layoutWidth
       ? SPLASH_WORDMARK
-      : visibleWidth(COMPACT_SPLASH_WORDMARK) <= layoutWidth
-        ? COMPACT_SPLASH_WORDMARK
-        : truncateToWidth(NARROW_SPLASH_WORDMARK, layoutWidth, "");
+      : truncateToWidth(COMPACT_SPLASH_WORDMARK, layoutWidth, "");
   let word = plain;
   if (theme.bold) word = theme.bold(word);
-  word = theme.fg("accent", word);
+  word = theme.fg("userMessageText", word);
   const left = Math.max(
     0,
     Math.floor((layoutWidth - visibleWidth(plain)) / 2),
@@ -272,7 +290,7 @@ export function buildWordmark(
 }
 
 /**
- * Splash unit height for vertical centering (OpenCode: logo + gap + 2-row
+ * Splash unit height for vertical centering (OpenCode: lockup + gap + 4-row
  * panel + hints — compact, lots of black field around it).
  */
 const SPLASH_GAP = 1;
@@ -462,7 +480,7 @@ export function registerUi(pi: ExtensionAPI) {
       ctx.ui.theme?.fg ? ctx.ui.theme.fg("accent", "alloy") : "alloy",
     );
 
-    // Splash header = vertical top-pad + big bold alloy wordmark (centered unit)
+    // Splash header = vertical top-pad + responsive Alloy lockup (centered unit)
     // Active header = compact brand strip
     try {
       if (splashMode) {
@@ -475,7 +493,7 @@ export function registerUi(pi: ExtensionAPI) {
               if (!splashMode) return [];
               const rows = tui.terminal?.rows || 24;
               if (inputRowsForTerminal(rows) === 1) return [];
-              const mark = buildWordmark(theme, width);
+              const mark = buildWordmark(theme, width, rows);
               // Top pad so logo+panel+hints sit in the vertical middle
               const pad = splashTopPadding(rows, mark.length);
               const blanks = Array.from({ length: pad }, () => "");
