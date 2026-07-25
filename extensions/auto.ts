@@ -17,11 +17,13 @@ const {
   getFusionRoleModelDefaults,
   getFusionArgumentCompletions,
   groupFusionModelRoutes,
-  resolveFusionSessionCredentialLease,
   resolveFusionRoleEfforts,
   resolveFusionRoleModels,
   runFusion,
 } = require(join(root, "lib", "fusion.mjs"));
+const { resolveSessionCredentialLease } = require(
+  join(root, "lib", "credential-broker.mjs"),
+);
 const {
   loadConfig,
   loadGlobalConfig,
@@ -407,7 +409,7 @@ export function registerAuto(pi: ExtensionAPI) {
           cwd: process.cwd(),
           ...parentOpts,
           loadCredentialLease: (models: string[]) =>
-            resolveFusionSessionCredentialLease(models, ctx.modelRegistry),
+            resolveSessionCredentialLease(models, ctx.modelRegistry),
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
           onProgress: (msg: string) => {
             try {
@@ -521,7 +523,7 @@ export function registerAuto(pi: ExtensionAPI) {
           signal,
           ...parentOpts,
           loadCredentialLease: (models: string[]) =>
-            resolveFusionSessionCredentialLease(models, ctx.modelRegistry),
+            resolveSessionCredentialLease(models, ctx.modelRegistry),
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
         });
         return {

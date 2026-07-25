@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 
 let broker = null;
 try {
@@ -71,4 +72,284 @@ test("credential broker rejects unresolved API-key environment references", () =
   assert.equal(lease.mode, "none");
   assert.equal(lease.authJson, null);
   assert.deepEqual(lease.missing, ["openai"]);
+});
+
+test("session credential broker reproduces active built-in provider access", async () => {
+  const model = getBuiltinModel("openai-codex", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai-codex/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "synthetic-session-token",
+        headers: { "x-test-account": "synthetic-account" },
+      }),
+      getProviderAuth: async () => ({
+        auth: {
+          apiKey: "synthetic-session-token",
+          headers: { "x-test-account": "synthetic-account" },
+        },
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "runtime-key",
+    runtimeCredential: {
+      provider: "openai-codex",
+      apiKey: "synthetic-session-token",
+      headers: { "x-test-account": "synthetic-account" },
+    },
+    providers: ["openai-codex"],
+    missing: [],
+  });
+});
+
+test("session credential broker rejects custom model transports before auth", async () => {
+  const model = {
+    ...getBuiltinModel("openai", "gpt-5.4"),
+    baseUrl: "https://proxy.invalid/v1",
+  };
+  let authCalls = 0;
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => {
+        authCalls++;
+        return { ok: true, apiKey: "must-not-be-leased" };
+      },
+    },
+  );
+
+  assert.equal(authCalls, 0);
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["openai"],
+    missing: ["openai"],
+  });
+});
+
+test("session credential broker rejects auth-level base URL overrides", async () => {
+  const model = getBuiltinModel("openai", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "must-not-be-leased",
+      }),
+      getProviderAuth: async () => ({
+        auth: {
+          apiKey: "must-not-be-leased",
+          baseUrl: "https://attacker.example/v1",
+        },
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["openai"],
+    missing: ["openai"],
+  });
+});
+
+test("session credential broker rejects model-level header overrides before auth", async () => {
+  const model = {
+    ...getBuiltinModel("openai", "gpt-5.4"),
+    headers: { "x-forward-token": "attacker" },
+  };
+  let authCalls = 0;
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => {
+        authCalls++;
+        return { ok: true, apiKey: "must-not-be-leased" };
+      },
+    },
+  );
+
+  assert.equal(authCalls, 0);
+  assert.deepEqual(lease.missing, ["openai"]);
+});
+
+test("session credential broker rejects resolved environment propagation", async () => {
+  const model = getBuiltinModel("openai", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "must-not-be-leased",
+        env: { AZURE_OPENAI_BASE_URL: "https://attacker.example" },
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "must-not-be-leased" },
+        env: { AZURE_OPENAI_BASE_URL: "https://attacker.example" },
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["openai"],
+    missing: ["openai"],
+  });
+});
+
+test("session credential broker rejects model-specific resolved headers", async () => {
+  const model = getBuiltinModel("openai", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "must-not-be-leased",
+        headers: { "x-model-override": "custom" },
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "must-not-be-leased" },
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["openai"],
+    missing: ["openai"],
+  });
+});
+
+test("session credential broker rejects access it cannot reproduce", async () => {
+  const model = getBuiltinModel("anthropic", "claude-opus-4-6");
+  for (const resolved of [
+    { ok: true },
+    { ok: true, headers: { Authorization: "synthetic-header-only" } },
+  ]) {
+    const lease = await broker.resolveSessionCredentialLease(
+      ["anthropic/claude-opus-4-6"],
+      {
+        find: () => model,
+        getApiKeyAndHeaders: async () => resolved,
+      },
+    );
+    assert.deepEqual(lease, {
+      mode: "none",
+      runtimeCredential: null,
+      providers: ["anthropic"],
+      missing: ["anthropic"],
+    });
+  }
+});
+
+test("session credential broker requires the full active provider auth", async () => {
+  const model = getBuiltinModel("openai", "gpt-5.4");
+  const lease = await broker.resolveSessionCredentialLease(
+    ["openai/gpt-5.4"],
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "resolved-token",
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "different-token" },
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["openai"],
+    missing: ["openai"],
+  });
+});
+
+test("session credential broker reports parent-inaccessible providers", async () => {
+  const lease = await broker.resolveSessionCredentialLease(
+    ["anthropic/claude-opus-4-6"],
+    {
+      find: () => getBuiltinModel("anthropic", "claude-opus-4-6"),
+      getApiKeyAndHeaders: async () => ({
+        ok: false,
+        error: "No API key found for anthropic",
+      }),
+    },
+  );
+
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["anthropic"],
+    missing: ["anthropic"],
+  });
+});
+
+test("session credential broker rejects multi-provider leases before auth", async () => {
+  let authCalls = 0;
+  const lease = await broker.resolveSessionCredentialLease(
+    ["anthropic/claude-opus-4-6", "openai-codex/gpt-5.4"],
+    {
+      find: () => {
+        authCalls++;
+        return null;
+      },
+    },
+  );
+
+  assert.equal(authCalls, 0);
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["anthropic", "openai-codex"],
+    missing: ["anthropic", "openai-codex"],
+  });
+});
+
+test("session credential broker rejects multiple same-provider models before auth", async () => {
+  let authCalls = 0;
+  const lease = await broker.resolveSessionCredentialLease(
+    ["anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6"],
+    {
+      find: () => {
+        authCalls++;
+        return null;
+      },
+    },
+  );
+
+  assert.equal(authCalls, 0);
+  assert.deepEqual(lease, {
+    mode: "none",
+    runtimeCredential: null,
+    providers: ["anthropic"],
+    missing: ["anthropic"],
+  });
+});
+
+test("session credential broker rejects malformed routes before auth", async () => {
+  for (const models of [[], [null], ["missing-model/"], ["/missing-provider"]]) {
+    let authCalls = 0;
+    const lease = await broker.resolveSessionCredentialLease(models, {
+      find: () => {
+        authCalls++;
+        return null;
+      },
+    });
+    assert.equal(lease.mode, "none");
+    assert.ok(lease.missing.length > 0);
+    assert.equal(authCalls, 0);
+  }
 });
