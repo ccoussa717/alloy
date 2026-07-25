@@ -221,6 +221,21 @@ npm run ci:local
 | [Attribution](docs/ATTRIBUTION.md) | Pi and third-party provenance. |
 | [Releasing](docs/RELEASING.md) | Maintainer-only release and publication gates. |
 
+## Acknowledgments
+
+Alloy stands on and draws inspiration from excellent open-source work:
+
+- [Pi](https://github.com/earendil-works/pi) is the coding-agent runtime beneath
+  Alloy, providing the native TUI, model registry, authentication, sessions,
+  tools, and extension system.
+- [OpenCode](https://github.com/anomalyco/opencode) inspired the standard of a
+  focused, terminal-first developer experience and clear product presentation.
+- [Fusion Harness](https://github.com/disler/fusion-harness) inspired parts of
+  Alloy's multi-model role framing and the way independent perspectives are
+  brought together for synthesis.
+
+See [Attribution](docs/ATTRIBUTION.md) for the dependency and provenance details.
+
 ## Contributing
 
 Alloy is MIT licensed. Start with [CONTRIBUTING.md](CONTRIBUTING.md), add a

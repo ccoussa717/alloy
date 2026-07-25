@@ -40,6 +40,20 @@ SOFTWARE.
 
 Alloy **redistributes Pi only as an npm dependency** (not vendored source in this repository). Downstream redistributors of Alloy must preserve Pi’s MIT notice when distributing the combined work (typically via `node_modules` / lockfile and this file).
 
+## Acknowledgments and inspiration
+
+Alloy also credits two open-source projects that helped shape its product and
+presentation:
+
+| Project | Credit |
+|---|---|
+| [OpenCode](https://github.com/anomalyco/opencode) | Inspiration for a focused terminal-first developer experience and clear open-source product presentation. |
+| [Fusion Harness](https://github.com/disler/fusion-harness) | Inspiration for explicit multi-model role framing and presenting independent perspectives as an attributable synthesis. |
+
+These are acknowledgments of inspiration, not Alloy runtime dependencies. Alloy
+does not redistribute their source or visual assets. Pi is the runtime foundation
+and npm dependency described above.
+
 ## This repository: Alloy
 
 | Field | Value |
