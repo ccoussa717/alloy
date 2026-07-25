@@ -304,7 +304,7 @@ export function registerUi(pi: ExtensionAPI) {
               theme.fg("muted", " agents") +
               theme.fg("dim", "  /mcp") +
               theme.fg("dim", "  Shift+Tab") +
-              theme.fg("muted", " ask");
+              theme.fg("muted", " mode");
             const right =
               running > 0 ? theme.fg("warning", `agents:${running}`) : "";
             const gap = Math.max(
@@ -425,7 +425,7 @@ export function registerUi(pi: ExtensionAPI) {
               theme.fg("muted", " agents") +
               theme.fg("dim", "  /agent") +
               theme.fg("dim", "  Shift+Tab") +
-              theme.fg("muted", " ask") +
+              theme.fg("muted", " mode") +
               theme.fg("dim", "  Ctrl+Shift+A");
             const right =
               running > 0

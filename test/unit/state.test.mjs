@@ -31,6 +31,13 @@ test("invalid mode throws", () => {
   assert.throws(() => state.setMode("fusion"));
 });
 
+test("Shift+Tab mode cycle alternates Build and Plan with a safe fallback", () => {
+  assert.equal(state.nextPrimaryMode("build"), "plan");
+  assert.equal(state.nextPrimaryMode("plan"), "build");
+  assert.equal(state.nextPrimaryMode("chat"), "plan");
+  assert.equal(state.nextPrimaryMode("review"), "plan");
+});
+
 test("sandbox profile is allowed", () => {
   state.setPermissionProfile("sandbox");
   assert.equal(state.isSandboxProfile(), true);

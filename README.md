@@ -288,7 +288,7 @@ route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subsc
 | `/fusion setup` / `/fusion status` / `/fusion help` | Configure, inspect, and explain Fusion role models and effort |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
-| **`Shift+Tab`** | Cycle permission ask-levels |
+| **`Shift+Tab`** | Cycle primary operating mode: Build ↔ Plan |
 | `/permissions [ask-all\|ask-some\|ask-dangerous\|ask-none\|sandbox]` | Set permission level |
 | `/effort [off\|…\|max]` | Thinking / reasoning effort |
 | `/sandbox [status\|start\|stop\|doctor]` | Docker sandbox controls |
@@ -426,7 +426,8 @@ printf '%s\n' 'MCP_HTTP_TOKEN=replace-me' >> ~/.pi/alloy/env
 | `ask-none` | No prompts (headless-friendly) |
 | `sandbox` | Docker isolation for bash (approval defaults to ask-dangerous) |
 
-Shift+Tab cycles ask-levels. Legacy ids `safe` / `workspace` / `readonly` still map.
+Approval profiles are independent from Build/Plan mode. Use `/permissions cycle`
+or select a profile directly. Legacy ids `safe` / `workspace` / `readonly` still map.
 
 ```text
 /permissions ask-dangerous
@@ -605,7 +606,7 @@ Grok users.
 | `/doctor` shows missing providers | Run `/login` / `/login xai` for subscriptions |
 | Memory not sticking after `/new` | Confirm `~/.pi/alloy/memory/` files exist; `/memory list` |
 | Extension not loading | Run from a linked install; check `alloy` injects `-e` (omit `--no-inject`) |
-| Dangerous command blocked | Expected under `ask-dangerous` / `ask-all`; use Shift+Tab or `/permissions` |
+| Dangerous command blocked | Expected under `ask-dangerous` / `ask-all`; inspect or change it with `/permissions` |
 | “Update Available” for Pi after `pi update` | Alloy pins Pi in its own `node_modules` — upgrade inside the Alloy clone, not only global `pi` |
 | Host mode “isolation” | Host is not a FS jail — use `/permissions sandbox` + Docker when you need container isolation |
 

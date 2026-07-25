@@ -86,7 +86,7 @@ export function registerEffort(pi: ExtensionAPI) {
           ...LEVELS.map((l) => `  ${l === current ? "→" : " "} ${l}`),
           "",
           "Usage: /effort high",
-          "Note: Shift+Tab cycles permissions (ask levels), not effort.",
+          "Note: Shift+Tab cycles Build and Plan modes, not effort.",
         ];
         if (ctx.hasUI) await ctx.ui.select("Effort / thinking", lines);
         else console.log(lines.join("\n"));

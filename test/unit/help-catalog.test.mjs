@@ -69,6 +69,18 @@ test("fusion help documents the plan-only three-role workflow", () => {
   assert.doesNotMatch(topic.body, /\[plan\|build\]|workers|mergerModel/i);
 });
 
+test("help assigns Shift+Tab to Build and Plan, not approval levels", () => {
+  const modes = help.getTopic("modes");
+  const permissions = help.getTopic("permissions");
+  const effort = help.getTopic("effort");
+
+  assert.match(modes.body, /Shift\+Tab.*Build.*Plan/is);
+  assert.doesNotMatch(permissions.title, /Shift\+Tab/i);
+  assert.doesNotMatch(permissions.body, /Shift\+Tab.*permission/is);
+  assert.match(permissions.body, /\/permissions cycle/);
+  assert.match(effort.body, /Shift\+Tab.*Build.*Plan/is);
+});
+
 test("native command catalog stays complete for the pinned Pi runtime", () => {
   assert.deepEqual(
     help.PI_NATIVE_COMMANDS,
