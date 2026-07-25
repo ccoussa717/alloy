@@ -92,7 +92,7 @@ Examples:
   alloy -p "summarize this repo"
 
 Install CLI onto PATH:
-  bash scripts/install-cli.sh
+  curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
 
 Doctor (inside a session): /doctor
 `);

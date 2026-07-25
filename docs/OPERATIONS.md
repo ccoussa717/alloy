@@ -4,16 +4,26 @@ Use this checklist when installing Alloy as a daily coding-agent shell.
 
 ## Install
 
-The npm package is not published yet. The registry command below applies only
-after the launch checklist in [RELEASING.md](./RELEASING.md) is complete.
+The npm package is not published. Install the public source and bundled Pi
+runtime without `sudo`:
 
-- [ ] Node.js 22.19 or newer is installed.
-- [ ] After launch, install an exact release: `npm install --global alloy-agent@<version>`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+```
+
+- [ ] The installer reuses Node.js 22.19+ or installs and checksum-verifies
+  Node.js 22.19.0.
+- [ ] Restart Bash or Zsh so the generated Alloy environment file is loaded.
+  Other shells and symlinked dotfile setups must add `~/.local/bin` to `PATH`
+  or invoke it directly.
 - [ ] `alloy --version` prints Alloy, Pi, and Node versions.
-- [ ] `alloy --no-inject --list-models` starts the bundled Pi runtime.
+- [ ] `alloy --list-models` starts the bundled Pi runtime with Alloy resources.
 
-Contributors should use `npm ci && npm link` from a clone. Do not use
-`npm install` because releases are governed by `npm-shrinkwrap.json`.
+The pre-release command fetches a mutable installer from `main`, then resolves
+and installs one exact source commit. Pin both the raw installer URL and
+`ALLOY_REF` to the same full commit SHA when both must be immutable.
+Contributors should use `npm ci && npm link` from a clone. Do not use `npm
+install` because release dependencies are governed by `npm-shrinkwrap.json`.
 
 ## Provider setup
 

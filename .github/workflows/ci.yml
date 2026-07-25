@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -40,6 +40,18 @@ jobs:
           ALLOY_REQUIRE_DOCKER_TEST: "1"
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
+      - name: Bootstrap Node.js and install from a clean Linux environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/alloy-bootstrap-home"
+          env -i \
+            HOME="$RUNNER_TEMP/alloy-bootstrap-home" \
+            PATH="/usr/bin:/bin" \
+            ALLOY_REF="$GITHUB_SHA" \
+            ALLOY_PREFIX="$RUNNER_TEMP/alloy-bootstrap-prefix" \
+            XDG_DATA_HOME="$RUNNER_TEMP/alloy-bootstrap-data" \
+            /bin/bash ./install.sh
+          "$RUNNER_TEMP/alloy-bootstrap-prefix/bin/alloy" --version
+
       - name: Report dependency advisories
         run: npm audit --omit=dev --audit-level=critical
 
@@ -59,3 +71,48 @@ jobs:
           path: alloy.cdx.json
           if-no-files-found: error
           retention-days: 30
+
+  installer-macos:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22.19.0
+
+      - name: Test piped installer under macOS Bash
+        run: node --test test/unit/install-script.test.mjs
+
+      - name: Install exact public source tree
+        run: npm run test:installer
+
+      - name: Bootstrap Node.js and install from a clean macOS environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/alloy-bootstrap-home"
+          env -i \
+            HOME="$RUNNER_TEMP/alloy-bootstrap-home" \
+            PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+            ALLOY_REF="$GITHUB_SHA" \
+            ALLOY_PREFIX="$RUNNER_TEMP/alloy-bootstrap-prefix" \
+            XDG_DATA_HOME="$RUNNER_TEMP/alloy-bootstrap-data" \
+            /bin/bash ./install.sh
+          "$RUNNER_TEMP/alloy-bootstrap-prefix/bin/alloy" --version
+
+  verify:
+    if: ${{ always() }}
+    needs:
+      - verify-linux
+      - installer-macos
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require Linux and macOS verification
+        env:
+          LINUX_RESULT: ${{ needs.verify-linux.result }}
+          MACOS_RESULT: ${{ needs.installer-macos.result }}
+        run: |
+          test "$LINUX_RESULT" = "success"
+          test "$MACOS_RESULT" = "success"

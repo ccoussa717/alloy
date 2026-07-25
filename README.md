@@ -42,14 +42,39 @@ layer around them.
 
 ## Quick start
 
-**Requires:** Node.js 22.19 or newer, npm, Git, and macOS or Linux.
+**Requires:** macOS or Linux with `curl` and `tar`. Automatic Node bootstrap
+also requires `sha256sum` or `shasum`. The installer reuses an existing Node.js
+22.19+ runtime on any architecture. Bootstrap supports macOS x64/arm64 and
+glibc Linux x64/arm64/armv7.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+
+# Restart your shell, then:
+alloy
+```
+
+The installer writes only to your user directories, needs no `sudo`, and
+installs Alloy, its bundled Pi runtime, and pinned npm dependencies under
+`~/.local`. Writable, regular Bash and Zsh startup files are updated
+automatically. For another shell or symlinked dotfiles, add `~/.local/bin` to
+`PATH` or run `~/.local/bin/alloy` directly. The convenience command resolves
+`main` once and installs that exact commit. To pin both the installer and source
+snapshot, use the same full commit SHA in both places:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/<full-commit-sha>/install.sh \
+  | ALLOY_REF=<full-commit-sha> bash
+```
+
+Contributors should install from a clone instead:
 
 ```bash
 git clone https://github.com/ccoussa717/alloy.git
-cd alloy
-npm ci
-npm link
+cd alloy && npm ci && npm link
+```
 
+```bash
 cd /path/to/your-project
 alloy
 ```
