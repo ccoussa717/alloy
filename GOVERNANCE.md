@@ -26,7 +26,8 @@ high-quality work, sound security judgment, constructive review, and reliable
 follow-through. Maintainer access may be removed for inactivity, security risk,
 or conduct violations after documented review.
 
-## Releases
+## Source launches and releases
 
-Releases follow [docs/RELEASING.md](./docs/RELEASING.md). No maintainer may skip
-the release gate or publish from an unreviewed worktree.
+Public source launches, tagged releases, and npm packages follow
+[docs/RELEASING.md](./docs/RELEASING.md). No maintainer may skip the applicable
+gate or publish from an unreviewed worktree.

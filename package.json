@@ -60,6 +60,7 @@
     "ci:release": "npm run ci:local && npm run audit:release",
     "security:scan": "bash ./scripts/security-scan.sh",
     "release:verify": "node ./scripts/verify-release.mjs",
+    "release:verify:source": "node ./scripts/verify-release.mjs --source",
     "release:verify:publish": "node ./scripts/verify-release.mjs --publish",
     "shrinkwrap:normalize": "node ./scripts/normalize-shrinkwrap.mjs",
     "audit:release": "npm audit --omit=dev --audit-level=high",

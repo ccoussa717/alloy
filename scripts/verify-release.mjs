@@ -8,12 +8,16 @@ function fail(message) {
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const lockPath = "npm-shrinkwrap.json";
 const publishGate = process.argv.includes("--publish");
+const sourceGate = process.argv.includes("--source");
 const canonicalRepositoryPath = "/ccoussa717/alloy";
 
 if (pkg.name !== "alloy-agent") fail("package name must be alloy-agent");
 if (pkg.license !== "MIT") fail("package license must be MIT");
 if (publishGate && pkg.private === true) {
   fail("package must not be private for publication");
+}
+if (sourceGate && pkg.private !== true) {
+  fail("package must remain private for a source launch");
 }
 const repositoryUrl =
   typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;

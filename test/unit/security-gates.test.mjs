@@ -160,6 +160,19 @@ describe("release metadata verification", () => {
     assert.equal(valid.status, 0, valid.stderr || valid.stdout);
   });
 
+  it("requires source launches to keep npm publication disabled", () => {
+    const publicPackage = run(process.execPath, [script, "--source"], {
+      cwd: releaseFixture(),
+    });
+    assert.notEqual(publicPackage.status, 0);
+    assert.match(publicPackage.stderr, /must remain private/);
+
+    const privatePackage = run(process.execPath, [script, "--source"], {
+      cwd: releaseFixture({ pkg: { private: true } }),
+    });
+    assert.equal(privatePackage.status, 0, privatePackage.stderr || privatePackage.stdout);
+  });
+
   it("rejects publication while the package is private", () => {
     const directory = releaseFixture({
       pkg: {

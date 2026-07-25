@@ -2,19 +2,61 @@
 
 Only maintainers may publish a release.
 
-## One-time public-host setup
+## Public source launch
 
-- Initialize the canonical repository from a verified source snapshot.
-- Enable private vulnerability reporting.
-- Configure real CODEOWNERS identities and protected-branch review rules.
+Making the canonical GitHub repository public is separate from publishing an
+npm package. A public source pre-release may launch while `package.json` remains
+`private` and the npm release gate remains closed.
+
+Before changing repository visibility:
+
+1. Confirm `main` is clean, pushed, and green in GitHub Actions.
+2. Confirm history begins with the verified public release snapshot and excludes
+   private development history.
+3. Run `npm run ci:local`, `npm run release:verify:source`, and review the
+   generated SBOM. The source verifier must confirm npm publication is disabled.
+4. Run the tracked-tree, release-worktree, and full-history secret scan.
+5. Confirm canonical URLs, CODEOWNERS identity, support, security, contribution,
+   license, and attribution documents are present.
+6. Confirm known dependency advisories and other residual risks are accurately
+   disclosed in [SECURITY.md](./SECURITY.md).
+7. Do not create a release tag or package artifact.
+8. Obtain explicit maintainer authorization for the visibility change.
+
+Immediately after the repository becomes public:
+
+1. Enable private vulnerability reporting and verify the root
+   [SECURITY.md](../SECURITY.md) advisory link opens the private form.
+2. Protect `main` and require the GitHub Actions `verify` status check. Apply
+   review and CODEOWNERS rules appropriate for the current maintainer team.
+3. Reconfirm read-only default workflow permissions, DCO sign-off, merge
+   methods, issue settings, Dependabot alerts, and automated security fixes.
+4. Clone the public URL without existing credentials, run the documented source
+   setup, and verify the rendered README and all public links.
+5. Run hosted CI again against the exact public `main` commit.
+
+GitHub Free does not expose branch protection for this private repository, and
+GitHub offers private vulnerability reporting only for public repositories. The
+pre-launch `403`/`404` responses are therefore expected; the controls must be
+enabled immediately after the authorized visibility flip.
+
+The high-severity transitive advisory documented in
+[SECURITY.md](./SECURITY.md) blocks npm publication. Repository-authored model
+and resource patterns can reach the affected Pi dependency only after the
+operator explicitly trusts the project. The remaining availability risk is
+accepted for this source snapshot at that trust boundary; it is not accepted for
+a tagged release or npm package. Do not remove or suppress the finding, and
+reassess this decision if the trust boundary or impact changes.
+
+## One-time package-host setup
+
 - Configure npm trusted publishing with provenance and no long-lived token.
-- Publish canonical repository, issue, and support URLs in `package.json`.
 - Run two clean-machine installs, including one macOS install.
 
-Start public history from one reviewed source snapshot. Keep internal provenance
-and private development history outside the public repository.
-
 ## Release candidate
+
+This section governs tagged release and npm package candidates, not the public
+source snapshot.
 
 1. Confirm the worktree and index contain only intended changes.
 2. Update `version` consistently in package metadata and the changelog.

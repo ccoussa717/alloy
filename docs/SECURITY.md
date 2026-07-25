@@ -98,8 +98,10 @@ Host mode must never be described as filesystem isolation.
 - Release artifacts include `npm-shrinkwrap.json`, and every registry artifact
   must carry an integrity hash.
 - GitHub Actions installs and starts the actual packed npm artifact.
-- High and critical dependency findings block release. Moderate findings must
-  be reviewed and documented when no compatible fix exists.
+- High and critical dependency findings block tagged release artifacts and npm
+  packages. Moderate findings must be reviewed and documented when no compatible
+  fix exists. A public source snapshot requires an explicit, documented
+  reachability and residual-risk decision; it does not waive the artifact gate.
 - GitHub Actions generates a CycloneDX SBOM for each release candidate.
 - npm publication requires provenance.
 - Mutable branches and unverified `curl | bash` are not release channels.
@@ -116,13 +118,22 @@ Host mode must never be described as filesystem isolation.
 - Some transitive moderate advisories may remain until upstream packages ship
   compatible fixes.
 - Pi 0.82.0's published shrinkwrap currently pins `brace-expansion` 5.0.7,
-  which is affected by `GHSA-mh99-v99m-4gvg`. Alloy does not pass
-  attacker-controlled brace patterns to it, but the high-severity finding keeps
-  npm publication blocked until Pi ships a compatible fixed dependency.
+  which is affected by the out-of-memory denial-of-service advisory
+  `GHSA-mh99-v99m-4gvg`. Repository-authored model and resource patterns can
+  reach this matcher only after the operator explicitly trusts the project. The
+  resulting local-process availability risk is accepted for the public source
+  snapshot at that trust boundary, but the high-severity finding keeps tagged
+  releases and npm publication blocked until Pi ships a compatible fix. Pi
+  0.82.1 remains affected, and the upstream request to regenerate the shrinkwrap
+  was [closed as not planned](https://github.com/earendil-works/pi/issues/7090).
+  Root npm overrides and edits that only change Alloy's lock metadata do not
+  replace the actually installed Pi-owned node, so Alloy does not claim those as
+  fixes. Reassess this acceptance if matching occurs before project trust or the
+  impact extends beyond the local Alloy process.
 - The current MCP dependency chain carries `GHSA-frvp-7c67-39w9`, a moderate
   Windows encoded-backslash path-traversal advisory in `@hono/node-server`.
   No compatible fix is currently available; Alloy does not expose that static
-  file server directly, and high or critical findings remain release-blocking.
+  file server directly, and high or critical findings remain artifact-blocking.
 
 ## Reporting
 
