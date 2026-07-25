@@ -128,7 +128,8 @@ if (
  */
 function ensureQuietStartup() {
   try {
-    const dir = join(homedir(), ".pi", "agent");
+    const dir =
+      process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
     const path = join(dir, "settings.json");
     mkdirSync(dir, { recursive: true });
     let settings = {};
@@ -158,6 +159,20 @@ function ensureQuietStartup() {
     // Quieter stream: hide thinking blocks unless user expands
     if (settings.hideThinkingBlock !== true) {
       settings.hideThinkingBlock = true;
+      changed = true;
+    }
+    if (settings.warnings === undefined) {
+      settings.warnings = {};
+      changed = true;
+    }
+    if (
+      settings.warnings &&
+      typeof settings.warnings === "object" &&
+      !Array.isArray(settings.warnings) &&
+      !Object.hasOwn(settings.warnings, "anthropicExtraUsage")
+    ) {
+      // Pi 0.82.0's warning predates Anthropic's June 15 billing-policy pause.
+      settings.warnings.anthropicExtraUsage = false;
       changed = true;
     }
     if (changed) {

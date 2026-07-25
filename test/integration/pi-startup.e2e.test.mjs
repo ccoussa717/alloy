@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { findPiCli } from "../../lib/pi-package.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -224,6 +225,66 @@ describe("integration: isolated alloy/pi startup", () => {
     assert.equal(s.quietStartup, true);
   });
 
+  it("suppresses Pi's stale Anthropic billing warning without replacing user settings", () => {
+    const warningHome = mkdtempSync(join(tmpdir(), "alloy-warning-e2e-"));
+    const warningAgentDir = join(warningHome, "custom-pi-agent");
+    const defaultSettingsPath = join(warningHome, ".pi", "agent", "settings.json");
+    const settingsPath = join(warningAgentDir, "settings.json");
+    mkdirSync(warningAgentDir, { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ warnings: { customWarning: true } }, null, "\t") + "\n",
+    );
+
+    try {
+      const run = spawnSync(
+        process.execPath,
+        [join(root, "bin", "alloy.mjs"), "--list-models", "anthropic"],
+        {
+          encoding: "utf8",
+          env: {
+            ...env,
+            HOME: warningHome,
+            PI_CODING_AGENT_DIR: warningAgentDir,
+            ALLOY_HOME: join(warningHome, ".pi", "alloy"),
+            ANTHROPIC_API_KEY: "test-only",
+          },
+          cwd: root,
+        },
+      );
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      assert.equal(settings.warnings.customWarning, true);
+      assert.equal(settings.warnings.anthropicExtraUsage, false);
+      assert.equal(existsSync(defaultSettingsPath), false);
+      const piSettings = SettingsManager.create(root, warningAgentDir);
+      assert.equal(piSettings.getWarnings().anthropicExtraUsage, false);
+
+      settings.warnings.anthropicExtraUsage = true;
+      writeFileSync(settingsPath, JSON.stringify(settings, null, "\t") + "\n");
+      const rerun = spawnSync(
+        process.execPath,
+        [join(root, "bin", "alloy.mjs"), "--list-models", "anthropic"],
+        {
+          encoding: "utf8",
+          env: {
+            ...env,
+            HOME: warningHome,
+            PI_CODING_AGENT_DIR: warningAgentDir,
+            ALLOY_HOME: join(warningHome, ".pi", "alloy"),
+            ANTHROPIC_API_KEY: "test-only",
+          },
+          cwd: root,
+        },
+      );
+      assert.equal(rerun.status, 0, rerun.stderr || rerun.stdout);
+      const explicit = JSON.parse(readFileSync(settingsPath, "utf8"));
+      assert.equal(explicit.warnings.anthropicExtraUsage, true);
+    } finally {
+      rmSync(warningHome, { recursive: true, force: true });
+    }
+  });
+
   it("npm run doctor works isolated", () => {
     const r = spawnSync("npm", ["run", "doctor"], {
       encoding: "utf8",
@@ -234,6 +295,6 @@ describe("integration: isolated alloy/pi startup", () => {
     // doctor may exit 0 with missing providers
     assert.ok(r.status === 0 || r.stdout || r.stderr);
     const out = (r.stdout || "") + (r.stderr || "");
-    assert.match(out, /Alloy doctor|providers|extra usage|catalog/i);
+    assert.match(out, /Alloy doctor|providers|subscription usage|catalog/i);
   });
 });
