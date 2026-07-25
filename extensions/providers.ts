@@ -4,6 +4,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Provider } from "@earendil-works/pi-ai";
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +21,44 @@ const { diagnoseDocker, formatDockerDoctor } = require(
   join(root, "lib", "docker-sandbox.mjs"),
 );
 const { getAlloyVersion } = require(join(root, "lib", "version.mjs"));
+
+export function withClaudeOpus5(anthropic: Provider): Provider {
+  const opusTemplate = getBuiltinModel("anthropic", "claude-opus-4-8");
+  const fallback = {
+    ...opusTemplate,
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    baseUrl: anthropic.baseUrl || opusTemplate.baseUrl,
+    reasoning: true,
+    input: ["text", "image"] as ("text" | "image")[],
+    cost: {
+      input: 5,
+      output: 25,
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+    },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+    thinkingLevelMap: {
+      xhigh: "xhigh" as const,
+      max: "max" as const,
+    },
+    compat: {
+      forceAdaptiveThinking: true,
+      supportsTemperature: false,
+      supportsStrictTools: true,
+    },
+  };
+  return {
+    ...anthropic,
+    getModels: () => {
+      const current = anthropic.getModels();
+      return current.some((model) => model.id === fallback.id)
+        ? current
+        : [...current, fallback];
+    },
+  };
+}
 
 export function registerProviders(pi: ExtensionAPI) {
   pi.registerCommand("doctor", {
@@ -82,6 +122,14 @@ export function registerProviders(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
+    const anthropic = ctx.modelRegistry.getProvider("anthropic");
+    if (
+      anthropic &&
+      !anthropic.getModels().some((model) => model.id === "claude-opus-5")
+    ) {
+      pi.registerProvider(withClaudeOpus5(anthropic));
+    }
+
     try {
       const results = diagnoseProviders();
       const ok = results.filter((r: { ok: boolean }) => r.ok).length;

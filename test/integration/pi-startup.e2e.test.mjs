@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
@@ -59,6 +59,101 @@ describe("integration: isolated alloy/pi startup", () => {
     });
     assert.equal(r.status, 0, r.stderr || r.stdout);
     assert.match(r.stdout, /multi-provider coding harness/i);
+  });
+
+  it("exposes Claude Opus 5 without replacing live Anthropic composition", async () => {
+    writeFileSync(
+      join(agentDir, "models.json"),
+      JSON.stringify({
+        providers: {
+          anthropic: {
+            baseUrl: "https://proxy.example.test/v1",
+            models: [
+              {
+                id: "claude-custom-test",
+                name: "Claude Custom Test",
+                api: "anthropic-messages",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128000,
+                maxTokens: 16384,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const child = spawn(
+      process.execPath,
+      [join(root, "bin", "alloy.mjs"), "--mode", "rpc", "--no-session"],
+      {
+        env: { ...env, ANTHROPIC_API_KEY: "test-only" },
+        cwd: root,
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const response = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`RPC model list timed out: ${stderr || stdout}`)),
+        10000,
+      );
+      let requested = false;
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        const lines = stdout.split("\n");
+        stdout = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const message = JSON.parse(line);
+          if (!requested) {
+            requested = true;
+            child.stdin.write(
+              `${JSON.stringify({ type: "get_available_models" })}\n`,
+            );
+          }
+          if (
+            message.type === "response" &&
+            message.command === "get_available_models"
+          ) {
+            clearTimeout(timeout);
+            resolve(message);
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code !== null && code !== 0) {
+          clearTimeout(timeout);
+          reject(new Error(`RPC exited ${code}: ${stderr || stdout}`));
+        }
+      });
+    }).finally(async () => {
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    });
+
+    assert.equal(response.success, true);
+    const models = response.data.models.filter(
+      (model) => model.provider === "anthropic",
+    );
+    assert.ok(models.some((model) => model.id === "claude-opus-4-8"));
+    assert.ok(models.some((model) => model.id === "claude-sonnet-5"));
+    assert.ok(models.some((model) => model.id === "claude-custom-test"));
+    const opus5 = models.find((model) => model.id === "claude-opus-5");
+    assert.ok(opus5);
+    assert.equal(opus5.baseUrl, "https://proxy.example.test/v1");
+    assert.equal(opus5.contextWindow, 1_000_000);
+    assert.equal(opus5.maxTokens, 128_000);
   });
 
   it("quietStartup can be set under isolated agent dir", () => {
