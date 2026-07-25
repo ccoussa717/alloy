@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { registerAuto } from "../../extensions/auto.ts";
+import * as autoExtension from "../../extensions/auto.ts";
+
+const { registerAuto } = autoExtension;
 
 function registerFusionCommand() {
   const commands = new Map();
@@ -29,6 +31,28 @@ function registerFusionTool() {
   });
   return fusionTool;
 }
+
+test("Fusion operator output names routed provider failures", () => {
+  assert.equal(typeof autoExtension.formatFusionLines, "function");
+  const lines = autoExtension.formatFusionLines({
+    status: "FAILED",
+    runId: "run-1",
+    runDir: "/tmp/run-1",
+    models: {},
+    usage: {},
+    synthesis: "",
+    error: "provider_unavailable",
+    missingProviders: ["anthropic"],
+    routing: {
+      architect: {
+        reason: "no eligible configured model for planning",
+      },
+    },
+  });
+
+  assert.match(lines.join("\n"), /anthropic/);
+  assert.match(lines.join("\n"), /no eligible configured model for planning/);
+});
 
 function writeConfig(home) {
   const config = {

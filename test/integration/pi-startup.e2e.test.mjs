@@ -5,13 +5,19 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
+import { findPiCli } from "../../lib/pi-package.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const home = mkdtempSync(join(tmpdir(), "alloy-pi-e2e-"));
@@ -59,6 +65,57 @@ describe("integration: isolated alloy/pi startup", () => {
     });
     assert.equal(r.status, 0, r.stderr || r.stdout);
     assert.match(r.stdout, /multi-provider coding harness/i);
+  });
+
+  it("registers a child runtime credential from stdin without persisting it", () => {
+    const runtimeHome = mkdtempSync(join(tmpdir(), "alloy-runtime-auth-e2e-"));
+    const runtimeAgentDir = join(runtimeHome, ".pi", "agent");
+    const credential = "runtime-secret-must-remain-memory-only";
+    mkdirSync(runtimeAgentDir, { recursive: true });
+
+    try {
+      const piCli = findPiCli([root]);
+      assert.ok(piCli, "Pi CLI must be resolvable for the integration test");
+      const r = spawnSync(
+        process.execPath,
+        [
+          piCli,
+          "--no-extensions",
+          "--extension",
+          join(root, "extensions", "child-enforcer.ts"),
+          "--list-models",
+          "openai-codex",
+        ],
+        {
+          encoding: "utf8",
+          input: JSON.stringify({
+            version: 1,
+            provider: "openai-codex",
+            apiKey: credential,
+          }),
+          env: {
+            ...env,
+            HOME: runtimeHome,
+            PI_CODING_AGENT_DIR: runtimeAgentDir,
+            ALLOY_CHILD_CREDENTIAL_STDIN: "1",
+          },
+          cwd: root,
+        },
+      );
+
+      const output = `${r.stdout || ""}${r.stderr || ""}`;
+      assert.equal(r.status, 0, output);
+      assert.match(r.stdout, /openai-codex/);
+      assert.doesNotMatch(output, new RegExp(credential));
+      assert.equal(readFileSync(join(runtimeAgentDir, "auth.json"), "utf8"), "{}");
+      assert.equal(
+        readFileSync(join(runtimeAgentDir, "models-store.json"), "utf8"),
+        "{}",
+      );
+      assert.equal(existsSync(join(runtimeAgentDir, "models.json")), false);
+    } finally {
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
   });
 
   it("exposes Claude Opus 5 without replacing live Anthropic composition", async () => {
@@ -163,7 +220,6 @@ describe("integration: isolated alloy/pi startup", () => {
       JSON.stringify({ quietStartup: true }, null, "\t") + "\n",
     );
     assert.ok(existsSync(settingsPath));
-    const { readFileSync } = require("node:fs");
     const s = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(s.quietStartup, true);
   });

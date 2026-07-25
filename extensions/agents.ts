@@ -20,20 +20,89 @@ const {
   listAgents,
   getAgent,
   getAgentTranscript,
+  getAgentSpentCost,
+  getRunningAgentCount,
   setAgentPanelPainter,
   getAgentsPanelLines,
   clearAgentsPanel,
 } = require(join(root, "lib", "agent-registry.mjs"));
 const {
   listProfiles,
-  resolveAgentSpec,
   resolveProfile,
 } = require(join(root, "lib", "agent-profiles.mjs"));
+const { prepareAgentLaunch } = require(
+  join(root, "lib", "agent-orchestration.mjs"),
+);
+const { resolveParentChildSpawnOpts } = require(
+  join(root, "lib", "parent-policy.mjs"),
+);
 const { renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
 );
 
 let panelUi: ExtensionContext["ui"] | null = null;
+
+export async function launchFreeAgent(
+  params: {
+    name: string;
+    task: string;
+    background?: boolean;
+    profile?: string;
+    model?: string;
+    tools?: string[];
+  },
+  modelRegistry: unknown,
+  signal?: AbortSignal,
+  onPrepared?: (launch: any) => void,
+  dependencies: {
+    prepareAgentLaunch?: typeof prepareAgentLaunch;
+    getRunningAgentCount?: typeof getRunningAgentCount;
+    getAgentSpentCost?: typeof getAgentSpentCost;
+    resolveParentChildSpawnOpts?: typeof resolveParentChildSpawnOpts;
+    spawnAgent?: typeof spawnAgent;
+  } = {},
+) {
+  const prepare = dependencies.prepareAgentLaunch || prepareAgentLaunch;
+  const countRunning = dependencies.getRunningAgentCount || getRunningAgentCount;
+  const spentCost = dependencies.getAgentSpentCost || getAgentSpentCost;
+  const parentSpawnOpts =
+    dependencies.resolveParentChildSpawnOpts || resolveParentChildSpawnOpts;
+  const spawn = dependencies.spawnAgent || spawnAgent;
+  const cwd = process.cwd();
+  const launch = await prepare({
+    task: params.task,
+    profile: params.profile,
+    model: params.model,
+    tools: params.tools,
+    cwd,
+    modelRegistry,
+    activeChildren: countRunning(cwd),
+    spentCostUsd: spentCost(cwd),
+  });
+  if (!launch.ok) {
+    throw new Error(`Agent routing failed: ${launch.decision.reason}`);
+  }
+  onPrepared?.(launch);
+  const parentOpts = parentSpawnOpts();
+  return spawn({
+    name: params.name,
+    task: params.task,
+    model: launch.spec.model,
+    profile: launch.spec.profile,
+    tools: launch.spec.tools,
+    systemPrompt: launch.spec.systemPrompt,
+    cwd,
+    background: Boolean(params.background),
+    signal,
+    routeDecision: launch.decision,
+    credentialBroker: launch.credential.mode,
+    brokerRuntimeCredential: launch.credential.runtimeCredential,
+    maxConcurrency: launch.maxConcurrency,
+    budgetUsd: launch.budgetUsd,
+    budgetLimitUsd: launch.budgetLimitUsd,
+    ...parentOpts,
+  });
+}
 
 function paintPanel(panel: unknown) {
   const ui = panelUi;
@@ -182,37 +251,22 @@ export function registerAgents(pi: ExtensionAPI) {
         tools?: string[];
       };
 
-      const spec = resolveAgentSpec({
-        profile: p.profile,
-        model: p.model,
-        tools: p.tools,
-        cwd: process.cwd(),
-      });
-
-      ctx.ui.notify(
-        `Starting agent "${p.name}" (${spec.profile}) model=${spec.model || "default"}${p.background ? " [bg]" : ""}…`,
-        "info",
-      );
       ctx.ui.setWorkingMessage?.(
         p.background ? undefined : `Agent ${p.name} running…`,
       );
 
       try {
-        const { resolveParentChildSpawnOpts } = require(
-          join(root, "lib", "parent-policy.mjs"),
+        const result = await launchFreeAgent(
+          p,
+          ctx.modelRegistry,
+          undefined,
+          (launch) => {
+            ctx.ui.notify(
+              `Starting agent "${p.name}" (${launch.decision.role}) model=${launch.spec.model || "default"}${launch.decision.fallbackUsed ? " [fallback]" : ""}${p.background ? " [bg]" : ""}…`,
+              "info",
+            );
+          },
         );
-        const parentOpts = resolveParentChildSpawnOpts();
-        const result = await spawnAgent({
-          name: p.name,
-          task: p.task,
-          model: spec.model,
-          profile: spec.profile,
-          tools: spec.tools,
-          systemPrompt: spec.systemPrompt,
-          cwd: process.cwd(),
-          background: p.background,
-          ...parentOpts,
-        });
 
         if (p.background) {
           ctx.ui.notify(
@@ -229,6 +283,7 @@ export function registerAgents(pi: ExtensionAPI) {
           `status: ${rec.status}`,
           `model: ${rec.model || "default"}`,
           `profile: ${rec.profile}`,
+          `route: ${rec.routing?.reason || "legacy"}${rec.routing?.fallbackUsed ? " (fallback)" : ""}`,
           `usage: turns=${rec.usage?.turns || 0} cost=$${(rec.usage?.cost || 0).toFixed(4)}`,
           "",
           "--- output ---",
@@ -341,10 +396,11 @@ export function registerAgents(pi: ExtensionAPI) {
     name: "alloy_task",
     label: "Alloy Task (sub-agent)",
     description:
-      "Spawn an isolated Alloy sub-agent with optional model/profile. Use for research, implementation, or review with a different model (Grok, Claude, Codex, etc.).",
-    promptSnippet: "Spawn a multi-model sub-agent",
+      "Spawn an isolated Alloy sub-agent. Alloy routes research, planning, implementation, review, and general tasks through configured eligible models.",
+    promptSnippet: "Route and spawn an isolated sub-agent",
     promptGuidelines: [
-      "Pick profile research|code|review|plan or pass model as provider/id.",
+      "Usually omit model/profile and let Alloy route from the task.",
+      "A requested profile/model must be eligible in operator orchestration policy.",
       "After completion, summarize the sub-agent output for the user.",
       "For long work the user can /agents view <id>.",
     ],
@@ -370,31 +426,14 @@ export function registerAgents(pi: ExtensionAPI) {
         Type.Boolean({ description: "If true, return immediately" }),
       ),
     }),
-    async execute(_id, params, signal) {
+    async execute(_id, params, signal, _onUpdate, ctx) {
       panelUi = panelUi; // may be null in tool-only path
-      const spec = resolveAgentSpec({
-        profile: params.profile,
-        model: params.model,
-        tools: params.tools,
-        cwd: process.cwd(),
-      });
       try {
-        const { resolveParentChildSpawnOpts } = require(
-          join(root, "lib", "parent-policy.mjs"),
-        );
-        const parentOpts = resolveParentChildSpawnOpts();
-        const result = await spawnAgent({
-          name: params.name,
-          task: params.task,
-          model: spec.model,
-          profile: spec.profile,
-          tools: spec.tools,
-          systemPrompt: spec.systemPrompt,
-          cwd: process.cwd(),
-          background: Boolean(params.background),
+        const result = await launchFreeAgent(
+          params,
+          ctx.modelRegistry,
           signal,
-          ...parentOpts,
-        });
+        );
         if (params.background) {
           return {
             content: [
@@ -414,6 +453,7 @@ export function registerAgents(pi: ExtensionAPI) {
               text: [
                 `Agent ${rec.name} [${rec.status}] id=${rec.id}`,
                 `model=${rec.model || "default"} profile=${rec.profile}`,
+                `route=${rec.routing?.reason || "legacy"}${rec.routing?.fallbackUsed ? " fallback=yes" : ""}`,
                 "",
                 result.full?.text || rec.error || "(empty)",
               ].join("\n"),

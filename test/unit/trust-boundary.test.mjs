@@ -24,7 +24,7 @@ process.env.HOME = home;
 process.env.ALLOY_HOME = join(home, ".pi", "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
-const { ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
+const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
   await import(pathToFileURL(join(root, "lib/config.mjs")).href);
 const { loadMcpConfig, listAutoConnectServers, listMcpServers } = await import(
   pathToFileURL(join(root, "lib/mcp-config.mjs")).href
@@ -206,6 +206,106 @@ describe("trust boundary", () => {
     const detail = loadConfigDetailed(project, { trusted: true });
     assert.equal(detail.config.budgets.maxCostUsd, 25);
     assert.ok(detail.rejected.some((item) => /maxCostUsd.*non-negative/.test(item)));
+  });
+
+  it("keeps main-model and role routing policy global-only", () => {
+    const base = {
+      ...DEFAULT_CONFIG,
+      orchestration: {
+        ...DEFAULT_CONFIG.orchestration,
+        enabled: true,
+        mainModel: "anthropic/claude-sonnet-4-6",
+        maxConcurrency: 4,
+      },
+    };
+    const { config, rejected } = mergeProjectConfigTightenOnly(base, {
+      orchestration: {
+        mainModel: "attacker/untrusted-model",
+        maxConcurrency: 2,
+        roles: {
+          implementation: {
+            primary: "attacker/untrusted-model",
+            fallbacks: [],
+          },
+        },
+      },
+    });
+
+    assert.equal(config.orchestration.mainModel, "anthropic/claude-sonnet-4-6");
+    assert.equal(config.orchestration.maxConcurrency, 2);
+    assert.deepEqual(
+      config.orchestration.roles,
+      DEFAULT_CONFIG.orchestration.roles,
+    );
+    assert.ok(rejected.some((item) => /orchestration\.mainModel.*global-only/.test(item)));
+    assert.ok(rejected.some((item) => /orchestration\.roles.*global-only/.test(item)));
+  });
+
+  it("allows projects to disable or lower orchestration but never enable or expand it", () => {
+    const enabledBase = {
+      ...DEFAULT_CONFIG,
+      orchestration: {
+        ...DEFAULT_CONFIG.orchestration,
+        enabled: true,
+        maxConcurrency: 4,
+      },
+    };
+    const tightened = mergeProjectConfigTightenOnly(enabledBase, {
+      orchestration: { enabled: false, maxConcurrency: 1 },
+    });
+    assert.equal(tightened.config.orchestration.enabled, false);
+    assert.equal(tightened.config.orchestration.maxConcurrency, 1);
+
+    const expanded = mergeProjectConfigTightenOnly(DEFAULT_CONFIG, {
+      orchestration: { enabled: true, maxConcurrency: 99 },
+    });
+    assert.equal(expanded.config.orchestration.enabled, false);
+    assert.equal(
+      expanded.config.orchestration.maxConcurrency,
+      DEFAULT_CONFIG.orchestration.maxConcurrency,
+    );
+    assert.ok(expanded.rejected.some((item) => /cannot enable/.test(item)));
+    assert.ok(expanded.rejected.some((item) => /cannot raise/.test(item)));
+
+    const mistyped = mergeProjectConfigTightenOnly(enabledBase, {
+      orchestration: { maxConcurrency: "2" },
+    });
+    assert.equal(mistyped.config.orchestration.maxConcurrency, 4);
+    assert.ok(mistyped.rejected.some((item) => /positive integer/.test(item)));
+  });
+
+  it("cannot turn malformed global orchestration limits into project expansion", () => {
+    const malformedBase = {
+      ...DEFAULT_CONFIG,
+      orchestration: {
+        ...DEFAULT_CONFIG.orchestration,
+        enabled: true,
+        maxConcurrency: "unlimited",
+      },
+    };
+    const result = mergeProjectConfigTightenOnly(malformedBase, {
+      orchestration: { enabled: "false", maxConcurrency: 9999 },
+    });
+
+    assert.equal(result.config.orchestration.enabled, true);
+    assert.equal(result.config.orchestration.maxConcurrency, "unlimited");
+    assert.ok(result.rejected.some((item) => /enabled.*boolean/.test(item)));
+    assert.ok(result.rejected.some((item) => /invalid global limit/.test(item)));
+
+    for (const malformed of ["4", [4]]) {
+      const coercibleBase = {
+        ...malformedBase,
+        orchestration: {
+          ...malformedBase.orchestration,
+          maxConcurrency: malformed,
+        },
+      };
+      const coercible = mergeProjectConfigTightenOnly(coercibleBase, {
+        orchestration: { maxConcurrency: 2 },
+      });
+      assert.deepEqual(coercible.config.orchestration.maxConcurrency, malformed);
+      assert.ok(coercible.rejected.some((item) => /invalid global limit/.test(item)));
+    }
   });
 
   it("getSandboxConfig ignores project sandbox overrides even when trusted", () => {
