@@ -1,0 +1,13 @@
+node_modules/
+.npm/
+alloy.cdx.json
+.DS_Store
+*.log
+.pi/
+dist/
+coverage/
+.env
+.env.*
+*.tgz
+*.cdx.json
+pack-list.txt

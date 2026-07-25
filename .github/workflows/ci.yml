@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Run release verification
+        run: npm run ci:local
+        env:
+          ALLOY_REQUIRE_DOCKER_TEST: "1"
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      - name: Report dependency advisories
+        continue-on-error: true
+        run: npm audit --omit=dev
+
+      - name: Enforce release dependency policy
+        if: ${{ github.ref_type == 'tag' }}
+        run: npm run audit:release
+
+      - name: Validate publish metadata
+        if: ${{ always() && github.ref_type == 'tag' }}
+        run: npm run release:verify:publish
+
+      - name: Upload CycloneDX SBOM
+        if: ${{ always() && hashFiles('alloy.cdx.json') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alloy-sbom
+          path: alloy.cdx.json
+          if-no-files-found: error
+          retention-days: 30

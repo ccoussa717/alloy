@@ -1,0 +1,103 @@
+{
+  "name": "alloy-agent",
+  "version": "0.8.2",
+  "description": "Alloy — multi-provider coding agent harness on Pi. Policy, memory, skills, MCP, multi-agent.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "alloy": "./bin/alloy.mjs"
+  },
+  "keywords": [
+    "pi-package",
+    "coding-agent",
+    "terminal-agent",
+    "alloy"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ccoussa717/alloy.git"
+  },
+  "homepage": "https://github.com/ccoussa717/alloy#readme",
+  "bugs": {
+    "url": "https://github.com/ccoussa717/alloy/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "bin",
+    "extensions",
+    "lib",
+    "skills",
+    "prompts",
+    "themes",
+    "config",
+    "docs",
+    "scripts",
+    "install.sh",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "GOVERNANCE.md",
+    "SUPPORT.md",
+    "CHANGELOG.md",
+    "npm-shrinkwrap.json"
+  ],
+  "scripts": {
+    "start": "node ./bin/alloy.mjs",
+    "alloy": "node ./bin/alloy.mjs",
+    "test": "node --test test/unit/*.test.mjs",
+    "test:integration": "node --test --test-force-exit test/integration/*.e2e.test.mjs",
+    "test:all": "npm test && npm run test:integration",
+    "doctor": "node -e \"import('./lib/providers.mjs').then(m=>console.log(m.formatFullDoctorReport()))\"",
+    "setup": "npm ci && npm link",
+    "install-cli": "bash ./scripts/install-cli.sh",
+    "bootstrap": "npm ci && npm link",
+    "version:print": "node ./bin/alloy.mjs --version",
+    "ci:local": "node -e \"const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<19)) process.exit(1)\" && npm run test:all && node ./bin/alloy.mjs --version && npm pack --dry-run >/dev/null && npm run release:verify && npm run security:scan && npm run sbom:write",
+    "ci:release": "npm run ci:local && npm run audit:release",
+    "security:scan": "bash ./scripts/security-scan.sh",
+    "release:verify": "node ./scripts/verify-release.mjs",
+    "release:verify:publish": "node ./scripts/verify-release.mjs --publish",
+    "shrinkwrap:normalize": "node ./scripts/normalize-shrinkwrap.mjs",
+    "audit:release": "npm audit --omit=dev --audit-level=high",
+    "sbom": "npm sbom --sbom-format cyclonedx",
+    "sbom:write": "npm run --silent sbom > alloy.cdx.json && node -e \"const b=require('./alloy.cdx.json'); if(b.bomFormat!=='CycloneDX'||!b.specVersion) process.exit(1)\""
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.82.0",
+    "@earendil-works/pi-ai": "0.82.0",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@earendil-works/pi-tui": "0.82.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "typebox": "1.1.38"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "@earendil-works/pi-agent-core": "0.82.0",
+      "@earendil-works/pi-ai": "0.82.0",
+      "@earendil-works/pi-tui": "0.82.0"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  }
+}

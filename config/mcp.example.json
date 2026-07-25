@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "servers": {
+    "example-reviewed-stdio": {
+      "transport": "stdio",
+      "command": "/absolute/path/to/reviewed-mcp-server",
+      "args": [],
+      "env": {},
+      "enabled": false
+    },
+    "example-http": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
+      },
+      "enabled": false
+    },
+    "example-sse": {
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${MCP_SSE_TOKEN}"
+      },
+      "enabled": false
+    }
+  }
+}
