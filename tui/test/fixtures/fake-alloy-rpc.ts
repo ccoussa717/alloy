@@ -7,6 +7,7 @@ let decorated = false;
 const logPath = process.env.ALLOY_FAKE_LOG;
 const pidPath = process.env.ALLOY_FAKE_PID_FILE;
 const startupDelayMs = Number(process.env.ALLOY_FAKE_STARTUP_DELAY_MS || 0);
+const emptyHistory = process.env.ALLOY_FAKE_EMPTY === "1";
 
 if (pidPath) writeFileSync(pidPath, `${process.pid}\n`);
 
@@ -35,15 +36,19 @@ function message(role: "user" | "assistant", content: string, id?: string) {
 function stream(text: string): void {
   const id = `assistant-${++sequence}`;
   const toolCallId = `tool-${sequence}`;
+  const commandCallId = `command-${sequence}`;
   const content = [
     { type: "toolCall", id: toolCallId, name: "read", arguments: { path: "/tmp/example.ts" } },
-    { type: "text", text },
+    { type: "toolCall", id: commandCallId, name: "bash", arguments: { command: "printf 'fixture command'" } },
+    { type: "text", text: `${text}\n\n\`\`\`typescript\nconst status: string = "visible"\n\`\`\`` },
   ];
   send({ type: "agent_start" });
   send({ type: "message_start", message: { id, role: "assistant", content: [{ type: "reasoning", text: "Checking the request" }], timestamp: Date.now() } });
   setTimeout(() => {
     send({ type: "tool_execution_start", toolCallId, toolName: "read", args: { path: "/tmp/example.ts" } });
     send({ type: "tool_execution_end", toolCallId, toolName: "read", result: "fixture tool result", isError: false });
+    send({ type: "tool_execution_start", toolCallId: commandCallId, toolName: "bash", args: { command: "printf 'fixture command'" } });
+    send({ type: "tool_execution_end", toolCallId: commandCallId, toolName: "bash", result: "fixture command", isError: false });
     send({ type: "message_update", message: { id, role: "assistant", content, timestamp: Date.now() } });
     send({
       type: "message_end",
@@ -53,6 +58,17 @@ function stream(text: string): void {
         toolCallId,
         toolName: "read",
         content: [{ type: "text", text: "fixture tool result" }],
+        timestamp: Date.now(),
+      },
+    });
+    send({
+      type: "message_end",
+      message: {
+        id: `command-result-${sequence}`,
+        role: "toolResult",
+        toolCallId: commandCallId,
+        toolName: "bash",
+        content: [{ type: "text", text: "fixture command" }],
         timestamp: Date.now(),
       },
     });
@@ -78,7 +94,7 @@ function handle(request: Record<string, unknown>): void {
           sessionId: "pty-session",
           sessionName: "PTY verification",
           autoCompactionEnabled: true,
-          messageCount: 50,
+          messageCount: emptyHistory ? 0 : 50,
           pendingMessageCount: 0,
         });
         if (!decorated) {
@@ -91,7 +107,7 @@ function handle(request: Record<string, unknown>): void {
       return;
     case "get_messages":
       respond(request, {
-        messages: Array.from({ length: 50 }, (_, index) =>
+        messages: emptyHistory ? [] : Array.from({ length: 50 }, (_, index) =>
           message(index % 2 === 0 ? "user" : "assistant", `hydrated history item ${String(index + 1).padStart(2, "0")}`),
         ),
       });

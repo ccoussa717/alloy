@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { createInitialState, reduceRpcMessage } from "../src/session-store";
+import { createInitialState, isStreamingTranscriptMessage, reduceRpcMessage } from "../src/session-store";
 
 describe("session store snapshots", () => {
   it("hydrates session metadata from get_state without mutating prior state", () => {
@@ -93,7 +93,11 @@ describe("session store snapshots", () => {
   });
 
   it("hydrates messages, commands, models, and session stats", () => {
-    const messages = [{ id: "user-1", role: "user", content: "hello", timestamp: 1 }];
+    const messages = [
+      { id: "user-1", role: "user", content: "hello", timestamp: 1 },
+      { id: "assistant-1", role: "assistant", content: [{ type: "toolCall", id: "failed-1", name: "bash" }] },
+      { id: "result-1", role: "toolResult", toolCallId: "failed-1", isError: true, content: [{ type: "text", text: "failed" }] },
+    ];
     const commands = [{ name: "review", description: "Review changes", source: "extension" as const }];
     const models = [{ id: "gpt-5", provider: "openai" }];
     const stats = {
@@ -135,7 +139,8 @@ describe("session store snapshots", () => {
 
     expect(state.messages).toEqual(messages);
     expect(state.messages).not.toBe(messages);
-    expect(state.messageCount).toBe(1);
+    expect(state.messageCount).toBe(3);
+    expect(state.transcriptTools).toEqual({ "failed-1": "error" });
     expect(state.commands).toEqual(commands);
     expect(state.availableModels).toEqual(models);
     expect(state.sessionStats).toEqual(stats);
@@ -238,7 +243,7 @@ describe("session store events", () => {
     expect(state.isStreaming).toBe(false);
   });
 
-  it("keeps only active tool executions and clears them during message hydration", () => {
+  it("keeps completed tool executions visible through agent settlement and clears them during hydration", () => {
     let state = reduceRpcMessage(createInitialState(), {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -261,8 +266,19 @@ describe("session store events", () => {
       isError: false,
     });
 
-    expect(state.toolExecutions).toEqual({});
+    expect(state.toolExecutions["tool-1"]).toEqual({
+      toolCallId: "tool-1",
+      toolName: "read",
+      args: { path: "/tmp/a" },
+      partialResult: "partial",
+      result: "complete",
+      isError: false,
+      status: "completed",
+    });
     expect(afterStart.toolExecutions["tool-1"]?.status).toBe("running");
+
+    state = reduceRpcMessage(state, { type: "agent_end", messages: [], willRetry: false });
+    expect(state.toolExecutions["tool-1"]?.status).toBe("completed");
 
     state = reduceRpcMessage(afterStart, {
       type: "response",
@@ -271,6 +287,30 @@ describe("session store events", () => {
       data: { messages: [] },
     });
     expect(state.toolExecutions).toEqual({});
+  });
+
+  it("finalizes Markdown streams and never downgrades terminal transcript tool state", () => {
+    let state = reduceRpcMessage(createInitialState(), { type: "agent_start" });
+    state = reduceRpcMessage(state, {
+      type: "message_start",
+      message: { id: "assistant-1", role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "read" }] },
+    });
+    expect(isStreamingTranscriptMessage(state, 0)).toBe(true);
+    state = reduceRpcMessage(state, {
+      type: "message_end",
+      message: { id: "result-1", role: "toolResult", toolCallId: "tool-1", content: "complete" },
+    });
+    expect(state.transcriptTools["tool-1"]).toBe("completed");
+    state = reduceRpcMessage(state, {
+      type: "message_update",
+      message: { id: "assistant-1", role: "assistant", content: [{ type: "toolCall", id: "tool-1", name: "read" }] },
+    });
+    expect(state.transcriptTools["tool-1"]).toBe("completed");
+    state = reduceRpcMessage(state, {
+      type: "message_end",
+      message: { id: "assistant-1", role: "assistant", content: "done" },
+    });
+    expect(isStreamingTranscriptMessage(state, 0)).toBe(false);
   });
 });
 

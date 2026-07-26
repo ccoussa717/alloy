@@ -1,7 +1,7 @@
-import { RGBA, type KeyEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core";
+import { addDefaultParsers, RGBA, type KeyEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock } from "./content";
+import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
   resolveSubmission,
   THINKING_LEVELS,
@@ -12,13 +12,20 @@ import { RpcClient, type RpcExtensionUIResponse, type RpcMessage as ClientRpcMes
 import {
   activeExtensionDialog,
   createInitialState,
+  isStreamingTranscriptMessage,
   reduceRpcMessage,
   type ExtensionDialog,
   type NotificationState,
   type RpcMessage,
   type SessionState,
+  type ToolExecution,
 } from "./session-store";
+import parsers from "./parsers-config";
+import { activityFrame, activityLabel, splashDivider } from "./presentation";
+import { syntaxStyle } from "./syntax";
 import { theme } from "./theme";
+
+addDefaultParsers(parsers.parsers);
 
 export interface AppState {
   session: SessionState;
@@ -110,9 +117,23 @@ function cleanStatus(value: string): string {
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").trim();
 }
 
-function Block(props: { block: TranscriptBlock; user?: boolean }) {
+function Block(props: { block: TranscriptBlock; user?: boolean; streaming?: boolean; execution?: ToolExecution; transcriptStatus?: TranscriptToolStatus; activityGlyph?: string }) {
   const color = () => (props.user ? theme.textStrong : theme.text);
-  if (props.block.kind === "text") return <text fg={color()}>{props.block.text}</text>;
+  if (props.block.kind === "text") {
+    return props.user ? (
+      <text fg={color()}>{props.block.text}</text>
+    ) : (
+      <markdown
+        syntaxStyle={syntaxStyle}
+        streaming={props.streaming === true}
+        internalBlockMode="top-level"
+        content={props.block.text}
+        tableOptions={{ style: "grid" }}
+        fg={theme.text}
+        bg={theme.background}
+      />
+    );
+  }
   if (props.block.kind === "reasoning") {
     return (
       <box flexDirection="column">
@@ -121,7 +142,12 @@ function Block(props: { block: TranscriptBlock; user?: boolean }) {
       </box>
     );
   }
-  if (props.block.kind === "tool-call") return <text fg={theme.muted}>* {props.block.summary}</text>;
+  if (props.block.kind === "tool-call") {
+    const status = () => props.execution?.status ?? props.transcriptStatus;
+    const glyph = () => status() === "running" ? props.activityGlyph ?? "■" : status() === "error" ? "×" : status() === "completed" ? "✓" : "•";
+    const foreground = () => status() === "running" ? theme.accent : status() === "error" ? theme.error : theme.muted;
+    return <text fg={foreground()}>{glyph()} {props.block.summary}</text>;
+  }
   if (props.block.kind === "tool-result") {
     return (
       <box paddingLeft={2} flexDirection="column">
@@ -148,6 +174,13 @@ export function AlloyApp(props: AlloyAppProps) {
   const [dialogResult, setDialogResult] = createSignal<unknown>();
   const [selected, setSelected] = createSignal(0);
   const [dialogText, setDialogText] = createSignal("");
+  const [activityFrameIndex, setActivityFrameIndex] = createSignal(0);
+  const activityActive = createMemo(() =>
+    session().isStreaming ||
+    session().isCompacting ||
+    session().isRetrying ||
+    Object.values(session().toolExecutions).some((tool) => tool.status === "running"),
+  );
   let scroll!: ScrollBoxRenderable;
   let composer!: TextareaRenderable;
   let modalInput: TextareaRenderable | undefined;
@@ -181,7 +214,14 @@ export function AlloyApp(props: AlloyAppProps) {
   });
   onCleanup(unsubscribe);
 
-  onMount(() => setTimeout(() => composer?.focus(), 0));
+  onMount(() => {
+    const focusTimer = setTimeout(() => composer?.focus(), 0);
+    const scrollTimer = setTimeout(() => scroll?.scrollTo(scroll.scrollHeight), 50);
+    onCleanup(() => {
+      clearTimeout(focusTimer);
+      clearTimeout(scrollTimer);
+    });
+  });
 
   createEffect(() => {
     const title = session().title.trim();
@@ -195,6 +235,16 @@ export function AlloyApp(props: AlloyAppProps) {
     appliedEditorText = value;
     composer.setText(value);
     composer.gotoBufferEnd();
+  });
+
+  createEffect(() => {
+    const active = activityActive();
+    if (!active) {
+      setActivityFrameIndex(0);
+      return;
+    }
+    const timer = setInterval(() => setActivityFrameIndex((frame) => frame + 1), 80);
+    onCleanup(() => clearInterval(timer));
   });
 
   const extensionDialog = createMemo(() => activeExtensionDialog(session()));
@@ -447,7 +497,10 @@ export function AlloyApp(props: AlloyAppProps) {
     }
   });
 
-  const activeToolExecutions = createMemo(() => Object.values(session().toolExecutions).filter((tool) => tool.status === "running"));
+  const toolExecutions = createMemo(() => Object.values(session().toolExecutions));
+  const standaloneToolExecutions = createMemo(() =>
+    toolExecutions().filter((tool) => session().transcriptTools[tool.toolCallId] === undefined),
+  );
   const aboveWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "aboveEditor"));
   const belowWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "belowEditor"));
   const notifications = createMemo(() => latestNotifications(session().notifications));
@@ -488,6 +541,7 @@ export function AlloyApp(props: AlloyAppProps) {
             <box flexGrow={1} minHeight={1} alignItems="center" justifyContent="center">
               <text fg={theme.accent}>A L L O Y</text>
               <Show when={layout().showIdentity}>
+                <text fg={theme.accent}>{splashDivider(Math.max(0, layout().width - layout().horizontalPadding * 2))}</text>
                 <text fg={theme.dim}>MULTI-MODEL CODING HARNESS</text>
               </Show>
             </box>
@@ -502,16 +556,24 @@ export function AlloyApp(props: AlloyAppProps) {
                 </box>
               ) : (
                 <box marginTop={1} paddingLeft={2} paddingRight={1} gap={1} flexShrink={0}>
-                  <For each={blocks}>{(block) => <Block block={block} />}</For>
+                  <For each={blocks}>{(block) => (
+                    <Block
+                      block={block}
+                      streaming={isStreamingTranscriptMessage(session(), index())}
+                      execution={(block.kind === "tool-call" || block.kind === "tool-result") && block.id ? session().toolExecutions[block.id] : undefined}
+                      transcriptStatus={(block.kind === "tool-call" || block.kind === "tool-result") && block.id ? session().transcriptTools[block.id] : undefined}
+                      activityGlyph={activityFrame(activityFrameIndex(), 1)}
+                    />
+                  )}</For>
                 </box>
               );
             }}
           </For>
-          <For each={activeToolExecutions()}>
+          <For each={standaloneToolExecutions()}>
             {(tool) => (
               <box paddingLeft={2} marginTop={1} flexShrink={0}>
                 <text fg={tool.status === "error" ? theme.error : tool.status === "running" ? theme.warning : theme.muted}>
-                  {tool.status === "running" ? "*" : tool.status === "error" ? "!" : "+"} {toolSummary(tool.toolName, tool.args)}
+                  {tool.status === "running" ? activityFrame(activityFrameIndex(), 1) : tool.status === "error" ? "×" : "✓"} {toolSummary(tool.toolName, tool.args)}
                 </text>
                 <Show when={tool.result !== undefined || tool.partialResult !== undefined}>
                   <text fg={theme.dim}>{displayPreview(tool.result ?? tool.partialResult, { previewLines: 4, previewChars: 500 })}</text>
@@ -569,9 +631,17 @@ export function AlloyApp(props: AlloyAppProps) {
             <text fg={theme.accent}>
               {modeLabel(session().statuses)}<span style={{ fg: theme.dim }}> | </span><span style={{ fg: theme.muted }}>{modelLabel()}</span><Show when={session().thinkingLevel !== "off"}><span style={{ fg: theme.dim }}> | {session().thinkingLevel}</span></Show><Show when={statusLabel()}><span style={{ fg: theme.dim }}> | {statusLabel()}</span></Show>
             </text>
-            <text fg={session().isStreaming ? theme.accent : theme.dim}>{session().isStreaming ? "working" : session().isCompacting ? "compacting" : "idle"}</text>
+            <Show when={session().pendingMessageCount > 0}>
+              <text fg={theme.warning}>{session().pendingMessageCount} queued</text>
+            </Show>
           </box>
         </Show>
+      </box>
+      <box height={1} flexShrink={0} paddingLeft={layout().horizontalPadding + 1} paddingRight={layout().horizontalPadding} flexDirection="row" justifyContent="space-between">
+        <text fg={activityActive() ? theme.accent : theme.dim}>
+          {activityActive() ? activityFrame(activityFrameIndex()) : "⬝".repeat(8)} <span style={{ fg: activityActive() ? theme.text : theme.dim }}>{activityLabel(session(), toolExecutions())}</span>
+        </text>
+        <text fg={theme.dim}>{session().isStreaming ? "Ctrl+C abort" : "Ctrl+C exit"}</text>
       </box>
       <For each={belowWidgets()}>
         {(widget) => (
@@ -580,11 +650,6 @@ export function AlloyApp(props: AlloyAppProps) {
           </box>
         )}
       </For>
-      <Show when={!layout().showComposerMeta}>
-        <box height={1} paddingLeft={1} flexShrink={0}>
-          <text fg={session().isStreaming ? theme.accent : theme.dim}>{session().isStreaming ? "working | Ctrl+C abort" : `${modeLabel(session().statuses)} | Ctrl+C exit`}</text>
-        </box>
-      </Show>
 
       <Show when={hasDialog()}>
         <box position="absolute" zIndex={3000} left={0} top={0} width={layout().width} height={layout().height} alignItems="center" paddingTop={Math.max(0, Math.floor(layout().height / 4))} backgroundColor={RGBA.fromInts(0, 0, 0, 170)}>

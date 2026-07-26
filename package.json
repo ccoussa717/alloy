@@ -32,6 +32,7 @@
     "skills",
     "prompts",
     "themes",
+    "tui/assets",
     "tui/bun.lock",
     "tui/bunfig.toml",
     "tui/package.json",

@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "parsers": {
+    "bash": {
+      "version": "0.25.0",
+      "commit": "56b54c61fb48bce0c63e3dfa2240b5d274384763",
+      "repository": "https://github.com/tree-sitter/tree-sitter-bash",
+      "release": "https://github.com/tree-sitter/tree-sitter-bash/releases/tag/v0.25.0",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-bash/releases/download/v0.25.0/tree-sitter-bash.wasm",
+      "assets": {
+        "LICENSE": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559",
+        "highlights.scm": "b74220d954f485b7626d2b2b61f37b522e12eb1830803e388e57dd797dc99f11",
+        "parser.wasm": "364f0a2cd385c792239423026ef442dbd073d34c396b7bc9e5932426b8e4aa5d"
+      }
+    },
+    "c": {
+      "version": "0.24.1",
+      "commit": "7fa1be1b694b6e763686793d97da01f36a0e5c12",
+      "repository": "https://github.com/tree-sitter/tree-sitter-c",
+      "release": "https://github.com/tree-sitter/tree-sitter-c/releases/tag/v0.24.1",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-c/releases/download/v0.24.1/tree-sitter-c.wasm",
+      "assets": {
+        "LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "highlights.scm": "3378d854dda695b2b282b9468247524ed4271ef74af691033d2e36883379409c",
+        "parser.wasm": "c852c2a85ebf2beb636aa3b0ef7f7e70458684d74f6741b20dcb296885bed9f9"
+      }
+    },
+    "cpp": {
+      "version": "0.23.4",
+      "commit": "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02",
+      "repository": "https://github.com/tree-sitter/tree-sitter-cpp",
+      "release": "https://github.com/tree-sitter/tree-sitter-cpp/releases/tag/v0.23.4",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-cpp/releases/download/v0.23.4/tree-sitter-cpp.wasm",
+      "assets": {
+        "LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "highlights.scm": "52136576a9a9dacd9e95a8de0f351689bf46140738572ab4e9f24c9278e6b458",
+        "parser.wasm": "174eb0deb75b2ec7881bcacda9f995648d8e683956e5c2267e69ab6dc503fcbf"
+      }
+    },
+    "go": {
+      "version": "0.25.0",
+      "commit": "1547678a9da59885853f5f5cc8a99cc203fa2e2c",
+      "repository": "https://github.com/tree-sitter/tree-sitter-go",
+      "release": "https://github.com/tree-sitter/tree-sitter-go/releases/tag/v0.25.0",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-go/releases/download/v0.25.0/tree-sitter-go.wasm",
+      "assets": {
+        "LICENSE": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "highlights.scm": "81182c986547eba7fa6316e82dfd621fb13b8fc89efac85432aee51a48ed0896",
+        "parser.wasm": "9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7"
+      }
+    },
+    "java": {
+      "version": "0.23.5",
+      "commit": "94703d5a6bed02b98e438d7cad1136c01a60ba2c",
+      "repository": "https://github.com/tree-sitter/tree-sitter-java",
+      "release": "https://github.com/tree-sitter/tree-sitter-java/releases/tag/v0.23.5",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-java/releases/download/v0.23.5/tree-sitter-java.wasm",
+      "assets": {
+        "LICENSE": "52ed137b039cd9c46409bc22e89938af911c95b157feae2d040b51e6084369a7",
+        "highlights.scm": "576c0df8df0b116cd642140ddc508c01f9d3283582afd8581c1f35caf4d71386",
+        "parser.wasm": "4fdeac4ca6ca089f06c6f7e562abcac1733cd465728cc7031ebb73c2019122c4"
+      }
+    },
+    "python": {
+      "version": "0.23.6",
+      "commit": "bffb65a8cfe4e46290331dfef0dbf0ef3679de11",
+      "repository": "https://github.com/tree-sitter/tree-sitter-python",
+      "release": "https://github.com/tree-sitter/tree-sitter-python/releases/tag/v0.23.6",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-python/releases/download/v0.23.6/tree-sitter-python.wasm",
+      "assets": {
+        "LICENSE": "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f",
+        "highlights.scm": "a6708f209381618e2b398972c8f1ccd892f0c064eab35a2a3f911c3e22e79a7e",
+        "parser.wasm": "8c93692fb368e288a5824cee55773c9b3602804f513bda48c97661e52e9c2da2"
+      }
+    },
+    "rust": {
+      "version": "0.24.0",
+      "commit": "18b0515fca567f5a10aee9978c6d2640e878671a",
+      "repository": "https://github.com/tree-sitter/tree-sitter-rust",
+      "release": "https://github.com/tree-sitter/tree-sitter-rust/releases/tag/v0.24.0",
+      "wasmUrl": "https://github.com/tree-sitter/tree-sitter-rust/releases/download/v0.24.0/tree-sitter-rust.wasm",
+      "queryPatch": "Corrected the all-caps constant regex and excluded those identifiers from the constructor capture.",
+      "assets": {
+        "LICENSE": "31d5b6f4243d5c7c6e1c4ebbbb9f6407bd1457a08bcc4f706521710341acba36",
+        "highlights.scm": "d62fba5827f9c98e91c2874ebc9f2a5a51e35bf2d58e7706aeb5a4a8f83c70f6",
+        "parser.wasm": "44b8d1a2e307ee8933d7c0bcb6b0f30d56bc999999fd1d2d9608a7dcf6e8ce56"
+      }
+    }
+  }
+}

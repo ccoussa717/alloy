@@ -33,6 +33,28 @@ SOFTWARE.
 
 Source commit: `0c8c4f7cff2927e3df63a9757a45eff9a343611c`.
 
+## Tree-sitter language parsers
+
+Alloy bundles the following MIT-licensed Tree-sitter parser WASM and highlight
+queries so syntax highlighting remains offline and does not execute parser code
+downloaded at runtime:
+
+| Parser | Version | Source commit |
+|---|---:|---|
+| Bash | 0.25.0 | `56b54c61fb48bce0c63e3dfa2240b5d274384763` |
+| C | 0.24.1 | `7fa1be1b694b6e763686793d97da01f36a0e5c12` |
+| C++ | 0.23.4 | `f41e1a044c8a84ea9fa8577fdd2eab92ec96de02` |
+| Go | 0.25.0 | `1547678a9da59885853f5f5cc8a99cc203fa2e2c` |
+| Java | 0.23.5 | `94703d5a6bed02b98e438d7cad1136c01a60ba2c` |
+| Python | 0.23.6 | `bffb65a8cfe4e46290331dfef0dbf0ef3679de11` |
+| Rust | 0.24.0 | `18b0515fca567f5a10aee9978c6d2640e878671a` |
+
+The exact upstream license for each parser is included at
+`assets/parsers/<language>/LICENSE`. Asset provenance and SHA-256 hashes are
+recorded in `assets/parsers/manifest.json` and enforced by the release gate and
+source installer. Alloy corrects one malformed all-caps constant predicate in
+the Rust highlight query; that local change is recorded in the manifest.
+
 ## SolidJS 1.9.12
 
 Copyright (c) 2016-2025 Ryan Carniato

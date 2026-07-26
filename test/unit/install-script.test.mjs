@@ -35,6 +35,7 @@ const BUN_SHA = {
   "Darwin:arm64": "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
 };
 const SOURCE_SHA = "a".repeat(40);
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 after(() => rmSync(temp, { recursive: true, force: true }));
 
@@ -152,6 +153,7 @@ esac
     `#!/bin/sh
 case "$1" in
   *node-v22.19.0-*) checksum='${nodeChecksum}' ;;
+  *tui/assets/parsers/manifest.json) checksum="$FAKE_PARSER_MANIFEST_SHA256" ;;
   *) checksum='${bunChecksum}' ;;
 esac
 printf '%s  %s\n' "$checksum" "$1"
@@ -162,6 +164,7 @@ printf '%s  %s\n' "$checksum" "$1"
     `#!/bin/sh
 case "$3" in
   *node-v22.19.0-*) checksum='${nodeChecksum}' ;;
+  *tui/assets/parsers/manifest.json) checksum="$FAKE_PARSER_MANIFEST_SHA256" ;;
   *) checksum='${bunChecksum}' ;;
 esac
 printf '%s  %s\n' "$checksum" "$3"
@@ -223,7 +226,7 @@ case "$archive" in
     chmod +x "$target/node" "$target/npm"
     ;;
   *)
-    mkdir -p "$dest/bin" "$dest/extensions" "$dest/themes" "$dest/skills" "$dest/prompts" "$dest/tui/src" "$dest/tui/patches"
+    mkdir -p "$dest/bin" "$dest/extensions" "$dest/themes" "$dest/skills" "$dest/prompts" "$dest/tui/src" "$dest/tui/patches" "$dest/tui/assets/parsers"
     : > "$dest/bin/alloy.mjs"
     chmod +x "$dest/bin/alloy.mjs"
     if [ "\${FAKE_BAD_REPOSITORY:-0}" = "1" ]; then
@@ -247,6 +250,20 @@ case "$archive" in
       : > "$dest/tui/UPSTREAM.md"
       : > "$dest/tui/patches/solid-js@1.9.10.patch"
       : > "$dest/tui/src/index.tsx"
+      printf '%s\n' '{"schemaVersion":1,"parsers":{' > "$dest/tui/assets/parsers/manifest.json"
+      separator=''
+      for language in bash c cpp go java python rust; do
+        mkdir -p "$dest/tui/assets/parsers/$language"
+        : > "$dest/tui/assets/parsers/$language/LICENSE"
+        : > "$dest/tui/assets/parsers/$language/highlights.scm"
+        : > "$dest/tui/assets/parsers/$language/parser.wasm"
+        printf '%s"%s":{"version":"1.0.0","commit":"%s","repository":"https://github.com/tree-sitter/tree-sitter-%s","release":"https://github.com/tree-sitter/tree-sitter-%s/releases/tag/v1.0.0","wasmUrl":"https://github.com/tree-sitter/tree-sitter-%s/releases/download/v1.0.0/tree-sitter-%s.wasm","assets":{"LICENSE":"${EMPTY_SHA256}","highlights.scm":"${EMPTY_SHA256}","parser.wasm":"${EMPTY_SHA256}"}}' "$separator" "$language" "${SOURCE_SHA}" "$language" "$language" "$language" "$language" >> "$dest/tui/assets/parsers/manifest.json"
+        separator=','
+      done
+      printf '%s\n' '}}' >> "$dest/tui/assets/parsers/manifest.json"
+      if [ "\${FAKE_TAMPER_PARSER:-0}" = "1" ]; then
+        printf '%s\n' tampered > "$dest/tui/assets/parsers/python/parser.wasm"
+      fi
       if [ "\${FAKE_SYMLINK_TUI_LOCK:-0}" = "1" ]; then
         rm -f "$dest/tui/bun.lock"
         ln -s "$FAKE_SYMLINK_TARGET" "$dest/tui/bun.lock"
@@ -282,6 +299,7 @@ esac
       FAKE_UNAME_M: arch,
       FAKE_LIBC: libc,
       FAKE_ARCHIVE_MEMBERS: "alloy-test/package.json",
+      FAKE_PARSER_MANIFEST_SHA256: "e6107d4bd3cd2e971a245b1bfd3091b29adcd4965210fec03ffb87eb9077e453",
       FAKE_SYMLINK_TARGET: join(dir, "outside-bun.lock"),
       REAL_NODE: process.execPath,
     },
@@ -523,6 +541,26 @@ describe("curl-pipe installer", () => {
     assert.equal(existsSync(testCase.npmLog), false);
     assert.equal(existsSync(testCase.bunLog), false);
     assert.doesNotMatch(readFileSync(testCase.curlLog, "utf8"), /oven-sh\/bun/);
+  });
+
+  it("rejects a syntax parser whose hash does not match the bundled manifest", () => {
+    const testCase = fixture();
+    testCase.env.FAKE_TAMPER_PARSER = "1";
+    const result = runPiped(testCase);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /syntax parser.*hash/i);
+    assert.equal(existsSync(testCase.npmLog), false);
+    assert.equal(existsSync(testCase.bunLog), false);
+  });
+
+  it("rejects a syntax parser manifest outside the installer trust pin", () => {
+    const testCase = fixture();
+    testCase.env.FAKE_PARSER_MANIFEST_SHA256 = "0".repeat(64);
+    const result = runPiped(testCase);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /parser manifest checksum mismatch/i);
+    assert.equal(existsSync(testCase.npmLog), false);
+    assert.equal(existsSync(testCase.bunLog), false);
   });
 
   it("rejects relative install paths", () => {

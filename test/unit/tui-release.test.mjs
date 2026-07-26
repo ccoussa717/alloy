@@ -1,6 +1,8 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
+  cpSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +20,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const temp = mkdtempSync(join(tmpdir(), "alloy-tui-release-"));
 const releaseGate = join(root, "scripts", "verify-tui-release.mjs");
 const sbomMerger = join(root, "scripts", "merge-tui-sbom.mjs");
+const parserManifest = JSON.parse(readFileSync(join(root, "tui", "assets", "parsers", "manifest.json"), "utf8"));
+const parserAssetFiles = Object.entries(parserManifest.parsers).flatMap(([language, parser]) =>
+  Object.keys(parser.assets).map((name) => `tui/assets/parsers/${language}/${name}`),
+);
 const requiredPackedFiles = [
+  "tui/assets/parsers/manifest.json",
+  ...parserAssetFiles,
   "tui/LICENSE.opencode",
   "tui/THIRD_PARTY_NOTICES.md",
   "tui/UPSTREAM.md",
@@ -47,6 +55,7 @@ function fixture() {
   mkdirSync(join(directory, "tui", "patches"), { recursive: true });
   mkdirSync(join(directory, "tui", "src"), { recursive: true });
   mkdirSync(join(directory, "scripts"), { recursive: true });
+  cpSync(join(root, "tui", "assets"), join(directory, "tui", "assets"), { recursive: true });
   for (const path of [
     "package.json",
     "tui/package.json",
@@ -131,6 +140,42 @@ describe("TUI release gate", () => {
     assert.match(leakedResult.stderr, /packed node_modules/i);
   });
 
+  it("rejects modified bundled syntax parser assets", () => {
+    const testCase = fixture();
+    writeFileSync(join(testCase.directory, "tui", "assets", "parsers", "python", "parser.wasm"), "tampered");
+    const result = verify(testCase);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /parser asset.*hash/i);
+  });
+
+  it("rejects unmanifested syntax parser files from the package", () => {
+    const testCase = fixture();
+    const pack = JSON.parse(readFileSync(testCase.packJson, "utf8"));
+    pack[0].files.push({ path: "tui/assets/parsers/python/unmanifested.wasm" });
+    writeFileSync(testCase.packJson, JSON.stringify(pack));
+    const result = verify(testCase);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unmanifested syntax parser asset/i);
+  });
+
+  it("requires immutable bundled syntax parser provenance", () => {
+    const testCase = fixture();
+    const manifestPath = join(testCase.directory, "tui", "assets", "parsers", "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    delete manifest.parsers.python.commit;
+    const manifestSource = JSON.stringify(manifest);
+    writeFileSync(manifestPath, manifestSource);
+    const verifierPath = join(testCase.directory, "scripts", "verify-tui-release.mjs");
+    const verifier = readFileSync(verifierPath, "utf8").replace(
+      /parserManifestSha256: "[0-9a-f]{64}"/,
+      `parserManifestSha256: "${createHash("sha256").update(manifestSource).digest("hex")}"`,
+    );
+    writeFileSync(verifierPath, verifier);
+    const result = verify(testCase);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /parser python.*commit/i);
+  });
+
   it("verifies the upstreamed transition fix and security resolutions in the installed TUI", () => {
     const testCase = fixture();
     const installed = join(testCase.directory, "installed");
@@ -180,8 +225,20 @@ describe("TUI release policy and SBOM", () => {
   it("merges integrity-bearing TUI lock components into CycloneDX", () => {
     const directory = mkdtempSync(join(temp, "sbom-"));
     const sbom = join(directory, "alloy.cdx.json");
-    writeFileSync(sbom, JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", version: 1, components: [] }));
-    const result = run(process.execPath, [sbomMerger, sbom, join(root, "tui", "bun.lock")]);
+    writeFileSync(sbom, JSON.stringify({
+      bomFormat: "CycloneDX",
+      specVersion: "1.5",
+      version: 1,
+      metadata: { component: { "bom-ref": "alloy-agent@0.8.2", type: "application", name: "alloy-agent", version: "0.8.2" } },
+      components: [],
+      dependencies: [{ ref: "alloy-agent@0.8.2", dependsOn: [] }],
+    }));
+    const result = run(process.execPath, [
+      sbomMerger,
+      sbom,
+      join(root, "tui", "bun.lock"),
+      join(root, "tui", "assets", "parsers", "manifest.json"),
+    ]);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const merged = JSON.parse(readFileSync(sbom, "utf8"));
     for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid", "solid-js"]) {
@@ -189,6 +246,16 @@ describe("TUI release policy and SBOM", () => {
       assert.ok(component, `${name} must be present`);
       assert.match(component.version, /^\d/);
       assert.match(component.hashes?.[0]?.content || "", /^[0-9a-f]{128}$/);
+    }
+    for (const [language, parser] of Object.entries(parserManifest.parsers)) {
+      const component = merged.components.find((candidate) => candidate.name === `tree-sitter-${language}`);
+      assert.ok(component, `tree-sitter-${language} must be present`);
+      assert.equal(component.version, parser.version);
+      assert.deepEqual(component.hashes, [{ alg: "SHA-256", content: parser.assets["parser.wasm"] }]);
+      assert.match(component.purl, new RegExp(`v${parser.version}$`));
+      assert.deepEqual(component.licenses, [{ license: { id: "MIT" } }]);
+      const rootDependency = merged.dependencies.find((candidate) => candidate.ref === merged.metadata.component["bom-ref"]);
+      assert.ok(rootDependency?.dependsOn.includes(component["bom-ref"]), `${component.name} must be linked from the root component`);
     }
   });
 

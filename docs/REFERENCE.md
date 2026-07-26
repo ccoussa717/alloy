@@ -70,6 +70,14 @@ The RPC child uses piped stdio and the current project directory. It is the same
 Pi runtime that owns credentials, tools, policy, sessions, models, and
 extensions. The frontend does not open a network listener.
 
+During a run, the transcript shows tool calls, shell commands, partial or final
+tool output, and completion/error state. An animated eight-cell activity scanner
+below the composer distinguishes active work, compaction, and retry from the
+idle `Ready` state. Assistant Markdown uses OpenTUI syntax highlighting for its
+built-in JavaScript and TypeScript parsers plus bundled Bash, C, C++, Go, Java,
+Python, and Rust parsers. These parser assets are available offline and verified
+against `tui/assets/parsers/manifest.json` during release checks.
+
 Print, JSON, and explicit RPC invocations bypass OpenTUI and run Pi directly.
 Useful Pi CLI flags pass through the Alloy launcher:
 
