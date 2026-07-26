@@ -15,6 +15,7 @@ REMOTE_ON="$BASE-remote-on"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
+SELECTION_OUTPUT="$ROOT/test/fixtures/.$BASE-selection.raw"
 REMOTE_AUTO_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-auto.raw"
 REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
 
@@ -22,7 +23,7 @@ cleanup() {
   for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
-  rm -f "$LOG" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
+  rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
 }
 trap cleanup EXIT
 
@@ -182,6 +183,20 @@ wait_for_log '"type":"get_commands"'
 wait_for_log '"type":"get_available_models"'
 wait_for_log '"type":"get_session_stats"'
 
+tmux pipe-pane -t "$SESSION" -o "$(pipe_capture_command "$SELECTION_OUTPUT")"
+selection_drag="$(printf '\033[<0;3;1M\033[<32;7;1M')"
+tmux send-keys -t "$SESSION" -l "$selection_drag"
+sleep 0.1
+if [ -f "$SELECTION_OUTPUT" ] && grep -F ']52;' "$SELECTION_OUTPUT" >/dev/null; then
+  printf 'selection copied before mouse release\n' >&2
+  exit 1
+fi
+selection_release="$(printf '\033[<0;7;1m')"
+tmux send-keys -t "$SESSION" -l "$selection_release"
+wait_for_log ']52;' "$SELECTION_OUTPUT"
+wait_for_log 'QUxMTw==' "$SELECTION_OUTPUT"
+tmux pipe-pane -t "$SESSION"
+
 tmux send-keys -t "$SESSION" -l "PTY prompt"
 tmux send-keys -t "$SESSION" Enter
 wait_for_log '"message":"PTY prompt"'
@@ -206,6 +221,14 @@ assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
 assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
 assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
 wait_for_text "$SESSION" 'Ready' >/dev/null
+
+tmux send-keys -t "$SESSION" -l "/login-fixture"
+tmux send-keys -t "$SESSION" Enter
+login_dialog="$(wait_for_text "$SESSION" 'auth.example.test/authorize')"
+assert_contains "$login_dialog" "ABCD-EFGH" "login device code remains visible in prompt"
+assert_contains "$login_dialog" "Paste the authorization response below" "login prompt remains visible with URL"
+tmux send-keys -t "$SESSION" Escape
+wait_for_log '"id":"login-1","cancelled":true'
 
 tmux new-session -d -s "$REMOTE_ON" -x 80 -y 24 "$REMOTE_ON_RUN"
 tmux pipe-pane -t "$REMOTE_ON" -o "$(pipe_capture_command "$REMOTE_ON_OUTPUT")"
@@ -270,6 +293,14 @@ tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
 narrow_launch="$(wait_for_text "$NARROW" 'hydrated history item 50')"
 assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
 assert_contains "$narrow_launch" "Ask anything" "40x10 composer"
+tmux send-keys -t "$NARROW" -l "/login-fixture"
+tmux send-keys -t "$NARROW" Enter
+narrow_login="$(wait_for_text "$NARROW" 'auth.example.test')"
+assert_contains "$narrow_login" "authorization code" "40x10 login keeps the input visible"
+narrow_login_scroll="$(printf '\033[<65;10;4M')"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do tmux send-keys -t "$NARROW" -l "$narrow_login_scroll"; done
+wait_for_text "$NARROW" 'Paste the authorization response b' >/dev/null
+tmux send-keys -t "$NARROW" Escape
 tmux send-keys -t "$NARROW" C-c
 
 tmux new-session -d -s "$RESTORE" -x 80 -y 24 \
@@ -300,4 +331,4 @@ splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
 assert_contains "$splash" "──────────────────────────" "green splash divider"
 tmux send-keys -t "$SPLASH" C-c
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

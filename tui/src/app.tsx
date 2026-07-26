@@ -1,5 +1,5 @@
-import { addDefaultParsers, RGBA, type KeyEvent, type ScrollBoxRenderable, type TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
+import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type ScrollBoxRenderable, type Selection, type TextareaRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
@@ -74,6 +74,14 @@ export function latestNotifications(notifications: NotificationState[]): Notific
   return notifications.slice(-8);
 }
 
+export function copySelectionToClipboard(
+  renderer: Pick<CliRenderer, "copyToClipboardOSC52">,
+  selection: Pick<Selection, "getSelectedText">,
+): boolean {
+  const text = selection.getSelectedText();
+  return text.length > 0 && renderer.copyToClipboardOSC52(text);
+}
+
 export function appLayout(width: number, height: number) {
   const compact = width <= 40 || height <= 10;
   const horizontalPadding = compact ? 1 : 2;
@@ -101,6 +109,7 @@ const HELP_LINES = [
   "Shift+Tab   Build / Plan mode",
   "PageUp/Down scroll transcript",
   "Ctrl+U/D    half-page scroll",
+  "Mouse drag  copy selection on release",
   "Ctrl+C      abort, then exit when idle",
   "",
   "/new /compact /model /thinking",
@@ -167,6 +176,7 @@ function Block(props: { block: TranscriptBlock; user?: boolean; streaming?: bool
 
 export function AlloyApp(props: AlloyAppProps) {
   const renderer = useRenderer();
+  useSelectionHandler((selection) => copySelectionToClipboard(renderer, selection));
   const dimensions = useTerminalDimensions();
   const layout = createMemo(() => appLayout(dimensions().width, dimensions().height));
   const [session, setSession] = createSignal(props.initialState);
@@ -591,20 +601,36 @@ export function AlloyApp(props: AlloyAppProps) {
         </scrollbox>
       </box>
 
-      <For each={notifications()}>
-        {(notification) => (
-          <box paddingLeft={layout().horizontalPadding + 1} paddingRight={layout().horizontalPadding} flexShrink={0}>
-            <text fg={notification.type === "error" ? theme.error : notification.type === "warning" ? theme.warning : theme.muted}>{notification.message}</text>
-          </box>
-        )}
-      </For>
-      <For each={aboveWidgets()}>
-        {(widget) => (
-          <box flexShrink={0} paddingLeft={layout().horizontalPadding + 1} paddingRight={layout().horizontalPadding}>
-            <For each={widget.lines}>{(line) => <text fg={theme.muted}>{line}</text>}</For>
-          </box>
-        )}
-      </For>
+      <Show when={notifications().length > 0}>
+        <scrollbox
+          maxHeight={Math.max(1, Math.min(4, Math.floor(layout().height / 4)))}
+          flexShrink={0}
+          stickyScroll={true}
+          stickyStart="bottom"
+          paddingLeft={layout().horizontalPadding + 1}
+          paddingRight={layout().horizontalPadding}
+          scrollbarOptions={{ visible: false }}
+        >
+          <For each={notifications()}>
+            {(notification) => (
+              <text wrapMode="char" fg={notification.type === "error" ? theme.error : notification.type === "warning" ? theme.warning : theme.muted}>{notification.message}</text>
+            )}
+          </For>
+        </scrollbox>
+      </Show>
+      <Show when={aboveWidgets().length > 0}>
+        <scrollbox
+          maxHeight={Math.max(1, Math.min(6, Math.floor(layout().height / 3)))}
+          flexShrink={0}
+          paddingLeft={layout().horizontalPadding + 1}
+          paddingRight={layout().horizontalPadding}
+          scrollbarOptions={{ visible: false }}
+        >
+          <For each={aboveWidgets()}>
+            {(widget) => <For each={widget.lines}>{(line) => <text wrapMode="char" fg={theme.muted}>{line}</text>}</For>}
+          </For>
+        </scrollbox>
+      </Show>
 
       <box width="100%" flexShrink={0} border={["left"]} borderColor={theme.accent} backgroundColor={theme.panel} paddingLeft={2} paddingRight={2} paddingTop={layout().showComposerMeta ? 1 : 0}>
         <textarea
@@ -656,12 +682,12 @@ export function AlloyApp(props: AlloyAppProps) {
       <Show when={hasDialog()}>
         <box position="absolute" zIndex={3000} left={0} top={0} width={layout().width} height={layout().height} alignItems="center" paddingTop={Math.max(0, Math.floor(layout().height / 4))} backgroundColor={RGBA.fromInts(0, 0, 0, 170)}>
           <box width={layout().modalWidth} maxHeight={Math.max(3, layout().height - 2)} backgroundColor={theme.panelRaised} paddingTop={1} paddingBottom={1} flexShrink={1}>
-            <box paddingLeft={2} paddingRight={2} paddingBottom={1}>
-              <text fg={theme.textStrong}>{dialogTitle()}</text>
+            <scrollbox maxHeight={Math.max(1, layout().height - 7)} flexShrink={1} paddingLeft={2} paddingRight={2} paddingBottom={1} scrollbarOptions={{ visible: false }}>
+              <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
               <Show when={extensionDialog()?.message}>
-                <text fg={theme.muted}>{extensionDialog()!.message}</text>
+                <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
               </Show>
-            </box>
+            </scrollbox>
             <Show when={options().length > 0}>
               <scrollbox maxHeight={Math.max(1, layout().height - 6)} scrollbarOptions={{ visible: false }}>
                 <For each={options()}>

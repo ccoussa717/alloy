@@ -17,12 +17,14 @@ function fakeContext(selectAnswers = [], inputAnswers = [], runtime) {
   const notifications = [];
   const selections = [];
   const inputs = [];
+  const widgets = [];
   let selectIndex = 0;
   let inputIndex = 0;
   return {
     notifications,
     selections,
     inputs,
+    widgets,
     signal: undefined,
     modelRegistry: {
       runtime,
@@ -43,6 +45,9 @@ function fakeContext(selectAnswers = [], inputAnswers = [], runtime) {
       async input(title, placeholder, opts) {
         inputs.push({ title, placeholder, opts });
         return inputAnswers[inputIndex++];
+      },
+      setWidget(key, content, options) {
+        widgets.push({ key, content, options });
       },
     },
   };
@@ -161,6 +166,11 @@ test("login maps OAuth provider, method, prompts, and events through RPC-safe ex
   assert.ok(loginCalls[0].signal instanceof AbortSignal);
   assert.equal(ctx.inputs.length, 2);
   assert.match(ctx.inputs[1].title, /authorization code/i);
+  assert.match(ctx.inputs[1].title, /https:\/\/auth\.example\.test\/authorize/);
+  assert.match(ctx.inputs[1].title, /https:\/\/auth\.example\.test\/device/);
+  assert.match(ctx.inputs[1].title, /ABCD-EFGH/);
+  assert.ok(ctx.widgets.some(({ content }) => content?.join("\n").includes("https://auth.example.test/authorize")));
+  assert.equal(ctx.widgets.at(-1)?.content, undefined);
   assert.equal(ctx.modelRegistry.refreshCalls, 1);
 
   const visible = allNotificationText(ctx);
@@ -219,6 +229,46 @@ test("commands use the exact active registry runtime from each command context",
   );
   assert.equal(calls[0].runtime, firstRuntime);
   assert.equal(calls[1].runtime, secondRuntime);
+});
+
+test("login keeps deduplicated device-flow details visible while polling without a prompt", async () => {
+  const providers = [provider("openai-codex", "OpenAI Codex")];
+  let credentials = [];
+  let finishLogin;
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(providerId, _type, interaction) {
+      interaction.notify({ type: "auth_url", url: "https://auth.example.test/old" });
+      interaction.notify({ type: "auth_url", url: "https://auth.example.test/current" });
+      interaction.notify({
+        type: "device_code",
+        userCode: "ZXCV-1234",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((resolve) => (finishLogin = resolve));
+      credentials = [{ providerId, type: "oauth" }];
+    },
+    async listCredentials() {
+      return credentials;
+    },
+    async logout() {},
+  };
+  const { pi } = register(runtime);
+  const ctx = fakeContext();
+
+  const login = pi.commands.get("login").handler("openai-codex", ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const active = ctx.widgets.filter(({ content }) => content !== undefined).at(-1)?.content.join("\n") ?? "";
+  assert.doesNotMatch(active, /\/old/);
+  assert.equal(active.match(/\/current/g)?.length, 1);
+  assert.match(active, /https:\/\/auth\.example\.test\/device/);
+  assert.match(active, /ZXCV-1234/);
+
+  finishLogin();
+  await login;
+  assert.equal(ctx.widgets.at(-1)?.content, undefined);
 });
 
 test("commands report a clear compatibility error when the registry runtime is unavailable", async () => {
