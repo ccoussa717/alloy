@@ -3,6 +3,7 @@ import {
   appLayout,
   cancelExtensionDialog,
   cancelExtensionDialogById,
+  copySelectionToClipboard,
   createAppState,
   extensionDialogOptions,
   extensionDialogResponse,
@@ -11,6 +12,21 @@ import {
 } from "../src/app";
 
 describe("integrated app state", () => {
+  it("copies completed mouse selections to the terminal clipboard", () => {
+    const copied: string[] = [];
+    const renderer = {
+      copyToClipboardOSC52(text: string) {
+        copied.push(text);
+        return true;
+      },
+    };
+
+    expect(copySelectionToClipboard(renderer, { getSelectedText: () => "https://auth.example.test" })).toBe(true);
+    expect(copied).toEqual(["https://auth.example.test"]);
+    expect(copySelectionToClipboard(renderer, { getSelectedText: () => "" })).toBe(false);
+    expect(copied).toEqual(["https://auth.example.test"]);
+  });
+
   it("reduces every backend message through the existing session reducer", () => {
     const initial = createAppState();
     const next = reduceAppRpcMessage(initial, {

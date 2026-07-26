@@ -120,6 +120,7 @@ function handle(request: Record<string, unknown>): void {
           { name: "build", description: "Switch to Build mode", source: "extension" },
           { name: "approval", description: "Open approval", source: "extension" },
           { name: "cancel", description: "Open cancellable input", source: "extension" },
+          { name: "login-fixture", description: "Open authentication input", source: "extension" },
           { name: "backend-loss", description: "Terminate the fixture backend", source: "extension" },
         ],
       });
@@ -148,6 +149,23 @@ function handle(request: Record<string, unknown>): void {
         send({ type: "extension_ui_request", id: "approval-1", method: "confirm", title: "Allow fixture tool?", message: "Approve the PTY fixture." });
       } else if (text === "/cancel") {
         send({ type: "extension_ui_request", id: "cancel-1", method: "input", title: "Cancel this request", placeholder: "Escape must cancel" });
+      } else if (text === "/login-fixture") {
+        send({
+          type: "extension_ui_request",
+          id: "login-1",
+          method: "input",
+          title: [
+            "https://auth.example.test/authorize?client=fixture&scope=account%20models%20sessions&state=0123456789abcdef",
+            "Keep this URL visible while authenticating.",
+            "The provider may take several seconds to respond.",
+            "Do not close the terminal while sign-in is pending.",
+            "Return here after approving access in the browser.",
+            "Device code: ABCD-EFGH",
+            "",
+            "Paste the authorization response below",
+          ].join("\n"),
+          placeholder: "authorization code",
+        });
       } else if (text === "hold") {
         held = true;
         send({ type: "agent_start" });

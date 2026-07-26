@@ -107,6 +107,9 @@ The legacy Pi UI is not the default or a parallel product surface.
 
 Pi owns provider authentication and stores credentials in
 `~/.pi/agent/auth.json`. In the OpenTUI shell, `/login` supports OAuth only.
+Sign-in URLs, instructions, and device codes remain visible throughout login
+and in later prompts so they can be selected while entering the authorization
+response.
 Alloy rejects secret prompts because RPC input is intentionally not masked;
 enter API keys through environment variables or supported Pi configuration,
 not the TUI.
@@ -352,6 +355,10 @@ status, widgets, title, and editor text is bridged into OpenTUI. `/help commands
 reports the command registry exposed by the Pi backend, but it is not a claim
 that unsupported OpenCode workspace, server, or plugin commands exist. Pi-native
 commands that depend on its legacy renderer are omitted from the OpenTUI catalog.
+
+Drag across rendered text with the mouse to select it. Releasing the mouse
+copies a non-empty selection to the terminal clipboard through OSC 52. Pasting
+into the composer uses the terminal's normal bracketed-paste path.
 
 ## Configuration
 

@@ -42,6 +42,7 @@ class AuthRuntimeCompatibilityError extends Error {
 
 const API_KEY_GUIDANCE =
   "API key entry is unavailable because RPC input is not masked. Use environment variables or models.json/config instead.";
+const AUTH_WIDGET_KEY = "alloy-auth-login";
 
 export function registerAuthCommands(
   pi: ExtensionAPI,
@@ -130,6 +131,7 @@ export function registerAuthCommands(
           ctx.ui.notify(`OAuth login failed${provider ? ` for ${provider.name}` : ""}.`, "error");
         }
       } finally {
+        ctx.ui.setWidget(AUTH_WIDGET_KEY, undefined);
         detachAbort();
       }
     },
@@ -234,10 +236,25 @@ function createInteraction(
   ctx: ExtensionCommandContext,
   controller: AbortController,
 ): AuthInteraction {
+  const promptDetails = new Map<string, string>();
   return {
     signal: controller.signal,
-    prompt: (prompt) => answerPrompt(ctx, controller, prompt),
-    notify: (event) => notifyAuthEvent(ctx, event),
+    prompt: (prompt) => answerPrompt(ctx, controller, prompt, [...promptDetails.values()]),
+    notify: (event) => {
+      const detail = authPromptDetail(event);
+      if (detail) {
+        promptDetails.set(detail.key, detail.text);
+        ctx.ui.setWidget(
+          AUTH_WIDGET_KEY,
+          [...promptDetails.values()].flatMap((value, index) => [
+            ...(index > 0 ? [""] : []),
+            ...value.split("\n"),
+          ]),
+          { placement: "aboveEditor" },
+        );
+      }
+      notifyAuthEvent(ctx, event);
+    },
   };
 }
 
@@ -245,6 +262,7 @@ async function answerPrompt(
   ctx: ExtensionCommandContext,
   controller: AbortController,
   prompt: AuthPrompt,
+  details: readonly string[] = [],
 ): Promise<string> {
   if (prompt.type === "secret") {
     controller.abort();
@@ -252,15 +270,16 @@ async function answerPrompt(
   }
 
   const signal = combinedSignal(controller.signal, prompt.signal);
+  const title = details.length > 0 ? `${details.join("\n")}\n\n${prompt.message}` : prompt.message;
   let answer: string | undefined;
   if (prompt.type === "select") {
     const options = prompt.options.map((option) =>
       option.description ? `${option.label} - ${option.description}` : option.label,
     );
-    const selected = await ctx.ui.select(prompt.message, options, { signal });
+    const selected = await ctx.ui.select(title, options, { signal });
     if (selected) answer = prompt.options[options.indexOf(selected)]?.id;
   } else {
-    answer = await ctx.ui.input(prompt.message, prompt.placeholder, { signal });
+    answer = await ctx.ui.input(title, prompt.placeholder, { signal });
   }
 
   if (answer === undefined) {
@@ -268,6 +287,28 @@ async function answerPrompt(
     throw new AuthCancelledError();
   }
   return answer;
+}
+
+function authPromptDetail(event: AuthEvent): { key: string; text: string } | undefined {
+  if (event.type === "auth_url") {
+    return {
+      key: "auth_url",
+      text: event.instructions ? `${event.url}\n${event.instructions}` : event.url,
+    };
+  }
+  if (event.type === "device_code") {
+    return {
+      key: "device_code",
+      text: `${event.verificationUri}\nDevice code: ${event.userCode}`,
+    };
+  }
+  if (event.type === "info" && event.links?.length) {
+    return {
+      key: "info_links",
+      text: event.links.map((link) => `${link.label ?? "Link"}: ${link.url}`).join("\n"),
+    };
+  }
+  return undefined;
 }
 
 function notifyAuthEvent(ctx: ExtensionCommandContext, event: AuthEvent): void {
