@@ -122,6 +122,18 @@ test("formatCommandCatalog merges native and live commands without duplicates", 
   assert.equal(text.match(/^\/model\b/gm)?.length, 1);
 });
 
+test("OpenTUI command catalog omits Pi commands its frontend cannot execute", () => {
+  const text = help.formatCommandCatalog([], { frontend: "opentui" });
+
+  assert.match(text, /\/model <provider\/model>/);
+  assert.match(text, /\/resume/);
+  assert.match(text, /\/export - Export the current session to HTML/);
+  assert.doesNotMatch(text, /\/export .*specify path/);
+  assert.doesNotMatch(text, /\/trust\b/);
+  assert.doesNotMatch(text, /\/settings\b/);
+  assert.doesNotMatch(text, /\/share\b/);
+});
+
 test("help argument completions expose search and every topic", () => {
   const all = help.getHelpArgumentCompletions("");
   assert.ok(all.some((item) => item.value === "search "));

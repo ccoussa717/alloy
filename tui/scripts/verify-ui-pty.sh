@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+FIXTURE="$ROOT/test/fixtures/fake-alloy-rpc.ts"
+BUN_BIN="$(command -v bun)"
+BASE="alloy-ui-pty-$$"
+SESSION="$BASE-main"
+NARROW="$BASE-narrow"
+RESTORE="$BASE-restore"
+LOSS="$BASE-loss"
+EARLY_TERM="$BASE-early-term"
+EARLY_INT="$BASE-early-int"
+LOG="$ROOT/test/fixtures/.$BASE.log"
+
+cleanup() {
+  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$EARLY_TERM" "$EARLY_INT"; do
+    tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
+  done
+  rm -f "$LOG" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
+}
+trap cleanup EXIT
+
+for command in bun grep pgrep sleep stty tmux; do
+  command -v "$command" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$command" >&2; exit 1; }
+done
+
+run_command() {
+  printf 'cd %q && ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
+    "$ROOT" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
+}
+
+capture() { tmux capture-pane -t "$1" -p; }
+
+assert_contains() {
+  case "$1" in
+    *"$2"*) ;;
+    *) printf 'assertion failed: %s\nexpected: %s\noutput:\n%s\n' "$3" "$2" "$1" >&2; exit 1 ;;
+  esac
+}
+
+assert_not_contains() {
+  case "$1" in
+    *"$2"*) printf 'assertion failed: %s\nunexpected: %s\noutput:\n%s\n' "$3" "$2" "$1" >&2; exit 1 ;;
+    *) ;;
+  esac
+}
+
+wait_for_text() {
+  local session="$1" expected="$2" output="" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    tmux has-session -t "$session" 2>/dev/null || { printf 'session exited waiting for %s\n' "$expected" >&2; return 1; }
+    output="$(capture "$session")"
+    case "$output" in *"$expected"*) printf '%s' "$output"; return 0;; esac
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for %s\n%s\n' "$expected" "$output" >&2
+  return 1
+}
+
+wait_for_log() {
+  local expected="$1" log="${2:-$LOG}" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    if [ -f "$log" ] && grep -F "$expected" "$log" >/dev/null; then return 0; fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for RPC log: %s\n' "$expected" >&2
+  [ -f "$log" ] && grep . "$log" >&2 || true
+  return 1
+}
+
+wait_for_file() {
+  local path="$1" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    [ -s "$path" ] && return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for file: %s\n' "$path" >&2
+  return 1
+}
+
+terminal_state() { tmux display-message -p -t "$1" '#{alternate_on}:#{cursor_flag}:#{mouse_any_flag}'; }
+
+wait_for_terminal_state() {
+  local session="$1" expected="$2" state="" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    state="$(terminal_state "$session")"
+    [ "$state" = "$expected" ] && return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for terminal state %s; observed %s\n' "$expected" "$state" >&2
+  return 1
+}
+
+exercise_early_signal() {
+  local signal="$1" expected_code="$2" session="$3"
+  local log="$ROOT/test/fixtures/.$BASE-early-$signal.log"
+  local pid_file="$ROOT/test/fixtures/.$BASE-early-$signal.pid"
+  local early_run backend_pid pane_pid frontend_pids frontend_pid result
+
+  early_run="$(printf 'cd %q && ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q ALLOY_FAKE_PID_FILE=%q ALLOY_FAKE_STARTUP_DELAY_MS=10000 bun run start' \
+    "$ROOT" "$BUN_BIN" "[\"$FIXTURE\"]" "$log" "$pid_file")"
+  tmux new-session -d -s "$session" -x 80 -y 24 \
+    "before=\$(stty -g); $early_run; code=\$?; after=\$(stty -g); if [ \"\$before\" = \"\$after\" ]; then printf 'EARLY_CHECK:RESTORED:%s\\n' \"\$code\"; else printf 'EARLY_CHECK:MISMATCH:%s\\n' \"\$code\"; fi; sleep 20"
+  wait_for_file "$pid_file"
+  backend_pid="$(<"$pid_file")"
+  pane_pid="$(tmux display-message -p -t "$session" '#{pane_pid}')"
+  frontend_pids="$(pgrep -P "$pane_pid" || true)"
+  set -- $frontend_pids
+  [ "$#" -eq 1 ] || { printf 'expected one pre-readiness frontend process, found: %s\n' "${frontend_pids:-none}" >&2; exit 1; }
+  frontend_pid="$1"
+  kill -"$signal" "$frontend_pid"
+  result="$(wait_for_text "$session" 'EARLY_CHECK:')"
+  assert_contains "$result" "EARLY_CHECK:RESTORED:$expected_code" "pre-readiness $signal restores terminal"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$backend_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$backend_pid" 2>/dev/null; then
+    printf 'pre-readiness %s orphaned backend %s\n' "$signal" "$backend_pid" >&2
+    exit 1
+  fi
+}
+
+RUN="$(run_command)"
+
+exercise_early_signal TERM 143 "$EARLY_TERM"
+exercise_early_signal INT 130 "$EARLY_INT"
+
+tmux new-session -d -s "$SESSION" -x 80 -y 24 "$RUN"
+initial="$(wait_for_text "$SESSION" 'hydrated history item 50')"
+assert_contains "$initial" "ALLOY" "launch identity"
+assert_contains "$initial" "fixture widget" "extension widget"
+assert_contains "$initial" "Plan" "extension status"
+assert_contains "$(tmux display-message -p -t "$SESSION" '#{pane_title}')" "ALLOY | Fixture title" "extension title"
+wait_for_log '"type":"get_messages"'
+wait_for_log '"type":"get_commands"'
+wait_for_log '"type":"get_available_models"'
+wait_for_log '"type":"get_session_stats"'
+
+tmux send-keys -t "$SESSION" -l "PTY prompt"
+tmux send-keys -t "$SESSION" Enter
+wait_for_log '"message":"PTY prompt"'
+wheel_up="$(printf '\033[<64;10;10M')"
+wheel_down="$(printf '\033[<65;10;10M')"
+wait_for_text "$SESSION" 'working' >/dev/null
+tmux send-keys -t "$SESSION" -l "$wheel_up$wheel_up$wheel_up$wheel_up"
+sleep 0.8
+scrolled="$(capture "$SESSION")"
+assert_not_contains "$scrolled" "streamed assistant text" "wheel pauses sticky tail"
+assert_contains "$scrolled" "hydrated history item" "wheel reveals history"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tmux send-keys -t "$SESSION" -l "$wheel_down"; done
+streamed="$(wait_for_text "$SESSION" 'streamed assistant text')"
+assert_contains "$streamed" "Read /tmp/example.ts" "compact tool row"
+wait_for_text "$SESSION" 'idle' >/dev/null
+
+tmux send-keys -t "$SESSION" BTab
+wait_for_log '"message":"/build"'
+wait_for_text "$SESSION" 'Mode command received' >/dev/null
+
+tmux send-keys -t "$SESSION" -l "/approval"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" '> Deny' >/dev/null
+tmux send-keys -t "$SESSION" Up
+wait_for_text "$SESSION" '> Allow' >/dev/null
+tmux send-keys -t "$SESSION" Enter
+wait_for_log '"id":"approval-1","confirmed":true'
+wait_for_text "$SESSION" 'Approval received: allow' >/dev/null
+
+tmux send-keys -t "$SESSION" -l "/cancel"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'Escape must cancel' >/dev/null
+tmux send-keys -t "$SESSION" Escape
+wait_for_log '"id":"cancel-1","cancelled":true'
+wait_for_text "$SESSION" 'Cancellation received' >/dev/null
+
+tmux resize-window -t "$SESSION" -x 40 -y 10
+narrow_resize="$(wait_for_text "$SESSION" 'Ctrl+C exit')"
+assert_contains "$narrow_resize" "Ask anything" "40x10 composer"
+tmux send-keys -t "$SESSION" C-c
+sleep 0.3
+tmux has-session -t "$SESSION" 2>/dev/null && { printf 'idle Ctrl-C did not exit\n' >&2; exit 1; }
+
+tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
+narrow_launch="$(wait_for_text "$NARROW" 'Ask anything')"
+assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
+tmux send-keys -t "$NARROW" C-c
+
+tmux new-session -d -s "$RESTORE" -x 80 -y 24 \
+  "before=\$(stty -g); $RUN; code=\$?; after=\$(stty -g); if [ \"\$before\" = \"\$after\" ]; then printf 'TERMINAL_CHECK:RESTORED:%s\\n' \"\$code\"; else printf 'TERMINAL_CHECK:MISMATCH:%s\\n' \"\$code\"; fi; sleep 20"
+wait_for_text "$RESTORE" 'hydrated history item 50' >/dev/null
+wait_for_terminal_state "$RESTORE" "1:1:1"
+tmux send-keys -t "$RESTORE" -l "hold"
+tmux send-keys -t "$RESTORE" Enter
+wait_for_text "$RESTORE" 'working' >/dev/null
+tmux send-keys -t "$RESTORE" C-c
+wait_for_log '"type":"abort"'
+wait_for_text "$RESTORE" 'idle' >/dev/null
+tmux send-keys -t "$RESTORE" C-c
+restored="$(wait_for_text "$RESTORE" 'TERMINAL_CHECK:')"
+assert_contains "$restored" "TERMINAL_CHECK:RESTORED:0" "abort then idle exit restores terminal"
+wait_for_terminal_state "$RESTORE" "0:1:0"
+
+tmux new-session -d -s "$LOSS" -x 80 -y 24 \
+  "before=\$(stty -g); $RUN; code=\$?; after=\$(stty -g); if [ \"\$before\" = \"\$after\" ]; then printf 'LOSS_CHECK:RESTORED:%s\\n' \"\$code\"; else printf 'LOSS_CHECK:MISMATCH:%s\\n' \"\$code\"; fi; sleep 20"
+wait_for_text "$LOSS" 'hydrated history item 50' >/dev/null
+tmux send-keys -t "$LOSS" -l "/backend-loss"
+tmux send-keys -t "$LOSS" Enter
+lost="$(wait_for_text "$LOSS" 'LOSS_CHECK:')"
+assert_contains "$lost" "LOSS_CHECK:RESTORED:1" "backend loss exits nonzero and restores terminal"
+
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, prompt, stream, tools, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

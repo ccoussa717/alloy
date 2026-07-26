@@ -19,9 +19,7 @@ let piForkShapeValid = true;
 
 if (pkg.name !== "alloy-agent") fail("package name must be alloy-agent");
 if (pkg.license !== "MIT") fail("package license must be MIT");
-if (publishGate && pkg.private === true) {
-  fail("package must not be private for publication");
-}
+if (publishGate) fail("npm publication is blocked until package-consumer lifecycle design is explicit");
 if (sourceGate && pkg.private !== true) {
   fail("package must remain private for a source launch");
 }
@@ -107,8 +105,11 @@ if (publishGate || hasAnyMetadata) {
 if (process.env.RELEASE_TAG && process.env.RELEASE_TAG !== `v${pkg.version}`) {
   fail(`release tag must match package version v${pkg.version}`);
 }
-if (pkg.publishConfig?.access !== "public" || pkg.publishConfig?.provenance !== true) {
-  fail("npm publication must be public and provenance-enabled");
+if (
+  pkg.publishConfig &&
+  (pkg.publishConfig.access !== "public" || pkg.publishConfig.provenance !== true)
+) {
+  fail("configured npm publication must be public and provenance-enabled");
 }
 if (!existsSync(lockPath)) fail("npm-shrinkwrap.json is required in releases");
 
@@ -288,6 +289,10 @@ for (const [name, version] of Object.entries(pkg.dependencies || {})) {
   }
 }
 
+if (pkg.overrides?.["brace-expansion"] !== "5.0.8") {
+  fail("brace-expansion must be overridden to patched version 5.0.8");
+}
+
 if (existsSync(lockPath)) {
   const lock = JSON.parse(readFileSync(lockPath, "utf8"));
   if (lock.lockfileVersion !== 3) fail("npm-shrinkwrap.json must use lockfileVersion 3");
@@ -335,6 +340,12 @@ if (existsSync(lockPath)) {
         fail(`${path} must include a valid SHA-512 integrity value`);
       }
     }
+  }
+  const braceEntries = Object.entries(lock.packages || {}).filter(([path]) =>
+    /(?:^|\/)node_modules\/brace-expansion$/.test(path)
+  );
+  if (braceEntries.length === 0 || braceEntries.some(([, entry]) => entry?.version !== "5.0.8")) {
+    fail("every installed brace-expansion node must resolve to patched version 5.0.8");
   }
   for (const [name, version] of Object.entries(pkg.dependencies || {})) {
     const entry = lock.packages?.[`node_modules/${name}`];

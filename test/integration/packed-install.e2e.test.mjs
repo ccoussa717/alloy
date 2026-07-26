@@ -26,6 +26,9 @@ const toolBin = join(temp, "bin");
 const hostNpm = process.env.PATH.split(":")
   .map((entry) => join(entry, "npm"))
   .find(existsSync);
+const hostCurl = process.env.PATH.split(":")
+  .map((entry) => join(entry, "curl"))
+  .find(existsSync);
 assert.ok(hostNpm, "npm must be available to run the packed-install test");
 mkdirSync(toolBin, { recursive: true });
 symlinkSync(process.execPath, join(toolBin, "node"));
@@ -88,8 +91,12 @@ describe("integration: packed npm artifact", () => {
     const manifest = JSON.parse(
       readFileSync(join(project, "node_modules", "alloy-agent", "package.json")),
     );
+    const installedRoot = join(project, "node_modules", "alloy-agent");
     assert.equal(manifest.name, "alloy-agent");
     assert.equal(existsSync(join(project, "node_modules", "alloy-agent", "docs", "plans")), false);
+    assert.equal(existsSync(join(installedRoot, "tui", "bun.lock")), true);
+    assert.equal(existsSync(join(installedRoot, "tui", "src", "index.tsx")), true);
+    assert.equal(existsSync(join(installedRoot, "tui", "node_modules")), false);
     assert.equal(
       readFileSync(
         join(project, "node_modules", "alloy-agent", "npm-shrinkwrap.json"),
@@ -165,7 +172,6 @@ describe("integration: packed npm artifact", () => {
     });
     assert.equal(injected.status, 0, injected.stderr || injected.stdout);
     const injectedArgs = JSON.parse(injected.stdout);
-    const installedRoot = join(project, "node_modules", "alloy-agent");
     assert.deepEqual(injectedArgs.slice(0, 8), [
       "-e",
       join(installedRoot, "extensions", "index.ts"),
@@ -245,13 +251,14 @@ describe("integration: source installer", () => {
   it("installs the exact shrinkwrapped tree from the current worktree", {
     skip: process.env.ALLOY_RUN_SOURCE_INSTALLER_E2E !== "1",
   }, () => {
+    assert.ok(hostCurl, "curl must be available to run the source-installer test");
     const sourceFixture = join(temp, "source-fixture");
     cpSync(root, sourceFixture, {
       recursive: true,
       filter(source) {
         if (source === root) return true;
-        const first = relative(root, source).split(/[\\/]/)[0];
-        return !new Set([".git", "node_modules", "alloy.cdx.json"]).has(first);
+        const parts = relative(root, source).split(/[\\/]/);
+        return !parts.includes("node_modules") && !new Set([".git", "alloy.cdx.json"]).has(parts[0]);
       },
     });
     const sourceArchive = join(temp, "source-fixture.tar.gz");
@@ -270,13 +277,22 @@ describe("integration: source installer", () => {
       curl,
       `#!/bin/sh
 out=""
+url=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o|--output) out="$2"; shift 2 ;;
+    http*) url="$1"; shift ;;
     *) shift ;;
   esac
 done
-cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
+case "$url" in
+  https://codeload.github.com/ccoussa717/alloy/tar.gz/local-worktree)
+    cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
+    ;;
+  *)
+    exec "$ALLOY_TEST_REAL_CURL" -fsSL --retry 3 -o "$out" "$url"
+    ;;
+esac
 `,
     );
     chmodSync(curl, 0o755);
@@ -292,6 +308,7 @@ cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
         ALLOY_PREFIX: prefix,
         ALLOY_REF: "local-worktree",
         ALLOY_TEST_SOURCE_ARCHIVE: sourceArchive,
+        ALLOY_TEST_REAL_CURL: realpathSync(hostCurl),
         PATH: `${installerBin}:/usr/bin:/bin`,
       },
     });
@@ -301,6 +318,10 @@ cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
     assert.match(installed.stdout, new RegExp(`Alloy ${packageVersion.replaceAll(".", "\\.")}`));
 
     const app = join(dataHome, "alloy", "app");
+    assert.equal(
+      existsSync(join(app, "tui", "node_modules", "@opentui", "core")),
+      true,
+    );
     const lock = JSON.parse(readFileSync(join(app, "npm-shrinkwrap.json"), "utf8"));
     const packagePaths = installedPackagePaths(app);
     const installedSet = new Set(packagePaths);
@@ -322,6 +343,7 @@ cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
     }
 
     const alloy = join(prefix, "bin", "alloy");
+    assert.match(readFileSync(alloy, "utf8"), /export ALLOY_BUN_BIN=.*bun-v1\.3\.14/);
     const version = run(alloy, ["--version"], {
       env: { PATH: `${toolBin}:${process.env.PATH}` },
     });

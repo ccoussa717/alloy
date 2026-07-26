@@ -40,7 +40,7 @@ const { resolveParentChildSpawnOpts } = require(
 /** Keep last UI ctx for panel refresh during long runs */
 let panelUi: ExtensionContext["ui"] | null = null;
 
-function paintPanel(panel: unknown, ctx?: { ui?: ExtensionContext["ui"] }) {
+function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">) {
   const ui = ctx?.ui || panelUi;
   if (!ui?.setWidget) return;
   try {
@@ -48,24 +48,30 @@ function paintPanel(panel: unknown, ctx?: { ui?: ExtensionContext["ui"] }) {
     const phase = (panel as { phase?: string })?.phase || "run";
     const isFusion = (panel as { title?: string })?.title === "ALLOY FUSION";
     if (isFusion) {
-      ui.setWidget(
-        "alloy-agents",
-        (_tui: unknown, widgetTheme: any) => ({
-          render(width: number) {
-            const lines = renderFusionPaneLines(panel, width);
-            if (!widgetTheme?.fg) return lines;
-            return lines.map((line: string, index: number) =>
-              index === 0
-                ? widgetTheme.fg("accent", line)
-                : /^[┌├└].*[┐┤┘]$/.test(line)
-                  ? widgetTheme.fg("dim", line)
-                  : line,
-            );
-          },
-          invalidate() {},
-        }),
-        { placement: "belowEditor" },
-      );
+      if (ctx?.mode === "rpc") {
+        ui.setWidget("alloy-agents", renderFusionPaneLines(panel, 80), {
+          placement: "belowEditor",
+        });
+      } else {
+        ui.setWidget(
+          "alloy-agents",
+          (_tui: unknown, widgetTheme: any) => ({
+            render(width: number) {
+              const lines = renderFusionPaneLines(panel, width);
+              if (!widgetTheme?.fg) return lines;
+              return lines.map((line: string, index: number) =>
+                index === 0
+                  ? widgetTheme.fg("accent", line)
+                  : /^[┌├└].*[┐┤┘]$/.test(line)
+                    ? widgetTheme.fg("dim", line)
+                    : line,
+              );
+            },
+            invalidate() {},
+          }),
+          { placement: "belowEditor" },
+        );
+      }
     } else {
       const lines = theme
         ? renderPanelThemed(panel, theme)

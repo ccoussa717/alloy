@@ -24,6 +24,8 @@ import { registerHelp } from "./help.ts";
 import { registerEffort } from "./effort.ts";
 import { registerAgents } from "./agents.ts";
 import { registerToolDisplay } from "./tool-display.ts";
+import { registerNativeCommands } from "./native-commands.ts";
+import { registerAuthCommands } from "./auth-commands.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +45,8 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerUi(pi);
   registerHonesty(pi); // anti-hallucination + factual /whoami — before other prompt injectors
   registerHelp(pi);
+  registerNativeCommands(pi);
+  registerAuthCommands(pi);
   registerProviders(pi);
   registerModes(pi); // Shift+Tab = Build/Plan
   registerPolicy(pi); // approval profiles remain an independent axis
