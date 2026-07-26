@@ -5,6 +5,7 @@ set -euo pipefail
 ALLOY_NODE_MIN="22.19"
 ALLOY_NODE_VERSION="22.19.0"
 ALLOY_BUN_VERSION="1.3.14"
+ALLOY_PARSER_MANIFEST_SHA256="e6107d4bd3cd2e971a245b1bfd3091b29adcd4965210fec03ffb87eb9077e453"
 ALLOY_REF="${ALLOY_REF:-main}"
 ALLOY_PREFIX="${ALLOY_PREFIX:-$HOME/.local}"
 ALLOY_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/alloy"
@@ -443,6 +444,49 @@ for resource in \
   "$SOURCE_DIR/tui/src/index.tsx"; do
   require_file "$resource" "TUI resource"
 done
+require_file "$SOURCE_DIR/tui/assets/parsers/manifest.json" "TUI syntax parser manifest"
+for language in bash c cpp go java python rust; do
+  for asset in LICENSE highlights.scm parser.wasm; do
+    require_file "$SOURCE_DIR/tui/assets/parsers/$language/$asset" "TUI syntax parser asset"
+  done
+done
+[[ "$(sha256 "$SOURCE_DIR/tui/assets/parsers/manifest.json")" == "$ALLOY_PARSER_MANIFEST_SHA256" ]] || \
+  err "TUI syntax parser manifest checksum mismatch"
+node -e '
+  const { createHash } = require("node:crypto");
+  const { readFileSync } = require("node:fs");
+  const { join } = require("node:path");
+  const languages = ["bash", "c", "cpp", "go", "java", "python", "rust"];
+  const assetNames = ["LICENSE", "highlights.scm", "parser.wasm"];
+  const manifest = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const actualLanguages = Object.keys(manifest.parsers || {}).sort();
+  if (manifest.schemaVersion !== 1 || JSON.stringify(actualLanguages) !== JSON.stringify(languages)) {
+    throw new Error("syntax parser manifest has an unexpected schema or language set");
+  }
+  for (const language of languages) {
+    const parser = manifest.parsers[language];
+    const repository = `https://github.com/tree-sitter/tree-sitter-${language}`;
+    if (!/^\d+\.\d+\.\d+$/.test(parser.version || "") || !/^[0-9a-f]{40}$/.test(parser.commit || "")) {
+      throw new Error(`syntax parser ${language} has invalid version or commit provenance`);
+    }
+    if (parser.repository !== repository || parser.release !== `${repository}/releases/tag/v${parser.version}` ||
+      parser.wasmUrl !== `${repository}/releases/download/v${parser.version}/tree-sitter-${language}.wasm`) {
+      throw new Error(`syntax parser ${language} has invalid release provenance`);
+    }
+    const actualAssets = Object.keys(parser.assets || {}).sort();
+    if (JSON.stringify(actualAssets) !== JSON.stringify([...assetNames].sort())) {
+      throw new Error(`syntax parser ${language} has an unexpected asset set`);
+    }
+    for (const name of assetNames) {
+      const expected = parser.assets[name];
+      const actual = createHash("sha256").update(readFileSync(join(process.argv[2], language, name))).digest("hex");
+      if (!/^[0-9a-f]{64}$/.test(expected || "") || actual !== expected) {
+        throw new Error(`syntax parser ${language}/${name} hash mismatch`);
+      }
+    }
+  }
+' "$SOURCE_DIR/tui/assets/parsers/manifest.json" "$SOURCE_DIR/tui/assets/parsers" </dev/null || \
+  err "TUI syntax parser manifest or asset hash verification failed"
 for resource in "$SOURCE_DIR/skills" "$SOURCE_DIR/prompts"; do
   require_directory "$resource" "runtime resource"
 done

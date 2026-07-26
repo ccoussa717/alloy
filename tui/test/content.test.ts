@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { displayPreview, messageBlocks, messageRole, resultText, toolSummary } from "../src/content"
+import { displayPreview, messageBlocks, messageRole, resultText, toolSummary, transcriptToolStates } from "../src/content"
 
 describe("messageRole", () => {
   test("normalizes Pi and custom roles without trusting the input", () => {
@@ -291,5 +291,18 @@ describe("toolSummary", () => {
     expect(preview).not.toContain("auth-live")
     expect(preview).toEndWith("…")
     expect(Array.from(preview).length).toBeLessThanOrEqual(41)
+  })
+})
+
+describe("transcriptToolStates", () => {
+  test("collects completion and error state so live activity rows do not duplicate transcript entries", () => {
+    expect(
+      transcriptToolStates([
+        { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read" }] },
+        { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [] },
+        { role: "toolResult", toolCallId: "call-2", toolName: "bash", isError: true, content: [] },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-3", name: "write" }] },
+      ]),
+    ).toEqual({ "call-1": "completed", "call-2": "error", "call-3": "pending" })
   })
 })

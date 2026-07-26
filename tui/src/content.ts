@@ -445,3 +445,18 @@ export function messageBlocks(message: unknown, options: MessageBlockOptions = {
   if (messageRole(value) === "unknown") return [{ kind: "unknown", text: safeText(message), value: message }]
   return []
 }
+
+export type TranscriptToolStatus = "pending" | "completed" | "error"
+
+export function transcriptToolStates(messages: unknown[]): Record<string, TranscriptToolStatus> {
+  const states: Record<string, TranscriptToolStatus> = {}
+  for (const message of messages) {
+    for (const block of messageBlocks(message)) {
+      if (block.kind !== "tool-call" && block.kind !== "tool-result") continue
+      if (!block.id) continue
+      if (block.kind === "tool-result") states[block.id] = block.isError ? "error" : "completed"
+      else if (block.kind === "tool-call" && states[block.id] === undefined) states[block.id] = "pending"
+    }
+  }
+  return states
+}

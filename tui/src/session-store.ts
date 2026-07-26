@@ -1,4 +1,4 @@
-import { redactDisplayText } from "./content";
+import { redactDisplayText, transcriptToolStates, type TranscriptToolStatus } from "./content";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type QueueMode = "all" | "one-at-a-time";
@@ -106,6 +106,7 @@ export interface SessionState {
   pendingSteering: string[];
   pendingFollowUp: string[];
   toolExecutions: Record<string, ToolExecution>;
+  transcriptTools: Record<string, TranscriptToolStatus>;
   statuses: Record<string, string>;
   widgets: Record<string, WidgetState>;
   notifications: NotificationState[];
@@ -164,6 +165,12 @@ function findCurrentAssistant(messages: SessionMessage[], currentId: string | nu
   return messages.findLastIndex((candidate) => candidate.role === "assistant");
 }
 
+export function isStreamingTranscriptMessage(state: SessionState, index: number): boolean {
+  return state.isStreaming &&
+    state.currentAssistantMessageId !== null &&
+    findCurrentAssistant(state.messages, state.currentAssistantMessageId) === index;
+}
+
 function upsertMessage(
   state: SessionState,
   message: SessionMessage,
@@ -204,6 +211,7 @@ function upsertMessage(
     ...state,
     messages,
     messageCount: messages.length,
+    transcriptTools: mergeTranscriptTools(state.transcriptTools, [nextMessage]),
     currentAssistantMessageId: phase === "end" && message.role === "assistant" ? null : currentAssistantMessageId,
   };
 }
@@ -211,6 +219,18 @@ function upsertMessage(
 function omitKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   const next = { ...record };
   delete next[key];
+  return next;
+}
+
+function mergeTranscriptTools(
+  current: Record<string, TranscriptToolStatus>,
+  messages: SessionMessage[],
+): Record<string, TranscriptToolStatus> {
+  const next = { ...current };
+  for (const [id, status] of Object.entries(transcriptToolStates(messages))) {
+    if (status === "pending" && (next[id] === "completed" || next[id] === "error")) continue;
+    next[id] = status;
+  }
   return next;
 }
 
@@ -271,6 +291,7 @@ export function createInitialState(): SessionState {
     pendingSteering: [],
     pendingFollowUp: [],
     toolExecutions: {},
+    transcriptTools: {},
     statuses: {},
     widgets: {},
     notifications,
@@ -303,6 +324,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
               ...state,
               messages: [],
               toolExecutions: {},
+              transcriptTools: {},
               widgets: {},
               statuses: {},
               notifications: [],
@@ -338,6 +360,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
           messages,
           messageCount: messages.length,
           toolExecutions: {},
+          transcriptTools: transcriptToolStates(messages),
           currentAssistantMessageId: null,
           backendError: null,
         };
@@ -384,10 +407,10 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
 
   switch (message.type) {
     case "agent_start":
-      return { ...state, isStreaming: true, backendError: null };
+      return { ...state, isStreaming: true, toolExecutions: {}, backendError: null };
     case "agent_end":
     case "agent_settled":
-      return { ...state, isStreaming: false, toolExecutions: {}, currentAssistantMessageId: null };
+      return { ...state, isStreaming: false, currentAssistantMessageId: null };
     case "message_start":
     case "message_update":
     case "message_end":
@@ -450,7 +473,22 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
       const toolCallId = asString(message.toolCallId);
       if (!toolCallId) return state;
       if (message.type === "tool_execution_end") {
-        return { ...state, toolExecutions: omitKey(state.toolExecutions, toolCallId) };
+        const previous = state.toolExecutions[toolCallId];
+        const execution: ToolExecution = {
+          ...(previous ?? {
+            toolCallId,
+            toolName: asString(message.toolName),
+          }),
+          toolCallId,
+          toolName: asString(message.toolName, previous?.toolName),
+          result: message.result,
+          isError: message.isError === true,
+          status: message.isError === true ? "error" : "completed",
+        };
+        return {
+          ...state,
+          toolExecutions: { ...state.toolExecutions, [toolCallId]: execution },
+        };
       }
       const previous = state.toolExecutions[toolCallId];
       const execution: ToolExecution = {

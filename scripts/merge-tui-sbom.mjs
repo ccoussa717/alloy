@@ -94,9 +94,13 @@ function integrityHash(integrity, lockName) {
 
 const sbomPath = process.argv[2] || "alloy.cdx.json";
 const lockPath = process.argv[3] || "tui/bun.lock";
+const parserManifestPath = process.argv[4] || "tui/assets/parsers/manifest.json";
 const sbom = JSON.parse(readFileSync(sbomPath, "utf8"));
 const lock = parseJsonc(readFileSync(lockPath, "utf8"));
+const parserManifest = JSON.parse(readFileSync(parserManifestPath, "utf8"));
 if (sbom.bomFormat !== "CycloneDX" || !sbom.specVersion) throw new Error("input SBOM must be CycloneDX");
+const rootRef = sbom.metadata?.component?.["bom-ref"];
+if (typeof rootRef !== "string" || !rootRef) throw new Error("input SBOM must identify its root component");
 
 sbom.components ||= [];
 const components = new Map(sbom.components.map((component) => [`${component.name}@${component.version}`, component]));
@@ -131,9 +135,57 @@ for (const [lockName, entry] of Object.entries(lock.packages || {})) {
   components.set(key, component);
 }
 
+for (const [language, parser] of Object.entries(parserManifest.parsers || {})) {
+  if (!/^[0-9a-f]{40}$/.test(parser.commit || "")) throw new Error(`syntax parser ${language} has no immutable commit`);
+  const wasmHash = parser.assets?.["parser.wasm"];
+  if (!/^[0-9a-f]{64}$/.test(wasmHash || "")) throw new Error(`syntax parser ${language} has no WASM SHA-256`);
+  const name = `tree-sitter-${language}`;
+  const parserPurl = `pkg:github/tree-sitter/${name}@v${parser.version}`;
+  if (sbom.components.some((component) => component["bom-ref"] === parserPurl)) continue;
+  sbom.components.push({
+    type: "library",
+    "bom-ref": parserPurl,
+    group: "tree-sitter",
+    name,
+    version: parser.version,
+    hashes: [{ alg: "SHA-256", content: wasmHash }],
+    licenses: [{ license: { id: "MIT" } }],
+    purl: parserPurl,
+    externalReferences: [
+      { type: "vcs", url: `${parser.repository}/tree/${parser.commit}` },
+      { type: "distribution", url: parser.wasmUrl },
+    ],
+    properties: [
+      { name: "alloy:bundled-asset", value: `tui/assets/parsers/${language}/parser.wasm` },
+      { name: "alloy:release", value: parser.release },
+      { name: "alloy:source-commit", value: parser.commit },
+      { name: "alloy:license-sha256", value: parser.assets.LICENSE },
+      { name: "alloy:highlight-query-sha256", value: parser.assets["highlights.scm"] },
+    ],
+  });
+}
+
+sbom.dependencies ||= [];
+let rootDependency = sbom.dependencies.find((dependency) => dependency.ref === rootRef);
+if (!rootDependency) {
+  rootDependency = { ref: rootRef, dependsOn: [] };
+  sbom.dependencies.push(rootDependency);
+}
+rootDependency.dependsOn ||= [];
+for (const [language, parser] of Object.entries(parserManifest.parsers || {})) {
+  const ref = `pkg:github/tree-sitter/tree-sitter-${language}@v${parser.version}`;
+  if (!rootDependency.dependsOn.includes(ref)) rootDependency.dependsOn.push(ref);
+}
+rootDependency.dependsOn.sort();
+
 for (const name of ["@opentui/core", "@opentui/keymap", "@opentui/solid", "solid-js"]) {
   if (!sbom.components.some((component) => component.name === name && component.hashes?.some((hash) => hash.alg === "SHA-512"))) {
     throw new Error(`merged SBOM is missing integrity-bearing ${name}`);
+  }
+}
+for (const language of Object.keys(parserManifest.parsers || {})) {
+  if (!sbom.components.some((component) => component.name === `tree-sitter-${language}` && component.hashes?.some((hash) => hash.alg === "SHA-256"))) {
+    throw new Error(`merged SBOM is missing integrity-bearing tree-sitter-${language}`);
   }
 }
 
@@ -141,4 +193,4 @@ sbom.components.sort((left, right) => `${left.name}@${left.version}`.localeCompa
 const temporary = `${sbomPath}.tmp.${process.pid}`;
 writeFileSync(temporary, `${JSON.stringify(sbom, null, 2)}\n`);
 renameSync(temporary, sbomPath);
-console.log(`Merged ${Object.keys(lock.packages || {}).length} Bun lock components into ${sbomPath}`);
+console.log(`Merged ${Object.keys(lock.packages || {}).length} Bun lock and ${Object.keys(parserManifest.parsers || {}).length} parser components into ${sbomPath}`);

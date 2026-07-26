@@ -9,12 +9,13 @@ SESSION="$BASE-main"
 NARROW="$BASE-narrow"
 RESTORE="$BASE-restore"
 LOSS="$BASE-loss"
+SPLASH="$BASE-splash"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
 
 cleanup() {
-  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
   rm -f "$LOG" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
@@ -26,8 +27,8 @@ for command in bun grep pgrep sleep stty tmux; do
 done
 
 run_command() {
-  printf 'cd %q && ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
-    "$ROOT" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
+  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
+    "$ROOT" "${1:-0}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
 }
 
 capture() { tmux capture-pane -t "$1" -p; }
@@ -126,7 +127,8 @@ exercise_early_signal() {
   fi
 }
 
-RUN="$(run_command)"
+RUN="$(run_command 0)"
+SPLASH_RUN="$(run_command 1)"
 
 exercise_early_signal TERM 143 "$EARLY_TERM"
 exercise_early_signal INT 130 "$EARLY_INT"
@@ -147,7 +149,13 @@ tmux send-keys -t "$SESSION" Enter
 wait_for_log '"message":"PTY prompt"'
 wheel_up="$(printf '\033[<64;10;10M')"
 wheel_down="$(printf '\033[<65;10;10M')"
-wait_for_text "$SESSION" 'working' >/dev/null
+working_frame_a="$(wait_for_text "$SESSION" 'Working')"
+sleep 0.12
+working_frame_b="$(capture "$SESSION")"
+if [[ "$working_frame_a" == "$working_frame_b" ]]; then
+  printf 'activity scanner did not advance while the backend was working\n' >&2
+  exit 1
+fi
 tmux send-keys -t "$SESSION" -l "$wheel_up$wheel_up$wheel_up$wheel_up"
 sleep 0.8
 scrolled="$(capture "$SESSION")"
@@ -155,8 +163,10 @@ assert_not_contains "$scrolled" "streamed assistant text" "wheel pauses sticky t
 assert_contains "$scrolled" "hydrated history item" "wheel reveals history"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tmux send-keys -t "$SESSION" -l "$wheel_down"; done
 streamed="$(wait_for_text "$SESSION" 'streamed assistant text')"
-assert_contains "$streamed" "Read /tmp/example.ts" "compact tool row"
-wait_for_text "$SESSION" 'idle' >/dev/null
+assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
+assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
+assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
+wait_for_text "$SESSION" 'Ready' >/dev/null
 
 tmux send-keys -t "$SESSION" BTab
 wait_for_log '"message":"/build"'
@@ -186,8 +196,9 @@ sleep 0.3
 tmux has-session -t "$SESSION" 2>/dev/null && { printf 'idle Ctrl-C did not exit\n' >&2; exit 1; }
 
 tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
-narrow_launch="$(wait_for_text "$NARROW" 'Ask anything')"
+narrow_launch="$(wait_for_text "$NARROW" 'hydrated history item 50')"
 assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
+assert_contains "$narrow_launch" "Ask anything" "40x10 composer"
 tmux send-keys -t "$NARROW" C-c
 
 tmux new-session -d -s "$RESTORE" -x 80 -y 24 \
@@ -196,10 +207,10 @@ wait_for_text "$RESTORE" 'hydrated history item 50' >/dev/null
 wait_for_terminal_state "$RESTORE" "1:1:1"
 tmux send-keys -t "$RESTORE" -l "hold"
 tmux send-keys -t "$RESTORE" Enter
-wait_for_text "$RESTORE" 'working' >/dev/null
+wait_for_text "$RESTORE" 'Working' >/dev/null
 tmux send-keys -t "$RESTORE" C-c
 wait_for_log '"type":"abort"'
-wait_for_text "$RESTORE" 'idle' >/dev/null
+wait_for_text "$RESTORE" 'Ready' >/dev/null
 tmux send-keys -t "$RESTORE" C-c
 restored="$(wait_for_text "$RESTORE" 'TERMINAL_CHECK:')"
 assert_contains "$restored" "TERMINAL_CHECK:RESTORED:0" "abort then idle exit restores terminal"
@@ -213,4 +224,9 @@ tmux send-keys -t "$LOSS" Enter
 lost="$(wait_for_text "$LOSS" 'LOSS_CHECK:')"
 assert_contains "$lost" "LOSS_CHECK:RESTORED:1" "backend loss exits nonzero and restores terminal"
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, prompt, stream, tools, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+tmux new-session -d -s "$SPLASH" -x 80 -y 24 "$SPLASH_RUN"
+splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
+assert_contains "$splash" "──────────────────────────" "green splash divider"
+tmux send-keys -t "$SPLASH" C-c
+
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, activity scanner, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
