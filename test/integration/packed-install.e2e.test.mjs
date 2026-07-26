@@ -89,6 +89,7 @@ describe("integration: packed npm artifact", () => {
       readFileSync(join(project, "node_modules", "alloy-agent", "package.json")),
     );
     assert.equal(manifest.name, "alloy-agent");
+    assert.equal(existsSync(join(project, "node_modules", "alloy-agent", "docs", "plans")), false);
     assert.equal(
       readFileSync(
         join(project, "node_modules", "alloy-agent", "npm-shrinkwrap.json"),
@@ -100,7 +101,54 @@ describe("integration: packed npm artifact", () => {
     const alloy = join(project, "node_modules", ".bin", "alloy");
     const version = run(alloy, ["--version"]);
     assert.equal(version.status, 0, version.stderr || version.stdout);
-    assert.match(version.stdout, /Pi\s+0\.82\.0/);
+    assert.match(version.stdout, new RegExp(`Pi\\s+${manifest.alloy.piFork.version.replaceAll(".", "\\.")}`));
+    assert.equal(
+      existsSync(join(project, "node_modules", "@earendil-works", "pi-coding-agent", "LICENSE")),
+      true,
+    );
+    const piPackage = join(project, "node_modules", "@earendil-works", "pi-coding-agent");
+    const viewportPath = join(
+      piPackage,
+      "dist",
+      "modes",
+      "interactive",
+      "components",
+      "interactive-viewport.js",
+    );
+    assert.equal(
+      existsSync(viewportPath),
+      true,
+    );
+    assert.match(
+      readFileSync(join(piPackage, "dist", "modes", "interactive", "interactive-mode.js"), "utf8"),
+      /new InteractiveViewport\(/,
+    );
+    const { InteractiveViewport } = await import(pathToFileURL(viewportPath));
+    const component = (lines) => ({ render: () => lines, invalidate() {} });
+    const viewport = new InteractiveViewport(() => 8, {
+      header: component(["header"]),
+      transcript: component(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`)),
+      bottom: component(["editor", "footer"]),
+      renderScrollIndicator: (line) => `${line} UP`,
+    });
+    assert.deepEqual(viewport.render(80), [
+      "header",
+      "line 8",
+      "line 9",
+      "line 10",
+      "line 11",
+      "line 12",
+      "editor",
+      "footer",
+    ]);
+    viewport.pageUp();
+    const pausedFrame = viewport.render(80);
+    assert.equal(pausedFrame[0], "header");
+    assert.equal(pausedFrame.at(-2), "editor");
+    assert.equal(pausedFrame.at(-1), "footer");
+    assert.equal(pausedFrame.some((line) => line.endsWith(" UP")), true);
+    viewport.end();
+    assert.equal(viewport.render(80).some((line) => line.endsWith(" UP")), false);
 
     const startup = run(alloy, ["--no-inject", "--list-models"]);
     assert.equal(startup.status, 0, startup.stderr || startup.stdout);
@@ -248,16 +296,15 @@ cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
       },
     });
     assert.equal(installed.status, 0, installed.stderr || installed.stdout);
-    const packageVersion = JSON.parse(
-      readFileSync(join(root, "package.json"), "utf8"),
-    ).version;
+    const sourceManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const packageVersion = sourceManifest.version;
     assert.match(installed.stdout, new RegExp(`Alloy ${packageVersion.replaceAll(".", "\\.")}`));
 
     const app = join(dataHome, "alloy", "app");
     const lock = JSON.parse(readFileSync(join(app, "npm-shrinkwrap.json"), "utf8"));
     const packagePaths = installedPackagePaths(app);
     const installedSet = new Set(packagePaths);
-    assert.ok(packagePaths.length > 300);
+    assert.ok(packagePaths.length >= 200);
     for (const packagePath of packagePaths) {
       const expected = lock.packages?.[packagePath]?.version;
       const actual = JSON.parse(
@@ -279,6 +326,9 @@ cp "$ALLOY_TEST_SOURCE_ARCHIVE" "$out"
       env: { PATH: `${toolBin}:${process.env.PATH}` },
     });
     assert.equal(version.status, 0, version.stderr || version.stdout);
-    assert.match(version.stdout, /Pi\s+0\.82\.0/);
+    assert.match(
+      version.stdout,
+      new RegExp(`Pi\\s+${sourceManifest.alloy.piFork.version.replaceAll(".", "\\.")}`),
+    );
   });
 });

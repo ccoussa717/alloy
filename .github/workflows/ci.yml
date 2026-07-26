@@ -34,11 +34,16 @@ jobs:
       - name: Install exact dependencies
         run: npm ci
 
-      - name: Run release verification
-        run: npm run ci:local
+      - name: Run local verification
+        run: npm run ci:checks
         env:
           ALLOY_REQUIRE_DOCKER_TEST: "1"
-          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      - name: Verify source and fork provenance
+        if: ${{ github.ref_type != 'tag' }}
+        run: npm run release:verify:source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Bootstrap Node.js and install from a clean Linux environment
         run: |
@@ -62,6 +67,9 @@ jobs:
       - name: Validate publish metadata
         if: ${{ always() && github.ref_type == 'tag' }}
         run: npm run release:verify:publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
 
       - name: Upload CycloneDX SBOM
         if: ${{ always() && hashFiles('alloy.cdx.json') != '' }}

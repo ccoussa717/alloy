@@ -63,11 +63,22 @@ source snapshot.
 3. Update exact dependencies deliberately; never run an unreviewed blanket
    dependency upgrade.
 4. Regenerate `npm-shrinkwrap.json` from a clean temporary directory, run
-   `npm run shrinkwrap:normalize -- <clean-package-lock-path>`, verify registry
-   resolution and integrity fields, and review the diff. The normalizer copies
+   `npm run shrinkwrap:normalize -- <clean-package-lock-path>`, verify resolution
+   and integrity fields, and review the diff. Registry packages must resolve from
+   npm. The coding-agent exception must exactly match `alloy.piFork`: a public
+   `ccoussa717/pi` release URL, full source commit, package version, SHA-256, and
+   npm SHA-512 integrity. Release verification resolves the tag through GitHub,
+   downloads the artifact, and recomputes both digests. The normalizer copies
    package identity from the release tree and fills only duplicate registry
    entries whose identical tarball already has a verified integrity value
    elsewhere in the clean lock.
+   The verifier requires outbound HTTPS access to `api.github.com` and the
+   pinned `github.com` release asset. CI may provide `GITHUB_TOKEN` or
+   `GH_TOKEN` for authenticated GitHub API rate limits; the verifier never logs
+   the token.
+   Review and record the root-lock dependency delta because npm does not apply a
+   dependency tarball's nested shrinkwrap to Alloy's installation. Follow
+   [PI_FORK.md](./PI_FORK.md) for the audit and rollback procedure.
 5. Run:
 
 ```bash

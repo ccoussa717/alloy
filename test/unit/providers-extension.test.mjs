@@ -7,7 +7,7 @@ import {
   withClaudeOpus5,
 } from "../../extensions/providers.ts";
 
-test("session startup registers Claude Opus 5 on the live Anthropic provider", () => {
+test("session startup keeps Pi's built-in Claude Opus 5 without duplicate registration", () => {
   const registrations = [];
   const handlers = new Map();
   const anthropic = anthropicProvider();
@@ -23,8 +23,8 @@ test("session startup registers Claude Opus 5 on the live Anthropic provider", (
     ui: { setStatus() {} },
   });
 
-  assert.equal(registrations.length, 1);
-  const [provider] = registrations[0];
+  assert.equal(registrations.length, 0);
+  const provider = anthropic;
   assert.equal(provider.id, "anthropic");
   assert.equal(provider.auth, anthropic.auth);
   assert.equal(provider.stream, anthropic.stream);

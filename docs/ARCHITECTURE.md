@@ -1,6 +1,6 @@
 # Alloy Architecture
 
-Alloy is a **product layer** on [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). It does **not** fork Pi and does **not** reimplement provider OAuth.
+Alloy is a **product layer** on [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). It maintains a narrow coding-agent fork for viewport and user-message presentation, but does **not** reimplement provider OAuth, sessions, tools, or the agent runtime.
 
 **Product boundary:** Alloy is org-agnostic (no required company mesh / shared brain). See [BOUNDARY.md](./BOUNDARY.md).
 
@@ -32,7 +32,8 @@ alloy (bin/alloy.mjs)
 
 | Layer | Owns |
 |---|---|
-| **Pi** | TUI, model registry, `/login`, sessions, compaction, native tools, extension lifecycle |
+| **Pi** | Base TUI, model registry, `/login`, sessions, compaction, native tools, extension lifecycle |
+| **Alloy Pi fork** | Fixed transcript viewport, transcript navigation, standard user-message presentation |
 | **Alloy launcher** | PATH install, Pi discovery, version string, package injection |
 | **Alloy libs** | Config trust boundary, capabilities, MCP client, checkpoints, worktrees, child runner, sandbox, memory store |
 | **Operator state** | `~/.pi/alloy/` (config, memory, mcp, runs, worktrees) and Pi's `~/.pi/agent/` (auth, sessions, skills) |
@@ -140,7 +141,7 @@ remains separate future hardening.
 
 ## Rules
 
-- Do not fork Pi.
+- Keep the Pi fork narrow: viewport, transcript navigation, and standard user-message presentation only.
 - Do not implement provider OAuth; use Pi `/login`.
 - Never log credential values.
 - Self-improve skills: propose → approve → write.
