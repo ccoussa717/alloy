@@ -335,6 +335,13 @@ export function AlloyApp(props: AlloyAppProps) {
       while (submissionQueue.length > 0) {
         const next = submissionQueue.shift();
         if (next === undefined) continue;
+        if (/^\/model(?:\s|$)/i.test(next.value.trim())) {
+          const response = await request({ type: "get_available_models" });
+          if (!response?.success) {
+            if (next.restoreOnFailure) failedComposerValue = next.value;
+            continue;
+          }
+        }
         const handled = await runResolution(resolveSubmission(next.value, {
           isStreaming: session().isStreaming,
           commands: session().commands,
@@ -422,7 +429,11 @@ export function AlloyApp(props: AlloyAppProps) {
 
     if (localDialog() === "model") {
       const model = session().availableModels[selected()];
-      if (!model) return;
+      if (!model) {
+        setLocalDialog(null);
+        setTimeout(() => composer?.focus(), 0);
+        return;
+      }
       const response = await request({ type: "set_model", provider: model.provider, modelId: model.id });
       if (!response?.success) return;
       setLocalDialog(null);
@@ -698,6 +709,11 @@ export function AlloyApp(props: AlloyAppProps) {
                   )}
                 </For>
               </scrollbox>
+            </Show>
+            <Show when={localDialog() === "model" && options().length === 0}>
+              <box paddingLeft={2} paddingRight={2}>
+                <text fg={theme.warning} wrapMode="word">No authenticated models available. Finish /login or run /doctor.</text>
+              </box>
             </Show>
             <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
               <box marginLeft={2} marginRight={2} border={["left"]} borderColor={theme.accent} backgroundColor={theme.panel} paddingLeft={1}>

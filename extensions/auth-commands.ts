@@ -18,10 +18,22 @@ type AuthRuntime = Pick<
   ModelRuntime,
   "getProviders" | "getProvider" | "login" | "logout" | "listCredentials"
 >;
+type AuthUI = ExtensionCommandContext["ui"];
+type ActiveLogin = { controller: AbortController; provider: Provider; widgetKey: string };
+type AuthState = {
+  activeLogins: Map<string, ActiveLogin>;
+  current?: { runtime: AuthRuntime; modelRegistry: ExtensionCommandContext["modelRegistry"] };
+  pendingCredentialSync: Set<string>;
+  replacement?: {
+    promise: Promise<Error | undefined>;
+    resolve: (error?: Error) => void;
+  };
+};
 
 export interface AuthCommandDependencies {
   /** Test seam; production commands always resolve the active context registry runtime. */
   resolveRuntime?: (ctx: ExtensionCommandContext) => AuthRuntime | Promise<AuthRuntime>;
+  replacementTimeoutMs?: number;
 }
 
 class AuthCancelledError extends Error {
@@ -40,25 +52,85 @@ class AuthRuntimeCompatibilityError extends Error {
   }
 }
 
+class AuthRuntimeSyncError extends Error {
+  constructor() {
+    super("The active session could not reload the stored OAuth credential.");
+    this.name = "AuthRuntimeSyncError";
+  }
+}
+
 const API_KEY_GUIDANCE =
   "API key entry is unavailable because RPC input is not masked. Use environment variables or models.json/config instead.";
-const AUTH_WIDGET_KEY = "alloy-auth-login";
+const AUTH_WIDGET_PREFIX = "alloy-auth-login";
+// Session replacement cache-busts extensions and runtimes; process-global state bridges pending logins.
+const AUTH_STATE = (() => {
+  const key = Symbol.for("alloy.auth.state.v1");
+  const root = globalThis as unknown as { [key: symbol]: unknown };
+  const existing = root[key];
+  if (existing) return existing as AuthState;
+  const created: AuthState = { activeLogins: new Map(), pendingCredentialSync: new Set() };
+  root[key] = created;
+  return created;
+})();
+const ACTIVE_LOGINS = AUTH_STATE.activeLogins;
 
 export function registerAuthCommands(
   pi: ExtensionAPI,
   dependencies: AuthCommandDependencies = {},
 ) {
   const resolveRuntime = dependencies.resolveRuntime ?? getActiveRuntime;
+  const replacementTimeoutMs = dependencies.replacementTimeoutMs ?? 30_000;
+
+  pi.on("session_shutdown", async (event) => {
+    if (event.reason === "quit") return;
+    AUTH_STATE.replacement?.resolve(new AuthRuntimeSyncError());
+    let done!: (error?: Error) => void;
+    const promise = new Promise<Error | undefined>((resolve) => (done = resolve));
+    let replacement!: NonNullable<AuthState["replacement"]>;
+    const timer = setTimeout(() => {
+      replacement.resolve(new AuthRuntimeSyncError());
+    }, replacementTimeoutMs);
+    replacement = {
+      promise,
+      resolve(error) {
+        clearTimeout(timer);
+        done(error);
+      },
+    };
+    AUTH_STATE.replacement = replacement;
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    const replacement = AUTH_STATE.replacement;
+    let syncError: Error | undefined;
+    try {
+      const current = { runtime: await resolveRuntime(ctx), modelRegistry: ctx.modelRegistry };
+      AUTH_STATE.current = current;
+      for (const providerId of AUTH_STATE.pendingCredentialSync) {
+        await reloadAndVerifyCredential(current, providerId);
+        AUTH_STATE.pendingCredentialSync.delete(providerId);
+      }
+    } catch (error) {
+      syncError = error instanceof Error ? error : new AuthRuntimeSyncError();
+      // Command invocation will surface an actionable compatibility error if this persists.
+    } finally {
+      replacement?.resolve(syncError);
+      if (AUTH_STATE.replacement === replacement) AUTH_STATE.replacement = undefined;
+    }
+  });
 
   pi.registerCommand("login", {
     description: "Sign in to an OAuth provider: /login [provider]",
     handler: async (args, ctx) => {
       const controller = new AbortController();
       const detachAbort = forwardAbort(ctx.signal, controller);
+      const ui = ctx.ui;
       let provider: Provider | undefined;
+      let loginOwnsLifecycle = false;
 
       try {
         const runtime = await resolveRuntime(ctx);
+        AUTH_STATE.current = { runtime, modelRegistry: ctx.modelRegistry };
         const providers = oauthProviders(runtime.getProviders());
         const providerRef = (args || "").trim();
 
@@ -103,25 +175,45 @@ export function registerAuthCommands(
           }
         }
 
-        const interaction = createInteraction(ctx, controller);
-        await runtime.login(provider.id, "oauth", interaction);
-        await ctx.modelRegistry.refresh();
-        const stored = await runtime.listCredentials();
-        const verified = stored.some(
-          (entry) => entry.providerId === provider?.id && entry.type === "oauth",
-        );
-        if (!verified) {
-          ctx.ui.notify(
-            `OAuth credential for ${provider.name} could not be verified after login; completion was not confirmed.`,
-            "error",
+        if (ACTIVE_LOGINS.has(provider.id)) {
+          ui.notify(
+            `Login for ${provider.name} is already in progress. Use /login-cancel ${provider.id} to stop it.`,
+            "warning",
           );
           return;
         }
 
-        ctx.ui.notify(
-          `OAuth login for ${provider.name} completed; stored credential verified.`,
-          "info",
-        );
+        let announceDeviceFlow!: () => void;
+        const deviceFlow = new Promise<void>((resolve) => (announceDeviceFlow = resolve));
+        const widgetKey = `${AUTH_WIDGET_PREFIX}-${provider.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+        const providerId = provider.id;
+        ACTIVE_LOGINS.set(providerId, { controller, provider, widgetKey });
+        const login = completeOAuthLogin(
+          runtime,
+          provider,
+          ui,
+          controller,
+          detachAbort,
+          widgetKey,
+          announceDeviceFlow,
+        ).finally(() => {
+          if (ACTIVE_LOGINS.get(providerId)?.controller === controller) {
+            ACTIVE_LOGINS.delete(providerId);
+          }
+        });
+        loginOwnsLifecycle = true;
+
+        const first = await Promise.race([
+          login.then(() => "complete" as const),
+          deviceFlow.then(() => "device-code" as const),
+        ]);
+        if (first === "device-code") {
+          ui.notify(
+            `Device-code login for ${provider.name} continues in the background. Alloy will report when it completes.`,
+            "info",
+          );
+          return;
+        }
       } catch (error) {
         if (error instanceof AuthCancelledError || controller.signal.aborted) {
           ctx.ui.notify("Login cancelled.", "info");
@@ -131,9 +223,39 @@ export function registerAuthCommands(
           ctx.ui.notify(`OAuth login failed${provider ? ` for ${provider.name}` : ""}.`, "error");
         }
       } finally {
-        ctx.ui.setWidget(AUTH_WIDGET_KEY, undefined);
-        detachAbort();
+        if (!loginOwnsLifecycle) {
+          detachAbort();
+        }
       }
+    },
+  });
+
+  pi.registerCommand("login-cancel", {
+    description: "Cancel a device-code login: /login-cancel [provider]",
+    handler: async (args, ctx) => {
+      const pending = [...ACTIVE_LOGINS.values()];
+      if (pending.length === 0) {
+        ctx.ui.notify("No device-code login is in progress.", "info");
+        return;
+      }
+      const reference = (args || "").trim().toLowerCase();
+      const active = reference
+        ? pending.find(({ provider }) =>
+            provider.id.toLowerCase() === reference || provider.name.toLowerCase() === reference)
+        : pending.length === 1
+          ? pending[0]
+          : undefined;
+      if (!active) {
+        ctx.ui.notify(
+          reference
+            ? `No active login found for "${reference}".`
+            : `Multiple logins are active; specify one of: ${pending.map(({ provider }) => provider.id).join(", ")}.`,
+          "warning",
+        );
+        return;
+      }
+      active.controller.abort();
+      ctx.ui.notify(`Cancelling login for ${active.provider.name}.`, "info");
     },
   });
 
@@ -142,6 +264,7 @@ export function registerAuthCommands(
     handler: async (args, ctx) => {
       try {
         const runtime = await resolveRuntime(ctx);
+        AUTH_STATE.current = { runtime, modelRegistry: ctx.modelRegistry };
         const credentials = metadataOnly(await runtime.listCredentials());
         if (credentials.length === 0) {
           ctx.ui.notify(
@@ -167,6 +290,14 @@ export function registerAuthCommands(
           }
         }
 
+        const active = ACTIVE_LOGINS.get(credential.providerId);
+        if (active) {
+          ctx.ui.notify(
+            `Login for ${active.provider.name} is still in progress. Cancel it before logging out.`,
+            "warning",
+          );
+          return;
+        }
         const providerName = runtime.getProvider(credential.providerId)?.name ?? credential.providerId;
         await runtime.logout(credential.providerId);
         await ctx.modelRegistry.refresh();
@@ -190,6 +321,82 @@ export function registerAuthCommands(
       }
     },
   });
+}
+
+async function completeOAuthLogin(
+  runtime: AuthRuntime,
+  provider: Provider,
+  ui: AuthUI,
+  controller: AbortController,
+  detachAbort: () => void,
+  widgetKey: string,
+  onDeviceCode: () => void,
+): Promise<void> {
+  try {
+    const interaction = createInteraction(ui, controller, widgetKey, onDeviceCode);
+    await runtime.login(provider.id, "oauth", interaction);
+    const stored = await runtime.listCredentials();
+    const verified = stored.some(
+      (entry) => entry.providerId === provider.id && entry.type === "oauth",
+    );
+    if (!verified) {
+      ui.notify(
+        `OAuth credential for ${provider.name} could not be verified after login; completion was not confirmed.`,
+        "error",
+      );
+      return;
+    }
+    const replacement = AUTH_STATE.replacement;
+    if (replacement) {
+      AUTH_STATE.pendingCredentialSync.add(provider.id);
+      const replacementError = await replacement.promise;
+      if (replacementError) throw new AuthRuntimeSyncError();
+    }
+    if (!replacement || AUTH_STATE.pendingCredentialSync.has(provider.id)) {
+      await refreshReplacementRuntime(runtime, provider.id);
+    }
+    ui.notify(
+      `OAuth login for ${provider.name} completed; stored credential verified.`,
+      "info",
+    );
+  } catch (error) {
+    if (error instanceof AuthRuntimeSyncError) {
+      ui.notify(
+        `OAuth credential for ${provider.name} was stored, but the active session could not refresh it. Run /reload before selecting a model.`,
+        "error",
+      );
+    } else if (error instanceof AuthCancelledError || controller.signal.aborted) {
+      ui.notify("Login cancelled.", "info");
+    } else {
+      ui.notify(`OAuth login failed for ${provider.name}.`, "error");
+    }
+  } finally {
+    ui.setWidget(widgetKey, undefined);
+    detachAbort();
+  }
+}
+
+async function refreshReplacementRuntime(completedRuntime: AuthRuntime, providerId: string): Promise<void> {
+  const current = AUTH_STATE.current;
+  if (!current || current.runtime === completedRuntime) return;
+  await reloadAndVerifyCredential(current, providerId);
+  AUTH_STATE.pendingCredentialSync.delete(providerId);
+}
+
+async function reloadAndVerifyCredential(
+  current: NonNullable<AuthState["current"]>,
+  providerId: string,
+): Promise<void> {
+  const store = (current.runtime as unknown as {
+    credentials?: { store?: { reload?: () => void } };
+  }).credentials?.store;
+  if (typeof store?.reload !== "function") throw new AuthRuntimeSyncError();
+  store.reload();
+  const stored = await current.runtime.listCredentials();
+  if (!stored.some((entry) => entry.providerId === providerId && entry.type === "oauth")) {
+    throw new AuthRuntimeSyncError();
+  }
+  await current.modelRegistry.refresh();
 }
 
 function getActiveRuntime(ctx: ExtensionCommandContext): AuthRuntime {
@@ -233,19 +440,21 @@ async function selectProvider(
 }
 
 function createInteraction(
-  ctx: ExtensionCommandContext,
+  ui: AuthUI,
   controller: AbortController,
+  widgetKey: string,
+  onDeviceCode: () => void = () => {},
 ): AuthInteraction {
   const promptDetails = new Map<string, string>();
   return {
     signal: controller.signal,
-    prompt: (prompt) => answerPrompt(ctx, controller, prompt, [...promptDetails.values()]),
+    prompt: (prompt) => answerPrompt(ui, controller, prompt, [...promptDetails.values()]),
     notify: (event) => {
       const detail = authPromptDetail(event);
       if (detail) {
         promptDetails.set(detail.key, detail.text);
-        ctx.ui.setWidget(
-          AUTH_WIDGET_KEY,
+        ui.setWidget(
+          widgetKey,
           [...promptDetails.values()].flatMap((value, index) => [
             ...(index > 0 ? [""] : []),
             ...value.split("\n"),
@@ -253,13 +462,14 @@ function createInteraction(
           { placement: "aboveEditor" },
         );
       }
-      notifyAuthEvent(ctx, event);
+      notifyAuthEvent(ui, event);
+      if (event.type === "device_code") onDeviceCode();
     },
   };
 }
 
 async function answerPrompt(
-  ctx: ExtensionCommandContext,
+  ui: AuthUI,
   controller: AbortController,
   prompt: AuthPrompt,
   details: readonly string[] = [],
@@ -276,10 +486,10 @@ async function answerPrompt(
     const options = prompt.options.map((option) =>
       option.description ? `${option.label} - ${option.description}` : option.label,
     );
-    const selected = await ctx.ui.select(title, options, { signal });
+    const selected = await ui.select(title, options, { signal });
     if (selected) answer = prompt.options[options.indexOf(selected)]?.id;
   } else {
-    answer = await ctx.ui.input(title, prompt.placeholder, { signal });
+    answer = await ui.input(title, prompt.placeholder, { signal });
   }
 
   if (answer === undefined) {
@@ -311,14 +521,14 @@ function authPromptDetail(event: AuthEvent): { key: string; text: string } | und
   return undefined;
 }
 
-function notifyAuthEvent(ctx: ExtensionCommandContext, event: AuthEvent): void {
+function notifyAuthEvent(ui: AuthUI, event: AuthEvent): void {
   if (event.type === "auth_url") {
     const instructions = event.instructions ? `\n${event.instructions}` : "";
-    ctx.ui.notify(`Open this URL to sign in:\n${event.url}${instructions}`, "info");
+    ui.notify(`Open this URL to sign in:\n${event.url}${instructions}`, "info");
     return;
   }
   if (event.type === "device_code") {
-    ctx.ui.notify(
+    ui.notify(
       `Open ${event.verificationUri} and enter device code ${event.userCode}.`,
       "info",
     );
@@ -326,10 +536,10 @@ function notifyAuthEvent(ctx: ExtensionCommandContext, event: AuthEvent): void {
   }
   if (event.type === "info") {
     const links = event.links?.map((link) => `${link.label ?? "Link"}: ${link.url}`).join("\n");
-    ctx.ui.notify(links ? `${event.message}\n${links}` : event.message, "info");
+    ui.notify(links ? `${event.message}\n${links}` : event.message, "info");
     return;
   }
-  ctx.ui.notify(event.message, "info");
+  ui.notify(event.message, "info");
 }
 
 function metadataOnly(credentials: readonly CredentialInfo[]): CredentialInfo[] {

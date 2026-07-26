@@ -5,8 +5,13 @@ import { registerAuthCommands } from "../../extensions/auth-commands.ts";
 
 function fakePi() {
   const commands = new Map();
+  const events = new Map();
   return {
     commands,
+    events,
+    on(name, handler) {
+      events.set(name, handler);
+    },
     registerCommand(name, spec) {
       commands.set(name, spec);
     },
@@ -79,6 +84,14 @@ function register(runtime, options = {}) {
 
 function allNotificationText(ctx) {
   return ctx.notifications.map(({ message }) => message).join("\n");
+}
+
+async function waitUntil(predicate, message) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(message);
 }
 
 test("login maps OAuth provider, method, prompts, and events through RPC-safe extension UI", async () => {
@@ -154,6 +167,7 @@ test("login maps OAuth provider, method, prompts, and events through RPC-safe ex
   );
 
   await pi.commands.get("login").handler("", ctx);
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(resolveCalls, [ctx]);
   assert.equal(ctx.selections.length, 3);
@@ -171,7 +185,7 @@ test("login maps OAuth provider, method, prompts, and events through RPC-safe ex
   assert.match(ctx.inputs[1].title, /ABCD-EFGH/);
   assert.ok(ctx.widgets.some(({ content }) => content?.join("\n").includes("https://auth.example.test/authorize")));
   assert.equal(ctx.widgets.at(-1)?.content, undefined);
-  assert.equal(ctx.modelRegistry.refreshCalls, 1);
+  assert.equal(ctx.modelRegistry.refreshCalls, 0);
 
   const visible = allNotificationText(ctx);
   assert.match(visible, /https:\/\/auth\.example\.test\/authorize/);
@@ -231,8 +245,8 @@ test("commands use the exact active registry runtime from each command context",
   assert.equal(calls[1].runtime, secondRuntime);
 });
 
-test("login keeps deduplicated device-flow details visible while polling without a prompt", async () => {
-  const providers = [provider("openai-codex", "OpenAI Codex")];
+test("device-code login releases the command queue while polling and clears details when done", async () => {
+  const providers = [provider("xai", "xAI")];
   let credentials = [];
   let finishLogin;
   const runtime = {
@@ -257,9 +271,13 @@ test("login keeps deduplicated device-flow details visible while polling without
   const { pi } = register(runtime);
   const ctx = fakeContext();
 
-  const login = pi.commands.get("login").handler("openai-codex", ctx);
+  let commandFinished = false;
+  const login = pi.commands.get("login").handler("xai", ctx).then(() => {
+    commandFinished = true;
+  });
   await new Promise((resolve) => setImmediate(resolve));
 
+  const releasedWhilePolling = commandFinished;
   const active = ctx.widgets.filter(({ content }) => content !== undefined).at(-1)?.content.join("\n") ?? "";
   assert.doesNotMatch(active, /\/old/);
   assert.equal(active.match(/\/current/g)?.length, 1);
@@ -268,7 +286,227 @@ test("login keeps deduplicated device-flow details visible while polling without
 
   finishLogin();
   await login;
+  await waitUntil(() => ctx.widgets.at(-1)?.content === undefined, "background login did not finish");
+  assert.equal(releasedWhilePolling, true);
+  assert.equal(ctx.modelRegistry.refreshCalls, 0);
   assert.equal(ctx.widgets.at(-1)?.content, undefined);
+  assert.match(allNotificationText(ctx), /completed.*verified/i);
+  assert.doesNotMatch(allNotificationText(ctx), /login failed/i);
+});
+
+test("device-code login survives command-context invalidation and rejects duplicate starts", async () => {
+  const providers = [provider("xai", "xAI")];
+  let credentials = [];
+  let finishLogin;
+  let loginCalls = 0;
+  let loginResolved = false;
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(providerId, _type, interaction) {
+      loginCalls++;
+      interaction.notify({
+        type: "device_code",
+        userCode: "SAFE-4321",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((resolve) => (finishLogin = resolve));
+      credentials = [{ providerId, type: "oauth" }];
+      loginResolved = true;
+    },
+    async listCredentials() {
+      return credentials;
+    },
+    async logout() {},
+  };
+  const { pi } = register(runtime);
+  const base = fakeContext();
+  const ui = base.ui;
+  const modelRegistry = base.modelRegistry;
+  let stale = false;
+  const ctx = { ...base };
+  Object.defineProperties(ctx, {
+    ui: { get: () => stale ? (() => { throw new Error("stale ui context"); })() : ui },
+    modelRegistry: { get: () => stale ? (() => { throw new Error("stale model context"); })() : modelRegistry },
+  });
+
+  await pi.commands.get("login").handler("xai", ctx);
+  stale = true;
+  const reloaded = register(runtime).pi;
+  await reloaded.commands.get("login").handler("xai", base);
+
+  assert.equal(loginCalls, 1);
+  assert.match(allNotificationText(base), /already in progress/i);
+  await pi.events.get("session_shutdown")({ type: "session_shutdown", reason: "new" }, base);
+  finishLogin();
+  await waitUntil(() => loginResolved, "background provider login did not resolve");
+  assert.notEqual(base.widgets.at(-1)?.content, undefined);
+
+  let credentialReloads = 0;
+  let replacementCredentials = [];
+  const replacementRuntime = {
+    ...runtime,
+    async listCredentials() {
+      return replacementCredentials;
+    },
+    credentials: {
+      store: {
+        reload() {
+          credentialReloads++;
+          replacementCredentials = [...credentials];
+        },
+      },
+    },
+  };
+  const replacementCtx = fakeContext([], [], replacementRuntime);
+  const replacement = register(replacementRuntime).pi;
+  await replacement.events.get("session_start")({ type: "session_start", reason: "new" }, replacementCtx);
+  await waitUntil(() => ui.setWidget && base.widgets.at(-1)?.content === undefined, "stale-context login did not clean up");
+  assert.equal(credentialReloads, 1);
+  assert.equal(replacementCtx.modelRegistry.refreshCalls, 1);
+  assert.match(allNotificationText(base), /completed.*verified/i);
+});
+
+test("device-code login fails cleanly when session replacement never starts", async () => {
+  const providers = [provider("xai", "xAI")];
+  let finishLogin;
+  let credentials = [];
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(providerId, _type, interaction) {
+      interaction.notify({
+        type: "device_code",
+        userCode: "FAILED-REPLACE",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((resolve) => (finishLogin = resolve));
+      credentials = [{ providerId, type: "oauth" }];
+    },
+    async listCredentials() {
+      return credentials;
+    },
+    async logout() {},
+  };
+  const { pi } = register(runtime, { replacementTimeoutMs: 0 });
+  const ctx = fakeContext();
+
+  await pi.commands.get("login").handler("xai", ctx);
+  await pi.events.get("session_shutdown")({ type: "session_shutdown", reason: "new" }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  finishLogin();
+  await waitUntil(() => ctx.widgets.at(-1)?.content === undefined, "failed replacement left login pending");
+
+  assert.match(allNotificationText(ctx), /credential.*stored.*active session could not refresh/i);
+  assert.doesNotMatch(allNotificationText(ctx), /completed.*verified/i);
+
+  const recoveredRuntime = {
+    ...runtime,
+    credentials: { store: { reload() {} } },
+  };
+  const recoveredCtx = fakeContext([], [], recoveredRuntime);
+  const recovered = register(recoveredRuntime).pi;
+  await recovered.events.get("session_start")({ type: "session_start", reason: "reload" }, recoveredCtx);
+});
+
+test("login-cancel aborts an active device-code poll", async () => {
+  const providers = [provider("xai", "xAI")];
+  let observedSignal;
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(_providerId, _type, interaction) {
+      observedSignal = interaction.signal;
+      interaction.notify({
+        type: "device_code",
+        userCode: "CANCEL-1",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((_resolve, reject) => {
+        interaction.signal.addEventListener("abort", () => reject(new Error("Login cancelled")), { once: true });
+      });
+    },
+    async listCredentials() {
+      return [];
+    },
+    async logout() {},
+  };
+  const { pi } = register(runtime);
+  const ctx = fakeContext();
+
+  await pi.commands.get("login").handler("xai", ctx);
+  await pi.commands.get("login-cancel").handler("xai", ctx);
+  await waitUntil(() => ctx.widgets.at(-1)?.content === undefined, "cancelled login did not clean up");
+
+  assert.equal(observedSignal.aborted, true);
+  assert.match(allNotificationText(ctx), /cancelling login/i);
+  assert.match(allNotificationText(ctx), /login cancelled/i);
+  assert.doesNotMatch(allNotificationText(ctx), /completed.*verified/i);
+});
+
+test("late device-code cancellation reports a credential that was already persisted", async () => {
+  const providers = [provider("xai", "xAI")];
+  let finishLogin;
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(_providerId, _type, interaction) {
+      interaction.notify({
+        type: "device_code",
+        userCode: "LATE-1",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((resolve) => (finishLogin = resolve));
+    },
+    async listCredentials() {
+      return [{ providerId: "xai", type: "oauth" }];
+    },
+    async logout() {},
+  };
+  const { pi } = register(runtime);
+  const ctx = fakeContext();
+
+  await pi.commands.get("login").handler("xai", ctx);
+  finishLogin();
+  await pi.commands.get("login-cancel").handler("xai", ctx);
+  await waitUntil(() => ctx.widgets.at(-1)?.content === undefined, "late-cancelled login did not clean up");
+
+  assert.match(allNotificationText(ctx), /completed.*verified/i);
+  assert.doesNotMatch(allNotificationText(ctx), /Login cancelled\./i);
+});
+
+test("logout refuses to race an active login for the same provider", async () => {
+  const providers = [provider("xai", "xAI")];
+  let finishLogin;
+  let logoutCalls = 0;
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    async login(_providerId, _type, interaction) {
+      interaction.notify({
+        type: "device_code",
+        userCode: "RACE-1",
+        verificationUri: "https://auth.example.test/device",
+      });
+      await new Promise((resolve) => (finishLogin = resolve));
+    },
+    async listCredentials() {
+      return [{ providerId: "xai", type: "oauth" }];
+    },
+    async logout() {
+      logoutCalls++;
+    },
+  };
+  const { pi } = register(runtime);
+  const ctx = fakeContext();
+
+  await pi.commands.get("login").handler("xai", ctx);
+  await pi.commands.get("logout").handler("xai", ctx);
+
+  assert.equal(logoutCalls, 0);
+  assert.match(allNotificationText(ctx), /still in progress.*cancel it before logging out/i);
+  finishLogin();
+  await waitUntil(() => ctx.widgets.at(-1)?.content === undefined, "racing login did not clean up");
 });
 
 test("commands report a clear compatibility error when the registry runtime is unavailable", async () => {
@@ -359,7 +597,7 @@ test("login verifies stored credential metadata and redacts provider errors", as
   const first = register(missingStorage).pi;
   const missingCtx = fakeContext();
   await first.commands.get("login").handler("anthropic", missingCtx);
-  assert.equal(missingCtx.modelRegistry.refreshCalls, 1);
+  assert.equal(missingCtx.modelRegistry.refreshCalls, 0);
   assert.match(allNotificationText(missingCtx), /could not be verified/i);
   assert.match(allNotificationText(missingCtx), /completion was not confirmed/i);
   assert.doesNotMatch(allNotificationText(missingCtx), /logged in|completed;|secret-access|secret-refresh/i);

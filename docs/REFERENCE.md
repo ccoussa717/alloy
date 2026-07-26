@@ -109,7 +109,11 @@ Pi owns provider authentication and stores credentials in
 `~/.pi/agent/auth.json`. In the OpenTUI shell, `/login` supports OAuth only.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
-response.
+response. Device-code flows continue polling in the background after presenting
+the code, leaving the command queue available; Alloy reports completion or
+failure in the TUI. Use `/login-cancel [provider]` to stop a pending device-code
+flow. `/model` refreshes the authenticated model catalog whenever the selector
+opens.
 Alloy rejects secret prompts because RPC input is intentionally not masked;
 enter API keys through environment variables or supported Pi configuration,
 not the TUI.
@@ -346,6 +350,7 @@ extensions:
 | `/name [name]` | Set the current session name. |
 | `/hotkeys` | Show OpenTUI keyboard shortcuts. |
 | `/login [provider]` | Complete a Pi-backed OAuth login. API-key entry is unavailable in OpenTUI. |
+| `/login-cancel [provider]` | Cancel an active device-code OAuth login. |
 | `/logout [provider]` | Remove and verify removal of a stored Pi credential. |
 
 Alloy extension commands such as `/mode`, `/permissions`, `/remember`, `/mcp`,
