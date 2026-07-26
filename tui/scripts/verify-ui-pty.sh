@@ -10,28 +10,64 @@ NARROW="$BASE-narrow"
 RESTORE="$BASE-restore"
 LOSS="$BASE-loss"
 SPLASH="$BASE-splash"
+REMOTE_AUTO="$BASE-remote-auto"
+REMOTE_ON="$BASE-remote-on"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
+REMOTE_AUTO_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-auto.raw"
+REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
 
 cleanup() {
-  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
-  rm -f "$LOG" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
+  rm -f "$LOG" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
 }
 trap cleanup EXIT
 
-for command in bun grep pgrep sleep stty tmux; do
+for command in bun cat grep pgrep sleep stty tmux wc; do
   command -v "$command" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$command" >&2; exit 1; }
 done
 
 run_command() {
-  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
-    "$ROOT" "${1:-0}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
+  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_ACTIVITY_ANIMATION=%q SSH_CONNECTION=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
+    "$ROOT" "${1:-0}" "${2:-on}" "${3:-}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
 }
 
 capture() { tmux capture-pane -t "$1" -p; }
+
+pipe_capture_command() { printf 'cat > %q' "$1"; }
+
+wait_for_stable_file_size() {
+  local path="$1" previous="" current="" stable=0 attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    if [ -f "$path" ]; then
+      current="$(wc -c < "$path")"
+      if [[ "$current" == "$previous" ]]; then
+        stable=$((stable + 1))
+        [ "$stable" -ge 4 ] && return 0
+      else
+        stable=0
+      fi
+      previous="$current"
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+  printf 'timed out waiting for stable file size: %s\n' "$path" >&2
+  return 1
+}
+
+activity_line() {
+  local line=""
+  while IFS= read -r line; do
+    case "$line" in *Working*) printf '%s' "$line"; return 0;; esac
+  done <<EOF
+$(capture "$1")
+EOF
+  return 1
+}
 
 assert_contains() {
   case "$1" in
@@ -129,6 +165,8 @@ exercise_early_signal() {
 
 RUN="$(run_command 0)"
 SPLASH_RUN="$(run_command 1)"
+REMOTE_AUTO_RUN="$(run_command 0 auto fixture)"
+REMOTE_ON_RUN="$(run_command 0 on fixture)"
 
 exercise_early_signal TERM 143 "$EARLY_TERM"
 exercise_early_signal INT 130 "$EARLY_INT"
@@ -149,9 +187,10 @@ tmux send-keys -t "$SESSION" Enter
 wait_for_log '"message":"PTY prompt"'
 wheel_up="$(printf '\033[<64;10;10M')"
 wheel_down="$(printf '\033[<65;10;10M')"
-working_frame_a="$(wait_for_text "$SESSION" 'Working')"
+wait_for_text "$SESSION" 'Working' >/dev/null
+working_frame_a="$(activity_line "$SESSION")"
 sleep 0.12
-working_frame_b="$(capture "$SESSION")"
+working_frame_b="$(activity_line "$SESSION")"
 if [[ "$working_frame_a" == "$working_frame_b" ]]; then
   printf 'activity scanner did not advance while the backend was working\n' >&2
   exit 1
@@ -167,6 +206,38 @@ assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
 assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
 assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
 wait_for_text "$SESSION" 'Ready' >/dev/null
+
+tmux new-session -d -s "$REMOTE_ON" -x 80 -y 24 "$REMOTE_ON_RUN"
+tmux pipe-pane -t "$REMOTE_ON" -o "$(pipe_capture_command "$REMOTE_ON_OUTPUT")"
+wait_for_text "$REMOTE_ON" 'hydrated history item 50' >/dev/null
+tmux send-keys -t "$REMOTE_ON" -l "hold"
+tmux send-keys -t "$REMOTE_ON" Enter
+wait_for_text "$REMOTE_ON" 'Working' >/dev/null
+sleep 0.12
+remote_on_bytes_before="$(wc -c < "$REMOTE_ON_OUTPUT")"
+sleep 0.25
+remote_on_bytes_after="$(wc -c < "$REMOTE_ON_OUTPUT")"
+if [[ "$remote_on_bytes_before" == "$remote_on_bytes_after" ]]; then
+  printf 'raw PTY capture did not observe forced SSH animation\n' >&2
+  exit 1
+fi
+tmux kill-session -t "$REMOTE_ON"
+
+tmux new-session -d -s "$REMOTE_AUTO" -x 80 -y 24 "$REMOTE_AUTO_RUN"
+tmux pipe-pane -t "$REMOTE_AUTO" -o "$(pipe_capture_command "$REMOTE_AUTO_OUTPUT")"
+wait_for_text "$REMOTE_AUTO" 'hydrated history item 50' >/dev/null
+tmux send-keys -t "$REMOTE_AUTO" -l "hold"
+tmux send-keys -t "$REMOTE_AUTO" Enter
+wait_for_text "$REMOTE_AUTO" 'Working' >/dev/null
+wait_for_stable_file_size "$REMOTE_AUTO_OUTPUT"
+remote_auto_bytes_before="$(wc -c < "$REMOTE_AUTO_OUTPUT")"
+sleep 0.25
+remote_auto_bytes_after="$(wc -c < "$REMOTE_AUTO_OUTPUT")"
+if [[ "$remote_auto_bytes_before" != "$remote_auto_bytes_after" ]]; then
+  printf 'TUI emitted continuous redraw bytes over SSH auto mode\n' >&2
+  exit 1
+fi
+tmux kill-session -t "$REMOTE_AUTO"
 
 tmux send-keys -t "$SESSION" BTab
 wait_for_log '"message":"/build"'
@@ -229,4 +300,4 @@ splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
 assert_contains "$splash" "──────────────────────────" "green splash divider"
 tmux send-keys -t "$SPLASH" C-c
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, activity scanner, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

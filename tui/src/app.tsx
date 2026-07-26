@@ -21,7 +21,7 @@ import {
   type ToolExecution,
 } from "./session-store";
 import parsers from "./parsers-config";
-import { activityFrame, activityLabel, splashDivider } from "./presentation";
+import { activityAnimationInterval, activityFrame, activityLabel, splashDivider } from "./presentation";
 import { syntaxStyle } from "./syntax";
 import { theme } from "./theme";
 
@@ -175,6 +175,7 @@ export function AlloyApp(props: AlloyAppProps) {
   const [selected, setSelected] = createSignal(0);
   const [dialogText, setDialogText] = createSignal("");
   const [activityFrameIndex, setActivityFrameIndex] = createSignal(0);
+  const activityInterval = activityAnimationInterval();
   const activityActive = createMemo(() =>
     session().isStreaming ||
     session().isCompacting ||
@@ -243,7 +244,8 @@ export function AlloyApp(props: AlloyAppProps) {
       setActivityFrameIndex(0);
       return;
     }
-    const timer = setInterval(() => setActivityFrameIndex((frame) => frame + 1), 80);
+    if (activityInterval === null) return;
+    const timer = setInterval(() => setActivityFrameIndex((frame) => frame + 1), activityInterval);
     onCleanup(() => clearInterval(timer));
   });
 
