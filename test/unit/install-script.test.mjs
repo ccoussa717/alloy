@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const PACKAGE_VERSION = packageJson.version;
+const PI_VERSION = packageJson.alloy.piFork.version;
 const installer = readFileSync(join(root, "install.sh"), "utf8");
 const temp = mkdtempSync(join(tmpdir(), "alloy-installer-"));
 const NODE_SHA_LINUX_X64 =
@@ -51,7 +52,7 @@ case "$1" in
     esac
     shift
     if [ "$1" = "--version" ]; then
-      printf '%s\n' 'Alloy ${PACKAGE_VERSION}' 'Pi    0.82.0' 'Node  v22.19.0'
+      printf '%s\n' 'Alloy ${PACKAGE_VERSION}' 'Pi    ${PI_VERSION}' 'Node  v22.19.0'
     fi
     exit 0
     ;;

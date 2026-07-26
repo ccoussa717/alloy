@@ -94,9 +94,23 @@ Host mode must never be described as filesystem isolation.
 
 ## Supply chain and releases
 
-- Direct executable dependencies use exact versions.
-- Release artifacts include `npm-shrinkwrap.json`, and every registry artifact
-  must carry an integrity hash.
+- Direct executable dependencies use exact versions. The Alloy Pi coding-agent
+  fork uses one explicitly approved GitHub release URL plus matching SHA-256 and
+  npm SHA-512 integrity metadata.
+- Release artifacts include `npm-shrinkwrap.json`, and every registry or approved
+  fork artifact must carry an integrity hash.
+- Release verification resolves the fork release tag to the declared full commit,
+  downloads the artifact, and checks both its SHA-256 and npm SHA-512 digests.
+  GitHub release URLs can be replaced by maintainers, but replacement bytes fail
+  closed against both recorded hashes.
+- npm does not import a dependency tarball's nested shrinkwrap into the consuming
+  project. Alloy's root shrinkwrap is therefore the authority for source-checkout
+  and source-installer graphs, including Pi transitive dependencies. It does not
+  guarantee the graph a future npm consumer would resolve from Alloy's tarball;
+  npm publication remains blocked until that graph is independently reproducible.
+  Pi fork upgrades require an explicit lock-diff audit and the full compatibility,
+  packed-install, source-installer, and PTY gates described in
+  [PI_FORK.md](./PI_FORK.md).
 - GitHub Actions installs and starts the actual packed npm artifact.
 - High and critical dependency findings block tagged release artifacts and npm
   packages. Moderate findings must be reviewed and documented when no compatible
@@ -123,19 +137,21 @@ Host mode must never be described as filesystem isolation.
   processes.
 - Some transitive moderate advisories may remain until upstream packages ship
   compatible fixes.
-- Pi 0.82.0's published shrinkwrap currently pins `brace-expansion` 5.0.7,
+- Pi 0.82.1's published shrinkwrap currently pins `brace-expansion` 5.0.7,
   which is affected by the out-of-memory denial-of-service advisory
   `GHSA-mh99-v99m-4gvg`. Repository-authored model and resource patterns can
   reach this matcher only after the operator explicitly trusts the project. The
   resulting local-process availability risk is accepted for the public source
   snapshot at that trust boundary, but the high-severity finding keeps tagged
-  releases and npm publication blocked until Pi ships a compatible fix. Pi
-  0.82.1 remains affected, and the upstream request to regenerate the shrinkwrap
+  releases and npm publication blocked until Pi ships a compatible fix. The
+  upstream request to regenerate the shrinkwrap
   was [closed as not planned](https://github.com/earendil-works/pi/issues/7090).
-  Root npm overrides and edits that only change Alloy's lock metadata do not
-  replace the actually installed Pi-owned node, so Alloy does not claim those as
-  fixes. Reassess this acceptance if matching occurs before project trust or the
-  impact extends beyond the local Alloy process.
+  Alloy's root shrinkwrap owns the installed graph, including Pi-owned nested
+  nodes, so a reviewed lock update can replace this dependency. The current lock
+  still installs 5.0.7 because compatibility with a forced replacement has not
+  been established; metadata-only overrides that leave the effective installed
+  node unchanged are not fixes. Reassess this acceptance if matching occurs
+  before project trust or the impact extends beyond the local Alloy process.
 - The current MCP dependency chain carries `GHSA-frvp-7c67-39w9`, a moderate
   Windows encoded-backslash path-traversal advisory in `@hono/node-server`.
   No compatible fix is currently available; Alloy does not expose that static

@@ -2,6 +2,7 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,16 +13,29 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const temp = mkdtempSync(join(tmpdir(), "alloy-security-gates-"));
 const TEST_INTEGRITY = `sha512-${Buffer.alloc(64).toString("base64")}`;
+const TEST_PI_FORK_URL =
+  "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.2/earendil-works-pi-coding-agent-0.82.1.tgz";
+const TEST_PI_FORK_COMMIT = "6e213240c0987a05c4703dae8f7efa21be181a68";
+const TEST_PI_FORK_ARTIFACT = Buffer.from("alloy pi fork artifact fixture");
+const TEST_PI_FORK_SHA256 = createHash("sha256").update(TEST_PI_FORK_ARTIFACT).digest("hex");
+const TEST_PI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_FORK_ARTIFACT).digest("base64")}`;
 after(() => rmSync(temp, { recursive: true, force: true }));
 
 function run(command, args, options = {}) {
+  const cwd = options.cwd || root;
+  const mockFetch = join(cwd, "mock-release-fetch.mjs");
+  const env = { ...process.env, ...(options.env || {}) };
+  if (existsSync(mockFetch)) {
+    env.NODE_OPTIONS = `${env.NODE_OPTIONS || ""} --import=${mockFetch}`.trim();
+  }
   return spawnSync(command, args, {
-    cwd: options.cwd || root,
-    env: { ...process.env, ...(options.env || {}) },
+    cwd,
+    env,
     encoding: "utf8",
   });
 }
@@ -84,10 +98,19 @@ function releaseFixture(overrides = {}) {
     version: "0.8.2",
     license: "MIT",
     dependencies: {
-      "@earendil-works/pi-agent-core": "0.82.0",
-      "@earendil-works/pi-ai": "0.82.0",
-      "@earendil-works/pi-coding-agent": "0.82.0",
-      "@earendil-works/pi-tui": "0.82.0",
+      "@earendil-works/pi-agent-core": "0.82.1",
+      "@earendil-works/pi-ai": "0.82.1",
+      "@earendil-works/pi-coding-agent": TEST_PI_FORK_URL,
+      "@earendil-works/pi-tui": "0.82.1",
+    },
+    alloy: {
+      piFork: {
+        version: "0.82.1",
+        commit: TEST_PI_FORK_COMMIT,
+        url: TEST_PI_FORK_URL,
+        sha256: TEST_PI_FORK_SHA256,
+        integrity: TEST_PI_FORK_INTEGRITY,
+      },
     },
     publishConfig: { access: "public", provenance: true },
     ...(overrides.pkg || {}),
@@ -99,26 +122,177 @@ function releaseFixture(overrides = {}) {
     const path = `node_modules/${name}`;
     const slug = name.split("/").at(-1);
     packages[path] = {
-      version: "0.82.0",
-      resolved: `https://registry.npmjs.org/${name}/-/${slug}-0.82.0.tgz`,
-      integrity: TEST_INTEGRITY,
+      version: "0.82.1",
+      resolved:
+        name === "@earendil-works/pi-coding-agent"
+          ? TEST_PI_FORK_URL
+          : `https://registry.npmjs.org/${name}/-/${slug}-0.82.1.tgz`,
+      integrity:
+        name === "@earendil-works/pi-coding-agent" ? TEST_PI_FORK_INTEGRITY : TEST_INTEGRITY,
     };
   }
   Object.assign(packages, overrides.packages || {});
   writeFileSync(join(directory, "package.json"), JSON.stringify(pkg));
   writeFileSync(
     join(directory, "npm-shrinkwrap.json"),
-    JSON.stringify({ name: pkg.name, version: pkg.version, packages }),
+    JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, packages }),
+  );
+  const artifactPath = join(directory, "pi-fork-artifact.tgz");
+  writeFileSync(artifactPath, TEST_PI_FORK_ARTIFACT);
+  writeFileSync(
+    join(directory, "mock-release-fetch.mjs"),
+    `import { readFileSync } from "node:fs";
+const artifact = readFileSync(${JSON.stringify(artifactPath)});
+globalThis.fetch = async (input, options) => {
+  if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
+  const url = String(input);
+  if (url === "https://api.github.com/repos/ccoussa717/pi/git/ref/tags/alloy-tui-v0.82.1.2") {
+    return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
+  }
+  if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  return new Response("not found", { status: 404 });
+};
+`,
   );
   return directory;
+}
+
+function piForkReleaseFixture() {
+  return releaseFixture();
 }
 
 describe("release metadata verification", () => {
   const script = join(root, "scripts", "verify-release.mjs");
 
-  it("accepts complete registry provenance without public-host metadata", () => {
+  it("accepts complete registry provenance alongside the pinned Pi fork", () => {
     const result = run(process.execPath, [script], { cwd: releaseFixture() });
     assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("requires Pi fork provenance metadata", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    delete pkg.alloy;
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /piFork metadata is required/);
+  });
+
+  it("rejects a Pi fork release tag at a different commit", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.alloy.piFork.commit = "0".repeat(40);
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must resolve to commit/);
+  });
+
+  it("resolves an annotated Pi fork release tag to its commit", () => {
+    const directory = piForkReleaseFixture();
+    const artifactPath = join(directory, "pi-fork-artifact.tgz");
+    writeFileSync(
+      join(directory, "mock-release-fetch.mjs"),
+      `import { readFileSync } from "node:fs";
+const artifact = readFileSync(${JSON.stringify(artifactPath)});
+globalThis.fetch = async (input, options) => {
+  if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
+  const url = String(input);
+  if (url.endsWith("/git/ref/tags/alloy-tui-v0.82.1.2")) {
+    return new Response(JSON.stringify({ object: { type: "tag", sha: "${"a".repeat(40)}" } }), { status: 200 });
+  }
+  if (url.endsWith("/git/tags/${"a".repeat(40)}")) {
+    return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
+  }
+  if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  return new Response("not found", { status: 404 });
+};
+`,
+    );
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("rejects a failed Pi fork release tag request", () => {
+    const directory = piForkReleaseFixture();
+    writeFileSync(
+      join(directory, "mock-release-fetch.mjs"),
+      `globalThis.fetch = async (_input, options) => {
+  if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
+  return new Response("unavailable", { status: 503 });
+};
+`,
+    );
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /could not resolve Pi fork release tag.*HTTP 503/);
+  });
+
+  it("rejects a downloaded Pi fork artifact with a different SHA-256", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.alloy.piFork.sha256 = "0".repeat(64);
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match alloy\.piFork\.sha256/);
+  });
+
+  it("accepts the explicitly pinned Alloy Pi fork artifact", () => {
+    const directory = piForkReleaseFixture();
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  });
+
+  it("rejects a fork artifact outside the approved repository", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const lockPath = join(directory, "npm-shrinkwrap.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const unapprovedUrl = TEST_PI_FORK_URL.replace("ccoussa717/pi", "acme/pi");
+    pkg.dependencies["@earendil-works/pi-coding-agent"] = unapprovedUrl;
+    pkg.alloy.piFork.url = unapprovedUrl;
+    lock.packages[""].dependencies = pkg.dependencies;
+    lock.packages["node_modules/@earendil-works/pi-coding-agent"].resolved = unapprovedUrl;
+    writeFileSync(packagePath, JSON.stringify(pkg));
+    writeFileSync(lockPath, JSON.stringify(lock));
+
+    assert.notEqual(run(process.execPath, [script], { cwd: directory }).status, 0);
+  });
+
+  it("rejects downloaded fork bytes when matching metadata and shrinkwrap integrity are wrong", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const lockPath = join(directory, "npm-shrinkwrap.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const wrongIntegrity = `sha512-${Buffer.alloc(64, 1).toString("base64")}`;
+    pkg.alloy.piFork.integrity = wrongIntegrity;
+    lock.packages["node_modules/@earendil-works/pi-coding-agent"].integrity = wrongIntegrity;
+    writeFileSync(packagePath, JSON.stringify(pkg));
+    writeFileSync(lockPath, JSON.stringify(lock));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /downloaded Pi fork artifact does not match alloy\.piFork\.integrity/);
   });
 
   for (const [name, entry] of [
@@ -213,6 +387,19 @@ describe("release metadata verification", () => {
     lock.packages[""].dependencies = {};
     writeFileSync(lockPath, JSON.stringify(lock));
     assert.notEqual(run(process.execPath, [script], { cwd: directory }).status, 0);
+  });
+
+  it("rejects a shrinkwrap with an unsupported lockfile version", () => {
+    const directory = releaseFixture();
+    const lockPath = join(directory, "npm-shrinkwrap.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock.lockfileVersion = 2;
+    writeFileSync(lockPath, JSON.stringify(lock));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must use lockfileVersion 3/);
   });
 
   it("rejects a direct package entry at the wrong version", () => {

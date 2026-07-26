@@ -28,9 +28,10 @@ Alloy is a multi-provider coding agent harness built on
 terminal with durable memory, reusable skills, MCP, bounded multi-agent
 workflows, and one mechanical policy boundary.
 
-It does not fork Pi or reimplement provider authentication. Alloy keeps Pi's
-native TUI, tools, sessions, model registry, and `/login`, then adds the product
-layer around them.
+Alloy maintains a narrow Pi coding-agent fork for its fixed transcript viewport
+and user-message presentation. Pi still owns provider authentication, tools,
+sessions, the model registry, and `/login`; Alloy adds the product layer around
+those native runtime capabilities.
 
 <p align="center">
   <img src="docs/assets/alloy-terminal.svg" alt="Illustrated Alloy terminal showing parallel Architect and Builder proposals flowing into attributed synthesis" width="1000">
@@ -218,7 +219,7 @@ troubleshooting.
 
 ## Project status
 
-Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.0
+Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.1
 and Node.js 22.19 or newer. npm publication remains disabled until the release
 gates in [RELEASING.md](docs/RELEASING.md) are complete.
 
@@ -240,6 +241,7 @@ npm run ci:local
 | [Reference](docs/REFERENCE.md) | Commands, configuration, provider routes, paths, and troubleshooting. |
 | [MVP contract](docs/MVP.md) | Implemented scope and explicit exclusions. |
 | [Architecture](docs/ARCHITECTURE.md) | Runtime layers, trust boundaries, child execution, checkpoints, and worktrees. |
+| [Pi fork](docs/PI_FORK.md) | Fork provenance, dependency audit, upgrade, and rollback procedure. |
 | [Security](docs/SECURITY.md) | Threat model, credential handling, sandbox claims, supply chain, and residual risks. |
 | [Operations](docs/OPERATIONS.md) | Installation and daily-use safety checklist. |
 | [Product boundary](docs/BOUNDARY.md) | What belongs in the generic package and what stays outside it. |

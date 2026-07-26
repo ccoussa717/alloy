@@ -7,10 +7,15 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Field | Value |
 |---|---|
 | Package | `@earendil-works/pi-coding-agent` |
-| Version | `0.82.0` |
+| Version | `0.82.1` plus Alloy viewport patch |
 | License | **MIT** |
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
+| Alloy fork | https://github.com/ccoussa717/pi |
+| Runtime artifact | `alloy-tui-v0.82.1.2`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
+
+See [PI_FORK.md](./PI_FORK.md) for the source commit, artifact hashes,
+dependency-graph decision, upgrade procedure, and rollback procedure.
 
 Pi’s MIT license text (upstream):
 
@@ -38,7 +43,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-Alloy **redistributes Pi only as an npm dependency** (not vendored source in this repository). Downstream redistributors of Alloy must preserve Pi’s MIT notice when distributing the combined work (typically via `node_modules` / lockfile and this file).
+Alloy **redistributes Pi as package dependencies**, with the coding-agent package
+coming from an integrity-pinned release asset in the public Alloy fork. Pi source
+is not vendored in this repository. Downstream redistributors of Alloy must
+preserve Pi's MIT notice when distributing the combined work, including through
+`node_modules`, the shrinkwrap, and this file.
 
 ## Acknowledgments and inspiration
 
@@ -64,7 +73,9 @@ and npm dependency described above.
 
 ## What Alloy owns (divergence from bare Pi)
 
-Alloy does **not** fork or patch Pi’s published sources in-tree. Divergence is **additive**:
+Alloy does **not** vendor or patch Pi sources in-tree. The public fork changes
+only interactive viewport behavior, transcript navigation, and standard user
+message presentation. The remaining divergence is additive:
 
 | Alloy surface | Role |
 |---|---|
