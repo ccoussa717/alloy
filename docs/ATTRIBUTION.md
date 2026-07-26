@@ -12,7 +12,7 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
 | Alloy fork | https://github.com/ccoussa717/pi |
-| Runtime artifact | `alloy-tui-v0.82.1.2`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
+| Runtime artifact | `alloy-tui-v0.82.1.3`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
 
 See [PI_FORK.md](./PI_FORK.md) for the source commit, artifact hashes,
 dependency-graph decision, upgrade procedure, and rollback procedure.
@@ -49,19 +49,28 @@ is not vendored in this repository. Downstream redistributors of Alloy must
 preserve Pi's MIT notice when distributing the combined work, including through
 `node_modules`, the shrinkwrap, and this file.
 
-## Acknowledgments and inspiration
+## OpenCode-derived frontend
 
-Alloy also credits two open-source projects that helped shape its product and
-presentation:
+Alloy's interactive shell adapts the MIT-licensed OpenCode 1.18.4
+Solid/OpenTUI architecture and interaction model. It is not the complete
+OpenCode application, SDK, server, workspace model, or plugin host.
 
-| Project | Credit |
+| Component | Version / provenance |
 |---|---|
-| [OpenCode](https://github.com/anomalyco/opencode) | Inspiration for a focused terminal-first developer experience and clear open-source product presentation. |
-| [Fusion Harness](https://github.com/disler/fusion-harness) | Inspiration for explicit multi-model role framing and presenting independent perspectives as an attributable synthesis. |
+| [OpenCode](https://github.com/anomalyco/opencode) | `1.18.4`, source commit `49c69c5ed3ccf706b61b3febb43c8aaff7f8325e` |
+| [OpenTUI](https://github.com/sst/opentui) | `0.4.5`, source commit `0c8c4f7cff2927e3df63a9757a45eff9a343611c` |
+| [Solid](https://github.com/solidjs/solid) | `1.9.12`; OpenCode's transition patch is upstream in this release |
 
-These are acknowledgments of inspiration, not Alloy runtime dependencies. Alloy
-does not redistribute their source or visual assets. Pi is the runtime foundation
-and npm dependency described above.
+The adapted source and manifests live under `tui/`. `tui/LICENSE.opencode`,
+`tui/THIRD_PARTY_NOTICES.md`, and `tui/UPSTREAM.md` preserve the detailed
+notices and source links. OpenCode and its contributors do not sponsor, endorse,
+or maintain Alloy. Alloy does not claim OpenCode workspace or plugin features.
+
+## Other acknowledgment
+
+[Fusion Harness](https://github.com/disler/fusion-harness) inspired explicit
+multi-model role framing and attributable synthesis. It is not a runtime
+dependency.
 
 ## This repository: Alloy
 
@@ -79,7 +88,8 @@ message presentation. The remaining divergence is additive:
 
 | Alloy surface | Role |
 |---|---|
-| `bin/alloy.mjs`, `install.sh`, `scripts/` | Launcher, Pi discovery, PATH install |
+| `bin/alloy.mjs`, `install.sh`, `scripts/` | Node launcher, Pi/Bun discovery, PATH and runtime install |
+| `tui/*` | Adapted OpenCode-derived Solid/OpenTUI shell and Pi RPC client |
 | `extensions/*` | Product commands, policy, MCP bridge, modes, auto, agents, sandbox, honesty, UI |
 | `lib/*` | Config trust boundary, capabilities, child runner, checkpoints, worktrees, memory, MCP client, docker sandbox |
 | `skills/`, `prompts/`, `themes/` | Starter skills, mode prompts, and theme |
@@ -88,10 +98,13 @@ message presentation. The remaining divergence is additive:
 
 ## What Pi still owns at runtime
 
-- Interactive TUI and session trees
-- Model registry and `/login` / OAuth/subscription flows
+- Agent loop and session trees
+- Model registry, credential storage, and OAuth/subscription flows
 - Native tools (`read`, `bash`, …) and extension lifecycle
-- Context compaction, `@files`, base agent loop
+- Policy hooks, context compaction, `@files`, and the base agent loop
+
+Pi's renderer remains available only as the documented legacy rollback. The
+default interactive renderer is Alloy's adapted Solid/OpenTUI shell.
 
 ## “Isn’t this just Pi with branding?”
 

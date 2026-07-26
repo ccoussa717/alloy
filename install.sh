@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Install Alloy, bundled Pi, and a supported Node.js runtime on Linux or macOS.
+# Install Alloy, bundled Pi, OpenTUI, and pinned runtimes on Linux or macOS.
 set -euo pipefail
 
 ALLOY_NODE_MIN="22.19"
 ALLOY_NODE_VERSION="22.19.0"
+ALLOY_BUN_VERSION="1.3.14"
 ALLOY_REF="${ALLOY_REF:-main}"
 ALLOY_PREFIX="${ALLOY_PREFIX:-$HOME/.local}"
 ALLOY_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/alloy"
 ALLOY_APP_ROOT="$ALLOY_DATA_HOME/app"
 ALLOY_NODE_ROOT=""
+ALLOY_BUN_ROOT=""
 ALLOY_REPOSITORY="ccoussa717/alloy"
 ALLOY_SOURCE_URL=""
 ENV_FILE="$HOME/.config/alloy/env"
 
 NODE_TEMP_DIR=""
+BUN_TEMP_DIR=""
 SOURCE_TEMP_DIR=""
 INSTALL_COMMITTED=0
 APP_TRANSACTION=0
@@ -24,12 +27,16 @@ ENV_TRANSACTION=0
 ENV_HAD_PREVIOUS=0
 NODE_TRANSACTION=0
 NODE_HAD_PREVIOUS=0
+BUN_TRANSACTION=0
+BUN_HAD_PREVIOUS=0
 PREVIOUS_APP=""
 PREVIOUS_BIN=""
 PREVIOUS_ENV=""
 STAGED_APP=""
 NODE_STAGED=""
 NODE_PREVIOUS=""
+BUN_STAGED=""
+BUN_PREVIOUS=""
 TEMP_BIN=""
 TEMP_ENV=""
 LOCK_DIR="$HOME/.config/alloy/install.lock"
@@ -74,6 +81,12 @@ cleanup() {
     [[ -z "$PREVIOUS_ENV" ]] || ! exists_or_link "$PREVIOUS_ENV" || cleanup_try rm -f "$PREVIOUS_ENV"
   fi
   if [[ "$INSTALL_COMMITTED" -eq 0 ]]; then
+    if [[ "$BUN_TRANSACTION" -eq 1 && -e "$BUN_PREVIOUS" ]]; then
+      cleanup_try rm -rf "$ALLOY_BUN_ROOT"
+      cleanup_try mv "$BUN_PREVIOUS" "$ALLOY_BUN_ROOT"
+    elif [[ "$BUN_TRANSACTION" -eq 1 && "$BUN_HAD_PREVIOUS" -eq 0 ]]; then
+      cleanup_try rm -rf "$ALLOY_BUN_ROOT"
+    fi
     if [[ "$NODE_TRANSACTION" -eq 1 && -e "$NODE_PREVIOUS" ]]; then
       cleanup_try rm -rf "$ALLOY_NODE_ROOT"
       cleanup_try mv "$NODE_PREVIOUS" "$ALLOY_NODE_ROOT"
@@ -81,13 +94,16 @@ cleanup() {
       cleanup_try rm -rf "$ALLOY_NODE_ROOT"
     fi
   else
+    [[ -z "$BUN_PREVIOUS" || ! -e "$BUN_PREVIOUS" ]] || cleanup_try rm -rf "$BUN_PREVIOUS"
     [[ -z "$NODE_PREVIOUS" || ! -e "$NODE_PREVIOUS" ]] || cleanup_try rm -rf "$NODE_PREVIOUS"
   fi
   [[ -z "$TEMP_BIN" || ! -e "$TEMP_BIN" ]] || cleanup_try rm -f "$TEMP_BIN"
   [[ -z "$TEMP_ENV" || ! -e "$TEMP_ENV" ]] || cleanup_try rm -f "$TEMP_ENV"
   [[ -z "$STAGED_APP" || ! -e "$STAGED_APP" ]] || cleanup_try rm -rf "$STAGED_APP"
   [[ -z "$NODE_STAGED" || ! -e "$NODE_STAGED" ]] || cleanup_try rm -rf "$NODE_STAGED"
+  [[ -z "$BUN_STAGED" || ! -e "$BUN_STAGED" ]] || cleanup_try rm -rf "$BUN_STAGED"
   [[ -z "$NODE_TEMP_DIR" || ! -d "$NODE_TEMP_DIR" ]] || cleanup_try rm -rf "$NODE_TEMP_DIR"
+  [[ -z "$BUN_TEMP_DIR" || ! -d "$BUN_TEMP_DIR" ]] || cleanup_try rm -rf "$BUN_TEMP_DIR"
   [[ -z "$SOURCE_TEMP_DIR" || ! -d "$SOURCE_TEMP_DIR" ]] || cleanup_try rm -rf "$SOURCE_TEMP_DIR"
   if [[ "$LOCK_HELD" -eq 1 ]]; then
     cleanup_try rm -f "$LOCK_DIR/pid"
@@ -146,7 +162,7 @@ sha256() {
   elif command -v shasum >/dev/null 2>&1; then
     output="$(shasum -a 256 "$1")"
   else
-    err "sha256sum or shasum is required to verify Node.js"
+    err "sha256sum or shasum is required to verify runtime downloads"
   fi
   printf '%s\n' "${output%% *}"
 }
@@ -243,12 +259,99 @@ install_node() {
   log "Installed Node.js v${ALLOY_NODE_VERSION}"
 }
 
+bun_artifact() {
+  local os arch
+  case "$(uname -s)" in
+    Linux) os="linux" ;;
+    Darwin) os="darwin" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x64-baseline" ;;
+    arm64|aarch64) arch="aarch64" ;;
+    *) err "Bun ${ALLOY_BUN_VERSION} does not support $(uname -m) on $(uname -s)" ;;
+  esac
+
+  BUN_PLATFORM="$os-$arch"
+  BUN_ARCHIVE="bun-${BUN_PLATFORM}.zip"
+  case "$BUN_PLATFORM" in
+    linux-x64-baseline) BUN_SHA256="a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7" ;;
+    linux-aarch64) BUN_SHA256="a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b" ;;
+    darwin-x64-baseline) BUN_SHA256="3e35ad6f53971a9834bf9e6786e2adf72b5f1921cc9a9c5fde073d2972944076" ;;
+    darwin-aarch64) BUN_SHA256="d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620" ;;
+  esac
+  ALLOY_BUN_ROOT="$ALLOY_DATA_HOME/bun-v${ALLOY_BUN_VERSION}-${BUN_PLATFORM}"
+}
+
+reject_musl() {
+  [[ "$(uname -s)" != "Linux" ]] && return
+  local libc_output=""
+  if command -v ldd >/dev/null 2>&1; then
+    libc_output="$(ldd --version 2>&1 || true)"
+  fi
+  if [[ -e /etc/alpine-release || "$libc_output" == *musl* ]] ||
+    compgen -G '/lib/ld-musl-*.so.1' >/dev/null; then
+    err "musl systems are not supported by Alloy's pinned Node.js and Bun installer"
+  fi
+}
+
+install_bun() {
+  [[ ! -L "$ALLOY_BUN_ROOT" ]] || err "refusing to replace symlink at $ALLOY_BUN_ROOT"
+  [[ ! -e "$ALLOY_BUN_ROOT" || -d "$ALLOY_BUN_ROOT" ]] ||
+    err "refusing to replace non-directory at $ALLOY_BUN_ROOT"
+  if [[ -x "$ALLOY_BUN_ROOT/bun" ]]; then
+    local installed_version
+    installed_version="$("$ALLOY_BUN_ROOT/bun" --version 2>/dev/null || true)"
+    if [[ "$installed_version" == "$ALLOY_BUN_VERSION" ]]; then
+      ALLOY_BUN_BIN="$ALLOY_BUN_ROOT/bun"
+      export ALLOY_BUN_BIN
+      return
+    fi
+  fi
+
+  BUN_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/alloy-bun.XXXXXX")"
+  local archive="$BUN_TEMP_DIR/$BUN_ARCHIVE"
+  local url="https://github.com/oven-sh/bun/releases/download/bun-v${ALLOY_BUN_VERSION}/${BUN_ARCHIVE}"
+
+  log "Installing Bun ${ALLOY_BUN_VERSION} in $ALLOY_BUN_ROOT"
+  curl -fsSL --retry 3 -o "$archive" "$url" </dev/null
+  [[ "$(sha256 "$archive")" == "$BUN_SHA256" ]] || err "Bun archive checksum mismatch"
+  unzip -q "$archive" -d "$BUN_TEMP_DIR" </dev/null
+
+  local extracted="$BUN_TEMP_DIR/${BUN_ARCHIVE%.zip}"
+  [[ -x "$extracted/bun" ]] || err "Bun archive did not contain the expected runtime"
+  [[ "$("$extracted/bun" --version 2>/dev/null || true)" == "$ALLOY_BUN_VERSION" ]] ||
+    err "downloaded Bun runtime is not version ${ALLOY_BUN_VERSION}"
+
+  mkdir -p "$(dirname "$ALLOY_BUN_ROOT")"
+  BUN_STAGED="${ALLOY_BUN_ROOT}.new.$$"
+  BUN_PREVIOUS="${ALLOY_BUN_ROOT}.previous.$$"
+  [[ ! -e "$BUN_STAGED" && ! -e "$BUN_PREVIOUS" ]] || err "stale Bun installer state exists"
+  BUN_HAD_PREVIOUS=0
+  [[ ! -e "$ALLOY_BUN_ROOT" ]] || BUN_HAD_PREVIOUS=1
+  BUN_TRANSACTION=1
+  mv "$extracted" "$BUN_STAGED"
+  [[ "$BUN_HAD_PREVIOUS" -eq 0 ]] || mv "$ALLOY_BUN_ROOT" "$BUN_PREVIOUS"
+  if ! mv "$BUN_STAGED" "$ALLOY_BUN_ROOT"; then
+    [[ ! -e "$BUN_PREVIOUS" ]] || mv "$BUN_PREVIOUS" "$ALLOY_BUN_ROOT"
+    err "could not install Bun in $ALLOY_BUN_ROOT"
+  fi
+
+  ALLOY_BUN_BIN="$ALLOY_BUN_ROOT/bun"
+  export ALLOY_BUN_BIN
+  [[ "$("$ALLOY_BUN_BIN" --version 2>/dev/null || true)" == "$ALLOY_BUN_VERSION" ]] ||
+    err "installed Bun runtime is not version ${ALLOY_BUN_VERSION}"
+  log "Installed Bun ${ALLOY_BUN_VERSION}"
+}
+
 if ! node_supported; then
   install_node
 fi
 
 command -v curl >/dev/null 2>&1 || err "curl is required to install Alloy"
 command -v tar >/dev/null 2>&1 || err "tar is required to install Alloy"
+command -v unzip >/dev/null 2>&1 || err "unzip is required to install Alloy"
+reject_musl
+bun_artifact
 
 if [[ "$ALLOY_REF" == "main" ]]; then
   log "Resolving Alloy main to one commit"
@@ -274,10 +377,40 @@ mkdir -p "$SOURCE_DIR"
 
 log "Downloading Alloy source ref ${ALLOY_REF}"
 curl -fsSL --retry 3 -o "$SOURCE_ARCHIVE" "$ALLOY_SOURCE_URL" </dev/null
+ARCHIVE_MEMBERS="$(tar -tzf "$SOURCE_ARCHIVE" -P </dev/null)" ||
+  err "could not inspect Alloy source archive members"
+[[ -n "$ARCHIVE_MEMBERS" ]] || err "unsafe source archive member list: archive is empty"
+while IFS= read -r member; do
+  [[ -n "$member" ]] || err "unsafe source archive member: empty path"
+  case "$member" in
+    /*) err "unsafe source archive member: absolute path $member" ;;
+  esac
+  IFS='/' read -r -a member_parts <<< "$member"
+  for part in "${member_parts[@]}"; do
+    [[ "$part" != ".." ]] || err "unsafe source archive member: parent traversal $member"
+  done
+done <<< "$ARCHIVE_MEMBERS"
 tar -xzf "$SOURCE_ARCHIVE" -C "$SOURCE_DIR" --strip-components=1 </dev/null
 
-[[ -f "$SOURCE_DIR/package.json" && -f "$SOURCE_DIR/npm-shrinkwrap.json" ]] ||
-  err "Alloy source archive is missing package metadata"
+require_file() {
+  local resource="$1" label="$2" current="$SOURCE_DIR" relative part
+  relative="${resource#"$SOURCE_DIR"/}"
+  IFS='/' read -r -a resource_parts <<< "$relative"
+  for part in "${resource_parts[@]}"; do
+    current="$current/$part"
+    [[ ! -L "$current" ]] || err "Alloy source archive contains a symlinked required $label: $relative"
+  done
+  [[ -f "$resource" ]] || err "Alloy source archive is missing required $label: $relative"
+}
+
+require_directory() {
+  local resource="$1" label="$2"
+  [[ ! -L "$resource" ]] || err "Alloy source archive contains a symlinked required $label: ${resource#"$SOURCE_DIR"/}"
+  [[ -d "$resource" ]] || err "Alloy source archive is missing required $label: ${resource#"$SOURCE_DIR"/}"
+}
+
+require_file "$SOURCE_DIR/package.json" "package metadata"
+require_file "$SOURCE_DIR/npm-shrinkwrap.json" "package metadata"
 node -e '
   const pkg = require(process.argv[1]);
   const repository = typeof pkg.repository === "string"
@@ -290,22 +423,57 @@ node -e '
   ]);
   if (pkg.name !== "alloy-agent" || !canonical.has(repository)) process.exit(1);
 ' "$SOURCE_DIR/package.json" </dev/null || err "Alloy source archive has an unexpected package identity"
+node -e 'const pkg = require(process.argv[1]); process.exit(pkg.private === true ? 0 : 1)' \
+  "$SOURCE_DIR/package.json" </dev/null || err "npm publication must remain blocked for source installs"
 
 for resource in \
   "$SOURCE_DIR/bin/alloy.mjs" \
   "$SOURCE_DIR/extensions/index.ts" \
   "$SOURCE_DIR/themes/alloy-dark.json"; do
-  [[ -f "$resource" ]] || err "Alloy source archive is missing required runtime resources"
+  require_file "$resource" "runtime resource"
+done
+for resource in \
+  "$SOURCE_DIR/tui/package.json" \
+  "$SOURCE_DIR/tui/bun.lock" \
+  "$SOURCE_DIR/tui/bunfig.toml" \
+  "$SOURCE_DIR/tui/LICENSE.opencode" \
+  "$SOURCE_DIR/tui/THIRD_PARTY_NOTICES.md" \
+  "$SOURCE_DIR/tui/UPSTREAM.md" \
+  "$SOURCE_DIR/tui/patches/solid-js@1.9.10.patch" \
+  "$SOURCE_DIR/tui/src/index.tsx"; do
+  require_file "$resource" "TUI resource"
 done
 for resource in "$SOURCE_DIR/skills" "$SOURCE_DIR/prompts"; do
-  [[ -d "$resource" ]] || err "Alloy source archive is missing required runtime resources"
+  require_directory "$resource" "runtime resource"
 done
+
+install_bun
 
 log "Installing exact shrinkwrapped dependencies"
 (
   cd "$SOURCE_DIR"
   npm ci --ignore-scripts --no-audit --no-fund </dev/null
 )
+
+log "Installing exact TUI production dependencies"
+(
+  cd "$SOURCE_DIR/tui"
+  "$ALLOY_BUN_BIN" install --frozen-lockfile --production </dev/null
+)
+
+log "Probing OpenTUI native runtime imports"
+(
+  cd "$SOURCE_DIR/tui"
+  "$ALLOY_BUN_BIN" --preload @opentui/solid/preload -e \
+    'const { createCliRenderer } = await import("@opentui/core");
+     let renderer;
+     try {
+       renderer = await createCliRenderer({ exitOnCtrlC: false, useAlternateScreen: false });
+       await import("@opentui/solid");
+     } finally {
+       renderer?.destroy();
+     }' </dev/null >/dev/null 2>&1
+) || err "OpenTUI native import probe failed"
 
 PI_CLI="$SOURCE_DIR/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 [[ -f "$PI_CLI" ]] || err "npm ci did not install Alloy's bundled Pi runtime"
@@ -346,6 +514,7 @@ TEMP_BIN="$(mktemp "$ALLOY_PREFIX/bin/.alloy.XXXXXX")"
 {
   printf '%s\n' '#!/bin/sh'
   printf '%s\n' '# Generated by Alloy install.sh; do not edit.'
+  printf 'export ALLOY_BUN_BIN=%s\n' "$(shell_quote "$ALLOY_BUN_BIN")"
   printf 'exec %s %s "$@"\n' \
     "$(shell_quote "$NODE_EXECUTABLE")" \
     "$(shell_quote "$ALLOY_APP_ROOT/bin/alloy.mjs")"

@@ -108,6 +108,7 @@ function releaseFixture(overrides = {}) {
       "@earendil-works/pi-coding-agent": TEST_PI_FORK_URL,
       "@earendil-works/pi-tui": TEST_PI_TUI_FORK_URL,
     },
+    overrides: { "brace-expansion": "5.0.8" },
     alloy: {
       piFork: {
         version: "0.82.1",
@@ -147,6 +148,11 @@ function releaseFixture(overrides = {}) {
             : TEST_INTEGRITY,
     };
   }
+  packages["node_modules/brace-expansion"] = {
+    version: "5.0.8",
+    resolved: "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.8.tgz",
+    integrity: TEST_INTEGRITY,
+  };
   Object.assign(packages, overrides.packages || {});
   writeFileSync(join(directory, "package.json"), JSON.stringify(pkg));
   writeFileSync(
@@ -364,7 +370,7 @@ globalThis.fetch = async (input, options) => {
     });
   }
 
-  it("requires canonical metadata only for a publish gate", () => {
+  it("keeps the publish gate blocked even with canonical metadata", () => {
     const missing = run(process.execPath, [script, "--publish"], {
       cwd: releaseFixture(),
     });
@@ -380,11 +386,12 @@ globalThis.fetch = async (input, options) => {
         bugs: { url: "https://github.com/ccoussa717/alloy/issues" },
       },
     });
-    const valid = run(process.execPath, [script, "--publish"], {
+    const blocked = run(process.execPath, [script, "--publish"], {
       cwd: directory,
       env: { RELEASE_TAG: "v0.8.2" },
     });
-    assert.equal(valid.status, 0, valid.stderr || valid.stdout);
+    assert.notEqual(blocked.status, 0);
+    assert.match(blocked.stderr, /npm publication is blocked/i);
   });
 
   it("requires source launches to keep npm publication disabled", () => {
@@ -414,7 +421,7 @@ globalThis.fetch = async (input, options) => {
     });
     const result = run(process.execPath, [script, "--publish"], { cwd: directory });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /must not be private/);
+    assert.match(result.stderr, /npm publication is blocked/);
   });
 
   it("rejects canonical metadata that points away from the Alloy repository", () => {
@@ -462,6 +469,22 @@ globalThis.fetch = async (input, options) => {
     lock.packages["node_modules/@earendil-works/pi-ai"].version = "0.0.0";
     writeFileSync(lockPath, JSON.stringify(lock));
     assert.notEqual(run(process.execPath, [script], { cwd: directory }).status, 0);
+  });
+
+  it("rejects a vulnerable brace-expansion override or installed node", () => {
+    const metadata = releaseFixture();
+    const packagePath = join(metadata, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.overrides["brace-expansion"] = "5.0.7";
+    writeFileSync(packagePath, JSON.stringify(pkg));
+    assert.notEqual(run(process.execPath, [script], { cwd: metadata }).status, 0);
+
+    const installed = releaseFixture();
+    const lockPath = join(installed, "npm-shrinkwrap.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock.packages["node_modules/brace-expansion"].version = "5.0.7";
+    writeFileSync(lockPath, JSON.stringify(lock));
+    assert.notEqual(run(process.execPath, [script], { cwd: installed }).status, 0);
   });
 });
 

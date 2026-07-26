@@ -1,9 +1,15 @@
 # Alloy Pi Fork
 
 Alloy uses narrow public forks of `@earendil-works/pi-coding-agent` and
-`@earendil-works/pi-tui` for the full-terminal transcript viewport and mouse
-input. Provider authentication, sessions, commands, tools, compaction, model
-handling, and extension APIs remain Pi behavior.
+`@earendil-works/pi-tui`. The coding-agent fork remains the authoritative
+backend for provider authentication, credentials, sessions, commands, tools,
+policy, compaction, models, and extensions.
+
+The forked Pi renderer is no longer the default interactive UI. A normal
+interactive launch uses Bun/Solid/OpenTUI with Pi as a strict local RPC child.
+The Pi renderer remains available only through `--legacy-pi-ui` or
+`ALLOY_LEGACY_PI_UI=1` as a temporary rollback path. Print, JSON, and explicit
+RPC modes also invoke Pi directly, without the OpenTUI frontend.
 
 ## Current Runtime
 
@@ -54,26 +60,36 @@ behavior remains a residual risk to recheck on every fork upgrade.
 This is a deliberate dependency refresh, not a claim that the fork's nested
 shrinkwrap is inherited. Acceptance requires the root integrity gate, unit and
 integration suites, packed install, source installer, provider compatibility,
-and live PTY viewport checks. The known `brace-expansion` advisory remains
-documented in [SECURITY.md](./SECURITY.md).
+and live PTY viewport checks. Alloy overrides the fork's vulnerable
+`brace-expansion` 5.0.7 node with patched 5.0.8 in the root shrinkwrap.
 
 ## Upgrade
 
 1. Rebase the fork onto the selected upstream Pi tag.
 2. Keep the diff within the approved viewport and message boundary.
-3. Run fork tests, build, PTY checks, independent review, and secret scans.
+3. Run fork tests, build, legacy-renderer PTY checks, independent review, and
+   secret scans.
 4. Pack the coding-agent and TUI twice from the clean tree and require identical
    hashes for both artifacts.
 5. Create a fork release tag at the reviewed commit and upload both artifacts.
 6. Update all `alloy.piFork` fields, the four Pi dependency pins, and overrides.
 7. Regenerate the root shrinkwrap with lifecycle scripts disabled.
-8. Audit and document the full lock delta, then run `npm run ci:local` and the
-   live 80x24 and 40x10 main-chat checks.
+8. Audit and document the full lock delta, then run `npm run ci:local`, the
+   OpenTUI PTY checks, and focused legacy-renderer rollback checks.
 
 ## Rollback
 
-Revert the complete Alloy integration commit so package metadata, shrinkwrap,
-verifier, tests, CI, and documentation return to one previously reviewed runtime
-state. Run `npm ci --ignore-scripts`, then repeat the local release and PTY gates.
-Do not delete prior release assets; they are rollback inputs and provenance
-evidence.
+For an OpenTUI regression, start the same Pi backend with the prior renderer:
+
+```bash
+alloy --legacy-pi-ui
+# or
+ALLOY_LEGACY_PI_UI=1 alloy
+```
+
+This is a renderer rollback, not a second supported product architecture. Pi
+runtime, credentials, tools, policy, sessions, and extensions remain the same.
+For a backend/fork regression, revert the complete integration commit so package
+metadata, shrinkwrap, verifier, tests, CI, and documentation return to one
+previously reviewed runtime state. Do not delete prior release assets; they are
+rollback inputs and provenance evidence.

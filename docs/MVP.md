@@ -5,7 +5,7 @@ not a backlog of unfinished ideas.
 
 ## In (implemented)
 
-1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, xAI Grok via Pi `/login`. API keys authenticate matching API routes; `OPENAI_API_KEY` is for `openai/...`, not `openai-codex/...`. `/doctor` reports status without printing secrets.
+1. **Subscriptions** — Anthropic Claude, OpenAI Codex/ChatGPT, and xAI Grok through Pi OAuth. OpenTUI `/login` is OAuth-only because RPC text input is intentionally not masked. API keys authenticate matching API routes through environment/config; `OPENAI_API_KEY` is for `openai/...`, not `openai-codex/...`. `/doctor` reports status without printing secrets.
 2. **Durable memory** — User + project facts survive `/new` and new processes (`/remember`, `/memory`).
 3. **Skills** — Create, compose (skills using skills), capture → approve → promote (`/skill-capture`, `/skill-promote`).
 4. **MCP** — Config + live **stdio**, **HTTP (streamable)**, and **SSE** bridges (`/mcp connect`); tools share the central capability gate. Headers support `${ENV}` expansion.
@@ -21,7 +21,10 @@ not a backlog of unfinished ideas.
 14. **Help** — `/help`, `/help <topic>`, `/help search <query>`, and `/help commands` for the complete active command registry.
 15. **Honesty policy** — Mandatory no-fabrication policy; `/whoami` for harness identity.
 16. **Child isolation** — Scrubbed env, policy ceiling, credential boundary, process-group kill (see `docs/SECURITY.md`).
-17. **Base harness** — Pi TUI, tools, sessions, tree, compact, `@files`, AGENTS.md, model switch.
+17. **Interactive shell** — Node launcher to pinned Bun 1.3.14, Solid 1.9.12, and OpenTUI 0.4.5, with Pi as a strict local RPC child.
+18. **Extension UI bridge** — Pi extension select, confirm, input, editor, notifications, status, widgets, title, and editor text render in OpenTUI.
+19. **Pi backend** — Tools, credentials, policy, sessions, extension lifecycle, compaction, `@files`, AGENTS.md, and model registry remain Pi-owned. Print, JSON, and RPC modes run Pi directly.
+20. **Session command compatibility** — OpenTUI local commands cover new, compact, session stats, export, model, and thinking. RPC-compatible extensions cover resume, tree, fork, reload, name, hotkeys, login, and logout.
 
 ## Out (deferred)
 
@@ -30,13 +33,16 @@ not a backlog of unfinished ideas.
 - Provider marketplace / every OpenRouter model as first-class surface.
 - GUI / hosted control plane.
 - Fix-loop polish and richer multi-model fusion productization beyond current `/auto` + `/fusion`.
+- OpenCode's server, SDK contract, workspace model, and plugin host.
+- Unmasked API-key entry in OpenTUI.
+- Full command parity with either OpenCode or the legacy Pi renderer beyond the commands listed above.
 
 ## Exit tests (operator machine)
 
 Operator adoption: see **[OPERATIONS.md](./OPERATIONS.md)** and
 **[BOUNDARY.md](./BOUNDARY.md)**.
 
-- [ ] `/login` works for Claude, Codex, and Grok (or honest red/green via `/doctor`)
+- [ ] OpenTUI `/login` completes Pi OAuth for available Claude, Codex, and Grok routes (or reports honest red/green via `/doctor`)
 - [ ] Real repo work with tools under `ask-dangerous` (default)
 - [ ] `/remember` fact visible after `/new` / new process
 - [ ] `/skill-capture` → `/skill-promote` installs a skill
@@ -46,6 +52,8 @@ Operator adoption: see **[OPERATIONS.md](./OPERATIONS.md)** and
 - [ ] `/permissions sandbox` + `/sandbox status` with Docker present; fails closed without
 - [ ] `/auto` small feature request writes run artifacts under `~/.pi/alloy/runs/`
 - [ ] `/fusion` records two valid proposals, one attributed synthesis, usage, and truthful status without leaking credentials
+- [ ] OpenTUI hydrates Pi history, streams output, renders extension dialogs, restores the terminal, and exits nonzero on backend loss
+- [ ] `alloy -p`, JSON mode, and RPC mode bypass OpenTUI; `--legacy-pi-ui` selects the rollback renderer
 - [ ] No secrets in memory files, drafts, doctor output, or child env (see credential audit)
 
 ## Verification (CI / local)

@@ -711,8 +711,14 @@ export function registerUi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("chrome", {
-    description: "Reset Alloy header/footer/editor chrome",
+    description: process.env.ALLOY_FRONTEND === "opentui"
+      ? "Available only with the legacy Pi renderer"
+      : "Reset Alloy header/footer/editor chrome",
     handler: async (_args, ctx) => {
+      if (ctx.mode === "rpc") {
+        ctx.ui.notify("/chrome is only available with --legacy-pi-ui.", "warning");
+        return;
+      }
       ctx.ui.setHeader(undefined);
       ctx.ui.setFooter(undefined);
       try {

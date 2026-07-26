@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Alloy launcher — thin wrapper around Pi.
- * Resolves the Pi CLI, injects the Alloy package (extension + skills + theme + prompts),
- * forwards all arguments and standard streams, returns Pi's exit status.
+ * Alloy launcher and frontend selector.
+ * Resolves Pi and Bun, injects the Alloy package, selects OpenTUI or legacy Pi,
+ * forwards signals and standard streams, and preserves the child exit status.
  * Contains no agent logic.
  */
 
@@ -22,6 +22,12 @@ import {
   findPiCli,
   readPackageVersion,
 } from "../lib/pi-package.mjs";
+import {
+  buildOpenTuiLaunch,
+  selectInteractiveFrontend,
+  shouldSuppressTerminalClear,
+  stripLegacyUiFlag,
+} from "../lib/tui-launch.mjs";
 
 // Load ~/.pi/alloy/env early so MCP ${VAR} headers work under Pi.
 try {
@@ -85,6 +91,8 @@ Usage:
 
 Alloy injects its extension, theme, skills, and prompts into Pi.
 All other flags are forwarded to Pi (e.g. -c, -p, --mode).
+Interactive sessions use the Solid/OpenTUI frontend. Pass --legacy-pi-ui to
+temporarily use Pi's previous interactive renderer.
 
 Examples:
   alloy
@@ -100,7 +108,7 @@ Doctor (inside a session): /doctor
 }
 
 // Handle Alloy meta flags before resolving/spawning Pi
-const userArgv = process.argv.slice(2);
+const userArgv = stripLegacyUiFlag(process.argv.slice(2));
 if (userArgv.includes("--version") || userArgv.includes("-V")) {
   printVersionAndExit();
 }
@@ -199,6 +207,25 @@ function npmPrefixGlobal() {
   });
   if (r.status === 0) return r.stdout.trim();
   return null;
+}
+
+function findBunBin() {
+  const candidates = [
+    process.env.ALLOY_BUN_BIN,
+    process.env.BUN_INSTALL && join(process.env.BUN_INSTALL, "bin", "bun"),
+    join(homedir(), ".bun", "bin", "bun"),
+  ];
+  for (const candidate of candidates) {
+    if (exists(candidate)) return candidate;
+  }
+  const which = spawnSync(
+    process.platform === "win32" ? "where" : "which",
+    ["bun"],
+    { encoding: "utf8" },
+  );
+  if (which.status !== 0) return null;
+  const candidate = which.stdout.trim().split("\n")[0]?.trim();
+  return candidate && exists(candidate) ? candidate : null;
 }
 
 /**
@@ -361,6 +388,11 @@ if (
 
 const piBin = findPiBin();
 const args = buildArgs(userArgv);
+const frontend = selectInteractiveFrontend({
+  args: process.argv.slice(2),
+  isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  env: process.env,
+});
 
 // Hide Pi startup resource dump so the empty state matches OpenCode's clean field
 ensureQuietStartup();
@@ -370,9 +402,7 @@ ensureQuietStartup();
 const skipClear =
   !process.stdout.isTTY ||
   process.env.ALLOY_NO_CLEAR ||
-  userArgv.includes("-p") ||
-  userArgv.includes("--mode") ||
-  userArgv.includes("--version");
+  shouldSuppressTerminalClear(userArgv);
 if (!skipClear) {
   try {
     process.stdout.write("\x1b[2J\x1b[H\x1b[3J");
@@ -381,33 +411,131 @@ if (!skipClear) {
   }
 }
 
-const isNodeEntry = piBin.endsWith(".js") || piBin.endsWith(".mjs");
-const command = isNodeEntry ? process.execPath : piBin;
-const finalArgs = isNodeEntry ? [piBin, ...args] : args;
-
-// Alloy pins Pi via package.json (node_modules). Global `pi update` does not
-// change that pin — but Pi still nags "Update Available" against pi.dev.
-// Skip Pi's self-update check under Alloy; bump the dependency intentionally.
-const child = spawn(command, finalArgs, {
-  stdio: "inherit",
-  env: {
+let command;
+let finalArgs;
+let childCwd;
+let childEnv;
+if (frontend === "opentui") {
+  const bunBin = findBunBin();
+  if (!bunBin) {
+    console.error(
+      "Alloy: interactive sessions require Bun 1.3.14 for the OpenTUI frontend. " +
+        "Install Bun or set ALLOY_BUN_BIN. Use --legacy-pi-ui only as a temporary rollback.",
+    );
+    process.exit(1);
+  }
+  const bunVersion = spawnSync(bunBin, ["--version"], { encoding: "utf8" });
+  if (bunVersion.status !== 0 || bunVersion.stdout.trim() !== "1.3.14") {
+    console.error(
+      `Alloy: OpenTUI requires Bun 1.3.14 (found ${bunVersion.stdout.trim() || "unavailable"}).`,
+    );
+    process.exit(1);
+  }
+  const launch = buildOpenTuiLaunch({
+    alloyRoot: ALLOY_ROOT,
+    bunBin,
+    nodeBin: process.execPath,
+    piBin,
+    piArgs: args,
+    cwd: process.cwd(),
+    version: ALLOY_VERSION,
+    env: process.env,
+  });
+  command = launch.command;
+  finalArgs = launch.args;
+  childCwd = launch.cwd;
+  childEnv = launch.env;
+} else {
+  const isNodeEntry = piBin.endsWith(".js") || piBin.endsWith(".mjs");
+  command = isNodeEntry ? process.execPath : piBin;
+  finalArgs = isNodeEntry ? [piBin, ...args] : args;
+  childCwd = process.cwd();
+  childEnv = {
     ...process.env,
     ALLOY_ROOT,
     ALLOY_VERSION,
     PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || "1",
-  },
-  windowsHide: true,
-});
+  };
+}
 
-child.on("error", (err) => {
-  console.error(`Alloy: failed to start Pi (${command}): ${err.message}`);
-  process.exit(1);
-});
+const forwardedSignals = ["SIGTERM", "SIGHUP", "SIGINT"];
+const signalHandlers = new Map();
+const pendingSignals = [];
+let child;
+let childSettled = false;
+let requestedSignal = null;
 
-child.on("exit", (code, signal) => {
+function removeSignalHandlers() {
+  for (const [signal, handler] of signalHandlers) {
+    process.removeListener(signal, handler);
+  }
+  signalHandlers.clear();
+}
+
+function finishWithChildStatus(code, signal) {
+  if (childSettled) return;
+  childSettled = true;
+  removeSignalHandlers();
+  if (requestedSignal) {
+    process.kill(process.pid, requestedSignal);
+    return;
+  }
   if (signal) {
     process.kill(process.pid, signal);
     return;
   }
-  process.exit(code ?? 1);
+  process.exitCode = code ?? 1;
+}
+
+function forwardSignal(signal) {
+  requestedSignal ||= signal;
+  if (!child) {
+    pendingSignals.push(signal);
+    return;
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill(signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+}
+
+for (const signal of forwardedSignals) {
+  const handler = () => forwardSignal(signal);
+  signalHandlers.set(signal, handler);
+  process.on(signal, handler);
+}
+
+// Alloy pins Pi via package.json (node_modules). Global `pi update` does not
+// change that pin — but Pi still nags "Update Available" against pi.dev.
+// Skip Pi's self-update check under Alloy; bump the dependency intentionally.
+try {
+  child = spawn(command, finalArgs, {
+    stdio: "inherit",
+    cwd: childCwd,
+    env: childEnv,
+    windowsHide: true,
+  });
+} catch (err) {
+  removeSignalHandlers();
+  console.error(
+    `Alloy: failed to start ${frontend} frontend (${command}): ${err.message}`,
+  );
+  process.exit(1);
+}
+
+for (const signal of pendingSignals.splice(0)) forwardSignal(signal);
+
+child.once("error", (err) => {
+  console.error(
+    `Alloy: failed to start ${frontend} frontend (${command}): ${err.message}`,
+  );
+  finishWithChildStatus(1, null);
+});
+
+// Wait for stdio to close as well as process exit so TUI cleanup reaches the
+// inherited terminal before the launcher restores default signal behavior.
+child.once("close", (code, signal) => {
+  finishWithChildStatus(code, signal);
 });

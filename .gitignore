@@ -11,3 +11,4 @@ coverage/
 *.tgz
 *.cdx.json
 pack-list.txt
+spikes/

@@ -14,10 +14,12 @@ provider-neutral product layer on Pi and keep operator safety explicit.
 
 ## Development setup
 
-Requirements: Node.js 22.19 or newer, npm, Git, and optionally Docker.
+Requirements: Node.js 22.19 or newer, Bun 1.3.14, npm, Git, and `tmux`.
+Docker is optional locally and required by CI.
 
 ```bash
 npm ci
+bun install --cwd tui --frozen-lockfile
 npm link
 alloy --version
 ```

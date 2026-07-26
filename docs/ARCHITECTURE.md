@@ -1,42 +1,83 @@
 # Alloy Architecture
 
-Alloy is a **product layer** on [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`). It maintains a narrow coding-agent fork for viewport and user-message presentation, but does **not** reimplement provider OAuth, sessions, tools, or the agent runtime.
+Alloy is a **product layer** on [Pi](https://pi.dev)
+(`@earendil-works/pi-coding-agent`) with an adapted OpenCode-derived interactive
+shell. It does not reimplement provider OAuth, credentials, sessions, tools,
+policy, or the agent runtime.
 
 **Product boundary:** Alloy is org-agnostic (no required company mesh / shared brain). See [BOUNDARY.md](./BOUNDARY.md).
 
 ```text
-alloy (bin/alloy.mjs)
-  └─ resolves Pi CLI (repo node_modules → npm root -g → which pi)
-       └─ spawns Pi with Alloy package injected
-            └─ extensions/index.ts
-                 ├── providers   /doctor /providers
-                 ├── memory      /remember /memory + inject
-                 ├── skills-improve  capture → promote
-                 ├── mcp         live stdio / HTTP / SSE bridge
-                 ├── policy      capability gate + permissions UX
-                 ├── modes       chat|plan|build|review
-                 ├── git         checkpoints
-                 ├── worktree    isolated trees
-                 ├── diagnostics project checks
-                 ├── auto        /auto orchestration
-                 ├── agents      /agent multi-model children
-                 ├── sandbox     Docker session container
-                 ├── child-enforcer  mechanical child policy ceiling
-                 ├── honesty     no-fabrication policy
-                 ├── help        searchable catalog
-                 ├── effort      thinking levels
-                 └── ui          chrome, panel, splash
+alloy (Node launcher, bin/alloy.mjs)
+  ├─ interactive TTY (default)
+  │    └─ Bun 1.3.14 + Solid 1.9.12 + OpenTUI 0.4.5 (tui/)
+  │         └─ strict local JSON-lines RPC over child stdio
+  │              └─ Pi RPC child + Alloy extensions
+  ├─ print / JSON / explicit RPC
+  │    └─ Pi directly + Alloy extensions
+  └─ --legacy-pi-ui or ALLOY_LEGACY_PI_UI=1
+       └─ Pi's previous interactive renderer (rollback only)
+
+Pi + extensions
+  ├─ providers and OAuth       /doctor /providers /login /logout
+  ├─ memory and skills         /remember /memory /skill-*
+  ├─ policy and modes          capability gate + permissions
+  ├─ MCP                       stdio / HTTP / SSE tools
+  ├─ recovery                  checkpoints + worktrees
+  ├─ orchestration             /agent /fusion /auto
+  └─ sandbox and diagnostics   Docker Bash + project checks
 ```
 
 ## Layers
 
 | Layer | Owns |
 |---|---|
-| **Pi** | Base TUI, model registry, `/login`, sessions, compaction, native tools, extension lifecycle |
-| **Alloy Pi fork** | Fixed transcript viewport, transcript navigation, standard user-message presentation |
-| **Alloy launcher** | PATH install, Pi discovery, version string, package injection |
+| **Pi** | Agent loop, model registry, OAuth and credentials, sessions, compaction, tools, policy hooks, extension lifecycle |
+| **Solid/OpenTUI frontend** | Transcript, composer, scrolling, selection, responsive layout, local selectors, and extension UI dialogs |
+| **Alloy Pi fork** | Backend package plus the prior Pi renderer retained as the documented rollback path |
+| **Alloy launcher** | Frontend selection, Bun and Pi discovery, process wiring, version string, package injection |
 | **Alloy libs** | Config trust boundary, capabilities, MCP client, checkpoints, worktrees, child runner, sandbox, memory store |
 | **Operator state** | `~/.pi/alloy/` (config, memory, mcp, runs, worktrees) and Pi's `~/.pi/agent/` (auth, sessions, skills) |
+
+## Interactive RPC boundary
+
+The frontend does not host Pi or duplicate backend policy. The Node launcher
+starts Bun with the frontend source and passes the Pi command, arguments, and
+working directory through process environment. Bun then spawns one Pi child in
+`--mode rpc` with piped stdio.
+
+The RPC client requires a successful `get_state` readiness response before it
+renders. Requests carry IDs; explicitly observational requests may use bounded
+timeouts, while mutation requests wait for an authoritative response. Stderr is
+bounded and redacted before display. Malformed records and correlated response
+schema or command mismatches are fatal; late responses to expired observations
+are ignored. Backend loss becomes a fatal UI error. Frontend shutdown sends
+`SIGTERM`, then `SIGKILL` after a bounded wait. There is no TCP listener, Unix
+socket, remote endpoint, or second credential store.
+
+Pi RPC remains authoritative for prompts, streaming, tools, compaction, model
+changes, session persistence, and command execution. The frontend hydrates
+state, messages, commands, models, and session statistics, then reduces ordered
+Pi events into render state.
+
+## Extension UI bridge
+
+Pi extensions continue to call the existing UI API. RPC events bridge
+`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`,
+`setTitle`, and editor text into Solid/OpenTUI. Dialog answers return as
+`extension_ui_response`; cancellation is explicit. This keeps permissions,
+Alloy commands, OAuth prompts, and workflow status below the frontend boundary.
+
+Commands that Pi previously implemented only inside its renderer are replaced
+with RPC-compatible extensions: `/resume`, `/tree`, `/fork`, `/reload`, `/name`,
+`/hotkeys`, `/login`, and `/logout`. `/new`, `/compact`, `/session`, `/export`,
+`/model`, and `/thinking` are frontend-local controls backed by typed Pi RPC
+requests. Other Alloy extension commands are submitted to Pi through the prompt
+command path.
+
+OpenTUI `/login` permits OAuth only. Secret/API-key prompts are rejected because
+the RPC input bridge is intentionally not an unmasked secret-entry surface. API
+keys still work through supported environment and Pi configuration routes.
 
 ## Trust boundary
 
@@ -141,8 +182,10 @@ remains separate future hardening.
 
 ## Rules
 
-- Keep the Pi fork narrow: viewport, transcript navigation, and standard user-message presentation only.
-- Do not implement provider OAuth; use Pi `/login`.
+- Keep runtime, tools, policy, credentials, sessions, and extensions in Pi.
+- Keep the OpenTUI process a renderer and RPC client, not a second backend.
+- Use Pi's model runtime for OAuth; never collect API keys through unmasked RPC input.
+- Keep the Pi renderer only as an explicit rollback path.
 - Never log credential values.
 - Self-improve skills: propose → approve → write.
 - MCP tools share native policy (live bridge).

@@ -28,10 +28,12 @@ Alloy is a multi-provider coding agent harness built on
 terminal with durable memory, reusable skills, MCP, bounded multi-agent
 workflows, and one mechanical policy boundary.
 
-Alloy maintains a narrow Pi coding-agent fork for its fixed transcript viewport
-and user-message presentation. Pi still owns provider authentication, tools,
-sessions, the model registry, and `/login`; Alloy adds the product layer around
-those native runtime capabilities.
+Interactive sessions use an Alloy shell adapted from the MIT-licensed OpenCode
+1.18.4 Solid/OpenTUI architecture. The Node launcher starts the pinned Bun
+1.3.14 frontend, which owns rendering and talks over local stdio RPC to a Pi
+child. Pi still owns the agent runtime, provider authentication, policy, tools,
+credentials, sessions, extensions, and model registry. This adaptation is not
+affiliated with or endorsed by OpenCode.
 
 <p align="center">
   <img src="docs/assets/alloy-terminal.svg" alt="Illustrated Alloy terminal showing parallel Architect and Builder proposals flowing into attributed synthesis" width="1000">
@@ -43,10 +45,10 @@ those native runtime capabilities.
 
 ## Quick start
 
-**Requires:** macOS or Linux with `curl` and `tar`. Automatic Node bootstrap
-also requires `sha256sum` or `shasum`. The installer reuses an existing Node.js
-22.19+ runtime on any architecture. Bootstrap supports macOS x64/arm64 and
-glibc Linux x64/arm64/armv7.
+**Requires:** macOS or Linux x64/arm64 with `curl`, `tar`, `unzip`, and
+`sha256sum` or `shasum`. The installer reuses Node.js 22.19+ when available and
+otherwise installs a checksum-verified Node runtime. It always installs the
+checksum-verified Bun 1.3.14 artifact selected for the host.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
@@ -56,8 +58,9 @@ alloy
 ```
 
 The installer writes only to your user directories, needs no `sudo`, and
-installs Alloy, its bundled Pi runtime, and pinned npm dependencies under
-`~/.local`. Writable, regular Bash and Zsh startup files are updated
+installs Alloy, its bundled Pi runtime, pinned npm dependencies, Bun 1.3.14,
+and the TUI's frozen production dependencies under `~/.local`. Writable,
+regular Bash and Zsh startup files are updated
 automatically. For another shell or symlinked dotfiles, add `~/.local/bin` to
 `PATH` or run `~/.local/bin/alloy` directly. The convenience command resolves
 `main` once and installs that exact commit. To pin both the installer and source
@@ -72,7 +75,10 @@ Contributors should install from a clone instead:
 
 ```bash
 git clone https://github.com/ccoussa717/alloy.git
-cd alloy && npm ci && npm link
+cd alloy
+npm ci
+bun install --cwd tui --frozen-lockfile
+npm link
 ```
 
 ```bash
@@ -83,11 +89,15 @@ alloy
 On first run, connect only the providers you intend to use:
 
 ```text
-/login                 # Claude and ChatGPT/Codex subscription routes
+/login                 # OAuth/subscription routes in the OpenTUI shell
 /login xai             # Grok subscription route
 /doctor                # provider, model, and path checks; never secret values
 /model                 # choose the active model
 ```
+
+OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
+so Alloy does not accept API keys in an interactive prompt; use provider
+environment variables or Pi model configuration for API-key routes.
 
 Then work in native chat or choose a workflow:
 
@@ -118,7 +128,7 @@ by role, or combine independent proposals without changing terminals.
 
 | Workflow | Use it when | What Alloy does |
 |---|---|---|
-| **Chat** | You want a fast answer or direct implementation from the active model. | Runs the native Pi loop with Alloy memory, skills, MCP, policy, and UI. |
+| **Chat** | You want a fast answer or direct implementation from the active model. | Runs the Pi agent loop behind Alloy's Solid/OpenTUI shell, with Alloy memory, skills, MCP, and policy. |
 | **Fusion** | The decision benefits from two independent technical perspectives. | Runs read-only Architect and Builder proposals concurrently, then gives a fresh Synthesizer both validated outputs. |
 | **Auto** | The work has an accepted implementation boundary and should be checked as it progresses. | Runs Scout, Planner, Builder, diagnostics, independent review, and bounded fix rounds with artifacts. |
 
@@ -162,19 +172,23 @@ sandbox isolation is required because its diagnostics execute as host processes.
 
 ```mermaid
 flowchart LR
-  You[You] --> Alloy[Alloy product layer]
-  Alloy --> Pi[Native Pi runtime]
+  You[You] --> Node[Node launcher]
+  Node --> Bun[Bun 1.3.14 + Solid/OpenTUI]
+  Bun -->|local stdio RPC| Pi[Pi runtime child]
+  Node -->|print / json / rpc| Pi
   Pi --> Models[Claude / Codex / Grok]
-  Alloy --> Memory[Durable memory]
-  Alloy --> Skills[Approved skills]
-  Alloy --> MCP[MCP tools]
-  Alloy --> Policy[Modes + permissions]
-  Alloy --> Runs[Agent run artifacts]
+  Pi --> Memory[Durable memory]
+  Pi --> Skills[Approved skills]
+  Pi --> MCP[MCP tools]
+  Pi --> Policy[Modes + permissions]
+  Pi --> Runs[Agent run artifacts]
 ```
 
-Pi owns the interactive runtime, model catalog, authentication, sessions,
-compaction, native tools, and extension lifecycle. Alloy owns the durable
-workflow and safety layer. The full boundary is documented in
+Pi owns the agent runtime, model catalog, authentication, sessions, compaction,
+native tools, credentials, and extension lifecycle. The OpenTUI frontend owns
+interactive rendering and bridges extension dialogs, notifications, status,
+widgets, and editor/title updates over Pi RPC. Print, JSON, and explicit RPC
+modes continue to launch Pi directly. The full boundary is documented in
 [Architecture](docs/ARCHITECTURE.md) and [Product boundary](docs/BOUNDARY.md).
 
 ## Safety that travels with the work
@@ -211,6 +225,8 @@ repository diagnostics are host processes. Read the
 | `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
 | `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
+| `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
+| `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
 | `/help commands` | Show the complete active Pi and Alloy command registry. |
 
 The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
@@ -219,9 +235,13 @@ troubleshooting.
 
 ## Project status
 
-Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.1
-and Node.js 22.19 or newer. npm publication remains disabled until the release
-gates in [RELEASING.md](docs/RELEASING.md) are complete.
+Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.1,
+Node.js 22.19 or newer, Bun 1.3.14, OpenTUI 0.4.5, and Solid 1.9.12. The default
+interactive path is the OpenCode-derived shell. `--legacy-pi-ui` or
+`ALLOY_LEGACY_PI_UI=1` selects the previous Pi renderer only as a temporary
+rollback. npm publication and package-consumer interactive installation remain
+disabled until an explicit Bun lifecycle design is approved and tested; the
+publication gate intentionally fails. See [RELEASING.md](docs/RELEASING.md).
 
 GitHub Actions runs the unit and integration suites, installs the packed npm
 artifact in isolation, requires the Docker sandbox test, validates package and
@@ -253,10 +273,13 @@ npm run ci:local
 Alloy stands on and draws inspiration from excellent open-source work:
 
 - [Pi](https://github.com/earendil-works/pi) is the coding-agent runtime beneath
-  Alloy, providing the native TUI, model registry, authentication, sessions,
-  tools, and extension system.
-- [OpenCode](https://github.com/anomalyco/opencode) inspired the standard of a
-  focused, terminal-first developer experience and clear product presentation.
+  Alloy, providing the model registry, authentication, sessions, tools, policy
+  hooks, and extension system. Its renderer remains available for rollback.
+- [OpenCode](https://github.com/anomalyco/opencode) 1.18.4 is the source of the
+  adapted Solid/OpenTUI shell architecture and interaction model. Alloy is an
+  independent project; OpenCode does not endorse it.
+- [OpenTUI](https://github.com/sst/opentui) 0.4.5 and Solid 1.9.12 provide the
+  interactive renderer and component runtime.
 - [Fusion Harness](https://github.com/disler/fusion-harness) inspired parts of
   Alloy's multi-model role framing and the way independent perspectives are
   brought together for synthesis.
