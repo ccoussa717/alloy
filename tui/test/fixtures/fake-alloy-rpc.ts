@@ -4,6 +4,7 @@ let input = "";
 let sequence = 0;
 let held = false;
 let decorated = false;
+let modelRequestCount = 0;
 const logPath = process.env.ALLOY_FAKE_LOG;
 const pidPath = process.env.ALLOY_FAKE_PID_FILE;
 const startupDelayMs = Number(process.env.ALLOY_FAKE_STARTUP_DELAY_MS || 0);
@@ -126,7 +127,14 @@ function handle(request: Record<string, unknown>): void {
       });
       return;
     case "get_available_models":
-      respond(request, { models: [{ id: "fixture-model", provider: "fake", name: "Fixture" }] });
+      modelRequestCount++;
+      respond(request, {
+        models: [{
+          id: modelRequestCount === 1 ? "stale-model" : "fresh-model",
+          provider: "fake",
+          name: modelRequestCount === 1 ? "Stale" : "Fresh",
+        }],
+      });
       return;
     case "get_session_stats":
       respond(request, {

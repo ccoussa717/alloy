@@ -109,6 +109,18 @@ wait_for_log() {
   return 1
 }
 
+wait_for_log_count() {
+  local expected="$1" count="$2" log="${3:-$LOG}" attempts=0 observed=0
+  while [ "$attempts" -lt 80 ]; do
+    if [ -f "$log" ]; then observed="$(grep -Fc "$expected" "$log" || true)"; fi
+    [ "$observed" -ge "$count" ] && return 0
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for %s occurrences of RPC log entry: %s (observed %s)\n' "$count" "$expected" "$observed" >&2
+  return 1
+}
+
 wait_for_file() {
   local path="$1" attempts=0
   while [ "$attempts" -lt 80 ]; do
@@ -221,6 +233,22 @@ assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
 assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
 assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
 wait_for_text "$SESSION" 'Ready' >/dev/null
+
+model_refreshes="$(grep -Fc '"type":"get_available_models"' "$LOG")"
+tmux send-keys -t "$SESSION" -l "/model fake/fresh-model"
+tmux send-keys -t "$SESSION" Enter
+wait_for_log_count '"type":"get_available_models"' "$((model_refreshes + 1))"
+wait_for_log '"type":"set_model","provider":"fake","modelId":"fresh-model"'
+wait_for_text "$SESSION" 'fresh-model fake' >/dev/null
+
+tmux send-keys -t "$SESSION" -l "/model"
+tmux send-keys -t "$SESSION" Enter
+model_dialog="$(wait_for_text "$SESSION" 'Select model')"
+assert_contains "$model_dialog" "fake/fresh-model" "model selector replaces stale backend models"
+wait_for_log_count '"type":"get_available_models"' "$((model_refreshes + 2))"
+tmux send-keys -t "$SESSION" Enter
+wait_for_log '"type":"set_model","provider":"fake","modelId":"fresh-model"'
+wait_for_text "$SESSION" 'fresh-model fake' >/dev/null
 
 tmux send-keys -t "$SESSION" -l "/login-fixture"
 tmux send-keys -t "$SESSION" Enter
