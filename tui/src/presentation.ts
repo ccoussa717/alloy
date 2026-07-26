@@ -8,6 +8,15 @@ export interface ActivityState {
   retry: RetryState | null;
 }
 
+export function activityAnimationInterval(
+  environment: Record<string, string | undefined> = process.env,
+): number | null {
+  const preference = environment.ALLOY_ACTIVITY_ANIMATION?.trim().toLowerCase() ?? "auto";
+  if (preference === "on") return 80;
+  if (preference === "off") return null;
+  return environment.SSH_CONNECTION || environment.SSH_TTY ? null : 80;
+}
+
 export function activityFrame(frame: number, width = 8): string {
   const size = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
   if (size === 0) return "";

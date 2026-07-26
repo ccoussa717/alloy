@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { activityFrame, activityLabel, splashDivider } from "../src/presentation";
+import { activityAnimationInterval, activityFrame, activityLabel, splashDivider } from "../src/presentation";
 
 describe("OpenCode-style activity presentation", () => {
   it("moves one bright block back and forth across an eight-cell track", () => {
@@ -7,6 +7,16 @@ describe("OpenCode-style activity presentation", () => {
     expect(activityFrame(7)).toBe("⬝⬝⬝⬝⬝⬝⬝■");
     expect(activityFrame(8)).toBe("⬝⬝⬝⬝⬝⬝■⬝");
     expect(activityFrame(14)).toBe(activityFrame(0));
+  });
+
+  it("avoids continuous redraws over SSH unless animation is explicitly enabled", () => {
+    expect(activityAnimationInterval({})).toBe(80);
+    expect(activityAnimationInterval({ SSH_CONNECTION: "client server" })).toBeNull();
+    expect(activityAnimationInterval({ SSH_TTY: "/dev/pts/1" })).toBeNull();
+    expect(activityAnimationInterval({ SSH_CONNECTION: "client server", ALLOY_ACTIVITY_ANIMATION: "on" })).toBe(80);
+    expect(activityAnimationInterval({ ALLOY_ACTIVITY_ANIMATION: "off" })).toBeNull();
+    expect(activityAnimationInterval({ ALLOY_ACTIVITY_ANIMATION: "auto" })).toBe(80);
+    expect(activityAnimationInterval({ ALLOY_ACTIVITY_ANIMATION: "invalid" })).toBe(80);
   });
 
   it("reports the current tool, retries, compaction, and idle state", () => {
