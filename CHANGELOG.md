@@ -21,6 +21,9 @@ and releases use semantic versioning during the 0.x development series.
   width-safe user-message rails while retaining Pi's native authentication,
   session, command, tool, and extension APIs. Source installs now use Alloy's
   root shrinkwrap to pin the resolved Pi 0.82.1 transitive graph.
+- Updated the forked terminal runtime with mouse-wheel transcript scrolling,
+  sticky-tail restoration, image-safe navigation, and sanitized model activity
+  labels. Both coding-agent and TUI artifacts are source- and integrity-pinned.
 
 ## [0.8.2] - 2026-07-24
 

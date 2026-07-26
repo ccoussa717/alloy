@@ -1,26 +1,28 @@
 # Alloy Pi Fork
 
-Alloy uses a narrow public fork of `@earendil-works/pi-coding-agent` for the
-full-terminal transcript viewport. Provider authentication, sessions, commands,
-tools, compaction, model handling, and extension APIs remain Pi behavior.
+Alloy uses narrow public forks of `@earendil-works/pi-coding-agent` and
+`@earendil-works/pi-tui` for the full-terminal transcript viewport and mouse
+input. Provider authentication, sessions, commands, tools, compaction, model
+handling, and extension APIs remain Pi behavior.
 
 ## Current Runtime
 
 | Field | Value |
 |---|---|
-| Package | `@earendil-works/pi-coding-agent` |
 | Package version | `0.82.1` |
 | Fork | https://github.com/ccoussa717/pi |
-| Source commit | `6e213240c0987a05c4703dae8f7efa21be181a68` |
-| Release | `alloy-tui-v0.82.1.2` |
-| Artifact | `earendil-works-pi-coding-agent-0.82.1.tgz` |
-| SHA-256 | `a6ff2cb5ffbcfb08f2c31f205162edff742a546c5dc050363d15abcc1db0b056` |
-| npm integrity | `sha512-7ymlfDCrgnSA3T2yXp4wNe0xQcR2JT4mt6HpzLY32D3KysnPLeGWD8zIMW204BQXGqmUDFLnNjppLU1pJ2OB5A==` |
+| Source commit | `9afa8a78188b62720a5a8adffaa47c20df909116` |
+| Release | `alloy-tui-v0.82.1.3` |
+
+| Package | Artifact | SHA-256 | npm integrity |
+|---|---|---|---|
+| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `5e728f09c6cf3e022ea53dea26a34b9629dd45c98e13fc90ad4fd104ccb705fb` | `sha512-iP5BE0WOf8IwZShuTnDsbcvtD6/iCeRQDuEXWu5cmwNGlZRgEGYgrXueka9/jY0vWL9IzhtO1GjBIsqTjZIWCw==` |
+| `@earendil-works/pi-tui` | `earendil-works-pi-tui-0.82.1.tgz` | `6c939c4515c6742895e4d4c6e5926a5c735a7789d20250284dbef510efa5959c` | `sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==` |
 
 `package.json` records the same values under `alloy.piFork`.
-`scripts/verify-release.mjs` requires that metadata, resolves the release tag to
-the declared commit, downloads the asset, recomputes both hashes, and requires
-the shrinkwrap URL and SHA-512 integrity to match.
+`scripts/verify-release.mjs` requires that metadata, resolves the shared release
+tag to the declared commit, downloads both assets, recomputes their hashes, and
+requires both shrinkwrap URLs and SHA-512 integrity values to match.
 
 ## Dependency Graph Decision
 
@@ -60,8 +62,9 @@ documented in [SECURITY.md](./SECURITY.md).
 1. Rebase the fork onto the selected upstream Pi tag.
 2. Keep the diff within the approved viewport and message boundary.
 3. Run fork tests, build, PTY checks, independent review, and secret scans.
-4. Pack the coding-agent twice from the clean tree and require identical hashes.
-5. Create a fork release tag at the reviewed commit and upload the artifact.
+4. Pack the coding-agent and TUI twice from the clean tree and require identical
+   hashes for both artifacts.
+5. Create a fork release tag at the reviewed commit and upload both artifacts.
 6. Update all `alloy.piFork` fields, the four Pi dependency pins, and overrides.
 7. Regenerate the root shrinkwrap with lifecycle scripts disabled.
 8. Audit and document the full lock delta, then run `npm run ci:local` and the
