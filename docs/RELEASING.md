@@ -65,10 +65,11 @@ source snapshot.
 4. Regenerate `npm-shrinkwrap.json` from a clean temporary directory, run
    `npm run shrinkwrap:normalize -- <clean-package-lock-path>`, verify resolution
    and integrity fields, and review the diff. Registry packages must resolve from
-   npm. The coding-agent exception must exactly match `alloy.piFork`: a public
-   `ccoussa717/pi` release URL, full source commit, package version, SHA-256, and
-   npm SHA-512 integrity. Release verification resolves the tag through GitHub,
-   downloads the artifact, and recomputes both digests. The normalizer copies
+   npm. The coding-agent and TUI exceptions must exactly match `alloy.piFork`:
+   public `ccoussa717/pi` release URLs, one full source commit and package
+   version, and separate SHA-256 and npm SHA-512 integrity values. Release
+   verification resolves their shared tag through GitHub, downloads both
+   artifacts, and recomputes every digest. The normalizer copies
    package identity from the release tree and fills only duplicate registry
    entries whose identical tarball already has a verified integrity value
    elsewhere in the clean lock.

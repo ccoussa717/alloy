@@ -12,6 +12,7 @@ const publishGate = process.argv.includes("--publish");
 const sourceGate = process.argv.includes("--source");
 const canonicalRepositoryPath = "/ccoussa717/alloy";
 const piCodingAgentName = "@earendil-works/pi-coding-agent";
+const piTuiName = "@earendil-works/pi-tui";
 const piFork = pkg.alloy?.piFork;
 let piForkReleaseTag;
 let piForkShapeValid = true;
@@ -123,25 +124,50 @@ if (!piFork || typeof piFork !== "object" || Array.isArray(piFork)) {
     fail("alloy.piFork.commit must be a full Git commit SHA");
     piForkShapeValid = false;
   }
-  if (!/^[0-9a-f]{64}$/.test(String(piFork.sha256))) {
-    fail("alloy.piFork.sha256 must be a SHA-256 digest");
+}
+
+const piForkArtifacts = [
+  {
+    dependency: piCodingAgentName,
+    slug: "coding-agent",
+    metadata: piFork,
+    metadataPath: "alloy.piFork",
+  },
+  {
+    dependency: piTuiName,
+    slug: "tui",
+    metadata: piFork?.tui,
+    metadataPath: "alloy.piFork.tui",
+  },
+];
+const piForkReleaseTags = new Set();
+
+for (const artifact of piForkArtifacts) {
+  const { dependency, slug, metadata, metadataPath } = artifact;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    fail(`${metadataPath} metadata is required`);
+    piForkShapeValid = false;
+    continue;
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(metadata.sha256))) {
+    fail(`${metadataPath}.sha256 must be a SHA-256 digest`);
     piForkShapeValid = false;
   }
-  const integrityMatch = /^sha512-([A-Za-z0-9+/]+={0,2})$/.exec(String(piFork.integrity));
+  const integrityMatch = /^sha512-([A-Za-z0-9+/]+={0,2})$/.exec(String(metadata.integrity));
   if (!integrityMatch || Buffer.from(integrityMatch[1], "base64").length !== 64) {
-    fail("alloy.piFork.integrity must be an npm SHA-512 integrity value");
+    fail(`${metadataPath}.integrity must be an npm SHA-512 integrity value`);
     piForkShapeValid = false;
   }
   let forkUrl;
   try {
-    forkUrl = new URL(piFork.url);
+    forkUrl = new URL(metadata.url);
   } catch {
-    fail("alloy.piFork.url must be a valid URL");
+    fail(`${metadataPath}.url must be a valid URL`);
     piForkShapeValid = false;
   }
-  const expectedArtifact = `/earendil-works-pi-coding-agent-${piFork.version}.tgz`;
+  const expectedArtifact = `/earendil-works-pi-${slug}-${piFork?.version}.tgz`;
   const releasePathMatch = forkUrl?.pathname.match(
-    /^\/ccoussa717\/pi\/releases\/download\/([^/]+)\/earendil-works-pi-coding-agent-[^/]+\.tgz$/,
+    new RegExp(`^/ccoussa717/pi/releases/download/([^/]+)/earendil-works-pi-${slug}-[^/]+\\.tgz$`),
   );
   if (
     forkUrl &&
@@ -151,21 +177,28 @@ if (!piFork || typeof piFork !== "object" || Array.isArray(piFork)) {
       !releasePathMatch ||
       !forkUrl.pathname.endsWith(expectedArtifact))
   ) {
-    fail("alloy.piFork.url must pin a release asset from ccoussa717/pi");
+    fail(`${metadataPath}.url must pin a release asset from ccoussa717/pi`);
     piForkShapeValid = false;
   }
   if (releasePathMatch) {
     try {
-      piForkReleaseTag = decodeURIComponent(releasePathMatch[1]);
+      piForkReleaseTags.add(decodeURIComponent(releasePathMatch[1]));
     } catch {
-      fail("alloy.piFork.url contains an invalid release tag encoding");
+      fail(`${metadataPath}.url contains an invalid release tag encoding`);
       piForkShapeValid = false;
     }
   }
-  if (pkg.dependencies?.[piCodingAgentName] !== piFork.url) {
-    fail("the coding-agent dependency must match alloy.piFork.url");
+  if (pkg.dependencies?.[dependency] !== metadata.url) {
+    fail(`the ${slug} dependency must match ${metadataPath}.url`);
     piForkShapeValid = false;
   }
+}
+
+if (piForkReleaseTags.size === 1) {
+  [piForkReleaseTag] = piForkReleaseTags;
+} else if (piForkReleaseTags.size > 1) {
+  fail("Pi fork artifacts must use the same release tag");
+  piForkShapeValid = false;
 }
 
 async function verifyPiForkProvenance() {
@@ -201,40 +234,44 @@ async function verifyPiForkProvenance() {
       fail(`Pi fork release tag ${piForkReleaseTag} must resolve to commit ${piFork.commit}`);
     }
 
-    const artifactResponse = await fetch(piFork.url, {
-      headers: { "User-Agent": "alloy-release-verifier" },
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!artifactResponse.ok) {
-      fail(`could not download Pi fork artifact: HTTP ${artifactResponse.status}`);
-      return;
-    }
-    if (!artifactResponse.body) {
-      fail("downloaded Pi fork artifact has no response body");
-      return;
-    }
-    const maxArtifactBytes = 64 * 1024 * 1024;
-    const sha256Hash = createHash("sha256");
-    const sha512Hash = createHash("sha512");
-    const reader = artifactResponse.body.getReader();
-    let artifactBytes = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      artifactBytes += value.byteLength;
-      if (artifactBytes > maxArtifactBytes) {
-        await reader.cancel();
-        fail(`Pi fork artifact exceeds ${maxArtifactBytes} bytes`);
-        return;
+    for (const { metadata, metadataPath } of piForkArtifacts) {
+      const artifactResponse = await fetch(metadata.url, {
+        headers: { "User-Agent": "alloy-release-verifier" },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!artifactResponse.ok) {
+        fail(`could not download ${metadataPath} artifact: HTTP ${artifactResponse.status}`);
+        continue;
       }
-      sha256Hash.update(value);
-      sha512Hash.update(value);
-    }
-    const sha256 = sha256Hash.digest("hex");
-    const integrity = `sha512-${sha512Hash.digest("base64")}`;
-    if (sha256 !== piFork.sha256) fail("downloaded Pi fork artifact does not match alloy.piFork.sha256");
-    if (integrity !== piFork.integrity) {
-      fail("downloaded Pi fork artifact does not match alloy.piFork.integrity");
+      if (!artifactResponse.body) {
+        fail(`downloaded ${metadataPath} artifact has no response body`);
+        continue;
+      }
+      const maxArtifactBytes = 64 * 1024 * 1024;
+      const sha256Hash = createHash("sha256");
+      const sha512Hash = createHash("sha512");
+      const reader = artifactResponse.body.getReader();
+      let artifactBytes = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        artifactBytes += value.byteLength;
+        if (artifactBytes > maxArtifactBytes) {
+          await reader.cancel();
+          fail(`${metadataPath} artifact exceeds ${maxArtifactBytes} bytes`);
+          break;
+        }
+        sha256Hash.update(value);
+        sha512Hash.update(value);
+      }
+      const sha256 = sha256Hash.digest("hex");
+      const integrity = `sha512-${sha512Hash.digest("base64")}`;
+      if (sha256 !== metadata.sha256) {
+        fail(`downloaded Pi fork artifact does not match ${metadataPath}.sha256`);
+      }
+      if (integrity !== metadata.integrity) {
+        fail(`downloaded Pi fork artifact does not match ${metadataPath}.integrity`);
+      }
     }
   } catch (error) {
     fail(`could not verify Pi fork provenance: ${error instanceof Error ? error.message : String(error)}`);
@@ -244,7 +281,8 @@ async function verifyPiForkProvenance() {
 await verifyPiForkProvenance();
 
 for (const [name, version] of Object.entries(pkg.dependencies || {})) {
-  if (name === piCodingAgentName && piFork && version === piFork.url) continue;
+  const forkArtifact = piForkArtifacts.find((artifact) => artifact.dependency === name);
+  if (forkArtifact && version === forkArtifact.metadata?.url) continue;
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(version))) {
     fail(`dependency ${name} must use an exact version, found ${version}`);
   }
@@ -279,8 +317,10 @@ if (existsSync(lockPath)) {
       fail(`${path} must have a valid registry resolution URL`);
       continue;
     }
-    const isPinnedPiFork =
-      path === `node_modules/${piCodingAgentName}` && piFork && entry?.resolved === piFork.url;
+    const forkArtifact = piForkArtifacts.find(
+      (artifact) => path === `node_modules/${artifact.dependency}`,
+    );
+    const isPinnedPiFork = forkArtifact && entry?.resolved === forkArtifact.metadata?.url;
     if (
       !isPinnedPiFork &&
       (resolved.origin !== "https://registry.npmjs.org" || resolved.username || resolved.password)
@@ -298,16 +338,17 @@ if (existsSync(lockPath)) {
   }
   for (const [name, version] of Object.entries(pkg.dependencies || {})) {
     const entry = lock.packages?.[`node_modules/${name}`];
-    const expectedVersion = name === piCodingAgentName && piFork ? piFork.version : version;
+    const forkArtifact = piForkArtifacts.find((artifact) => artifact.dependency === name);
+    const expectedVersion = forkArtifact ? piFork?.version : version;
     if (entry?.version !== expectedVersion) {
       fail(`direct dependency ${name} must resolve to ${expectedVersion}`);
     }
-    if (name === piCodingAgentName && piFork) {
-      if (entry?.resolved !== piFork.url) {
-        fail("the coding-agent shrinkwrap resolution must match alloy.piFork.url");
+    if (forkArtifact) {
+      if (entry?.resolved !== forkArtifact.metadata?.url) {
+        fail(`the ${forkArtifact.slug} shrinkwrap resolution must match ${forkArtifact.metadataPath}.url`);
       }
-      if (entry?.integrity !== piFork.integrity) {
-        fail("the coding-agent shrinkwrap integrity must match alloy.piFork.integrity");
+      if (entry?.integrity !== forkArtifact.metadata?.integrity) {
+        fail(`the ${forkArtifact.slug} shrinkwrap integrity must match ${forkArtifact.metadataPath}.integrity`);
       }
     }
   }

@@ -19,11 +19,16 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const temp = mkdtempSync(join(tmpdir(), "alloy-security-gates-"));
 const TEST_INTEGRITY = `sha512-${Buffer.alloc(64).toString("base64")}`;
 const TEST_PI_FORK_URL =
-  "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.2/earendil-works-pi-coding-agent-0.82.1.tgz";
-const TEST_PI_FORK_COMMIT = "6e213240c0987a05c4703dae8f7efa21be181a68";
+  "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.3/earendil-works-pi-coding-agent-0.82.1.tgz";
+const TEST_PI_TUI_FORK_URL =
+  "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.3/earendil-works-pi-tui-0.82.1.tgz";
+const TEST_PI_FORK_COMMIT = "9afa8a78188b62720a5a8adffaa47c20df909116";
 const TEST_PI_FORK_ARTIFACT = Buffer.from("alloy pi fork artifact fixture");
 const TEST_PI_FORK_SHA256 = createHash("sha256").update(TEST_PI_FORK_ARTIFACT).digest("hex");
 const TEST_PI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_FORK_ARTIFACT).digest("base64")}`;
+const TEST_PI_TUI_FORK_ARTIFACT = Buffer.from("alloy pi tui fork artifact fixture");
+const TEST_PI_TUI_FORK_SHA256 = createHash("sha256").update(TEST_PI_TUI_FORK_ARTIFACT).digest("hex");
+const TEST_PI_TUI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_TUI_FORK_ARTIFACT).digest("base64")}`;
 after(() => rmSync(temp, { recursive: true, force: true }));
 
 function run(command, args, options = {}) {
@@ -101,7 +106,7 @@ function releaseFixture(overrides = {}) {
       "@earendil-works/pi-agent-core": "0.82.1",
       "@earendil-works/pi-ai": "0.82.1",
       "@earendil-works/pi-coding-agent": TEST_PI_FORK_URL,
-      "@earendil-works/pi-tui": "0.82.1",
+      "@earendil-works/pi-tui": TEST_PI_TUI_FORK_URL,
     },
     alloy: {
       piFork: {
@@ -110,6 +115,11 @@ function releaseFixture(overrides = {}) {
         url: TEST_PI_FORK_URL,
         sha256: TEST_PI_FORK_SHA256,
         integrity: TEST_PI_FORK_INTEGRITY,
+        tui: {
+          url: TEST_PI_TUI_FORK_URL,
+          sha256: TEST_PI_TUI_FORK_SHA256,
+          integrity: TEST_PI_TUI_FORK_INTEGRITY,
+        },
       },
     },
     publishConfig: { access: "public", provenance: true },
@@ -126,9 +136,15 @@ function releaseFixture(overrides = {}) {
       resolved:
         name === "@earendil-works/pi-coding-agent"
           ? TEST_PI_FORK_URL
+          : name === "@earendil-works/pi-tui"
+            ? TEST_PI_TUI_FORK_URL
           : `https://registry.npmjs.org/${name}/-/${slug}-0.82.1.tgz`,
       integrity:
-        name === "@earendil-works/pi-coding-agent" ? TEST_PI_FORK_INTEGRITY : TEST_INTEGRITY,
+        name === "@earendil-works/pi-coding-agent"
+          ? TEST_PI_FORK_INTEGRITY
+          : name === "@earendil-works/pi-tui"
+            ? TEST_PI_TUI_FORK_INTEGRITY
+            : TEST_INTEGRITY,
     };
   }
   Object.assign(packages, overrides.packages || {});
@@ -143,13 +159,15 @@ function releaseFixture(overrides = {}) {
     join(directory, "mock-release-fetch.mjs"),
     `import { readFileSync } from "node:fs";
 const artifact = readFileSync(${JSON.stringify(artifactPath)});
+const tuiArtifact = Buffer.from(${JSON.stringify(TEST_PI_TUI_FORK_ARTIFACT.toString())});
 globalThis.fetch = async (input, options) => {
   if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
   const url = String(input);
-  if (url === "https://api.github.com/repos/ccoussa717/pi/git/ref/tags/alloy-tui-v0.82.1.2") {
+  if (url === "https://api.github.com/repos/ccoussa717/pi/git/ref/tags/alloy-tui-v0.82.1.3") {
     return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
   }
   if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  if (url === ${JSON.stringify(TEST_PI_TUI_FORK_URL)}) return new Response(tuiArtifact, { status: 200 });
   return new Response("not found", { status: 404 });
 };
 `,
@@ -202,16 +220,18 @@ describe("release metadata verification", () => {
       join(directory, "mock-release-fetch.mjs"),
       `import { readFileSync } from "node:fs";
 const artifact = readFileSync(${JSON.stringify(artifactPath)});
+const tuiArtifact = Buffer.from(${JSON.stringify(TEST_PI_TUI_FORK_ARTIFACT.toString())});
 globalThis.fetch = async (input, options) => {
   if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
   const url = String(input);
-  if (url.endsWith("/git/ref/tags/alloy-tui-v0.82.1.2")) {
+  if (url.endsWith("/git/ref/tags/alloy-tui-v0.82.1.3")) {
     return new Response(JSON.stringify({ object: { type: "tag", sha: "${"a".repeat(40)}" } }), { status: 200 });
   }
   if (url.endsWith("/git/tags/${"a".repeat(40)}")) {
     return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
   }
   if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  if (url === ${JSON.stringify(TEST_PI_TUI_FORK_URL)}) return new Response(tuiArtifact, { status: 200 });
   return new Response("not found", { status: 404 });
 };
 `,
@@ -293,6 +313,39 @@ globalThis.fetch = async (input, options) => {
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /downloaded Pi fork artifact does not match alloy\.piFork\.integrity/);
+  });
+
+  it("rejects a downloaded TUI fork artifact with a different SHA-256", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.alloy.piFork.tui.sha256 = "0".repeat(64);
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match alloy\.piFork\.tui\.sha256/);
+  });
+
+  it("requires both Pi fork artifacts to use the same release tag", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const lockPath = join(directory, "npm-shrinkwrap.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    const mismatchedUrl = TEST_PI_TUI_FORK_URL.replace("0.82.1.3", "0.82.1.4");
+    pkg.dependencies["@earendil-works/pi-tui"] = mismatchedUrl;
+    pkg.alloy.piFork.tui.url = mismatchedUrl;
+    lock.packages[""].dependencies = pkg.dependencies;
+    lock.packages["node_modules/@earendil-works/pi-tui"].resolved = mismatchedUrl;
+    writeFileSync(packagePath, JSON.stringify(pkg));
+    writeFileSync(lockPath, JSON.stringify(lock));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must use the same release tag/);
   });
 
   for (const [name, entry] of [
