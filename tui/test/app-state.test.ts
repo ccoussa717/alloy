@@ -7,6 +7,8 @@ import {
   createAppState,
   extensionDialogOptions,
   extensionDialogResponse,
+  fusionResultLayout,
+  fusionWidgetTone,
   initialDialogSelection,
   latestNotifications,
   modelProviderOptions,
@@ -158,5 +160,34 @@ describe("integrated app state", () => {
     expect(sidebarLayout(80, true)).toEqual({ visible: true, overlay: true, width: 42, mainWidth: 80 });
     expect(sidebarLayout(40, true)).toEqual({ visible: true, overlay: true, width: 40, mainWidth: 40 });
     expect(sidebarLayout(160, false)).toEqual({ visible: false, overlay: false, width: 0, mainWidth: 160 });
+  });
+
+  it("renders Fusion results side by side only when Alloy's transcript is wide enough", () => {
+    const wideSidebar = sidebarLayout(140, null);
+    const wideLayout = appLayout(wideSidebar.mainWidth, 30);
+    const wideTranscript = wideLayout.width - wideLayout.horizontalPadding * 2 - 3;
+    const mediumLayout = appLayout(sidebarLayout(80, null).mainWidth, 24);
+    const mediumTranscript = mediumLayout.width - mediumLayout.horizontalPadding * 2 - 3;
+    const compactLayout = appLayout(sidebarLayout(40, null).mainWidth, 10);
+    const compactTranscript = compactLayout.width - compactLayout.horizontalPadding * 2 - 3;
+
+    expect(fusionResultLayout(wideTranscript)).toBe("columns");
+    expect(fusionResultLayout(mediumTranscript)).toBe("stack");
+    expect(fusionResultLayout(compactTranscript)).toBe("stack");
+  });
+
+  it("uses the README green hierarchy for live Fusion role panes", () => {
+    const lines = [
+      "ALLOY FUSION · fusion-1 · PROPOSING",
+      "┌────────┬────────┐",
+      "│Architect│Builder │",
+      "│planning │building│",
+    ];
+
+    expect(fusionWidgetTone(lines, lines[0]!, 0)).toBe("accent");
+    expect(fusionWidgetTone(lines, lines[1]!, 1)).toBe("accentDim");
+    expect(fusionWidgetTone(lines, lines[2]!, 2)).toBe("accent");
+    expect(fusionWidgetTone(lines, lines[3]!, 3)).toBe("muted");
+    expect(fusionWidgetTone(["ALLOY AUTO"], "ALLOY AUTO", 0)).toBe("muted");
   });
 });

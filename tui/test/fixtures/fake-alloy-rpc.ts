@@ -10,6 +10,8 @@ const logPath = process.env.ALLOY_FAKE_LOG;
 const pidPath = process.env.ALLOY_FAKE_PID_FILE;
 const startupDelayMs = Number(process.env.ALLOY_FAKE_STARTUP_DELAY_MS || 0);
 const emptyHistory = process.env.ALLOY_FAKE_EMPTY === "1";
+const fusionHistory = process.env.ALLOY_FAKE_FUSION_HISTORY === "1";
+const fusionWidget = process.env.ALLOY_FAKE_FUSION_WIDGET === "1";
 
 if (pidPath) writeFileSync(pidPath, `${process.pid}\n`);
 
@@ -33,6 +35,49 @@ function respond(request: Record<string, unknown>, data?: unknown, success = tru
 
 function message(role: "user" | "assistant", content: string, id?: string) {
   return { id: id ?? `${role}-${++sequence}`, role, content, timestamp: Date.now() + sequence };
+}
+
+function fusionResult() {
+  return {
+    id: `fusion-${++sequence}`,
+    role: "custom",
+    customType: "alloy-fusion",
+    content: "Fusion COMPLETE",
+    timestamp: Date.now() + sequence,
+    details: {
+      kind: "fusion",
+      status: "COMPLETE",
+      runId: "fusion-pty",
+      runDir: "/tmp/fusion-pty",
+      objective: "Compare both approaches",
+      requestedEfforts: { architect: "high", builder: "medium", synthesizer: "low" },
+      proposals: [
+        {
+          role: "architect",
+          model: "anthropic/claude-fable-5",
+          ok: true,
+          durationMs: 1_250,
+          text: "## Architecture\n\nKeep boundaries explicit.\n\n- Preserve artifacts",
+          usage: { input: 1_200, output: 340, cost: 0.0123, turns: 2 },
+        },
+        {
+          role: "builder",
+          model: "openai-codex/gpt-5.6-sol",
+          ok: true,
+          durationMs: 980,
+          text: "## Build\n\nShip the smallest complete slice.\n\n- Verify behavior",
+          usage: { input: 900, output: 280, cost: 0.0098, turns: 1 },
+        },
+      ],
+      synthesis: "## Recommendation\n\nCombine both approaches with explicit verification.",
+      synthesizer: {
+        ok: true,
+        model: "anthropic/claude-fable-5",
+        durationMs: 640,
+        usage: { input: 2_500, output: 410, cost: 0.015, turns: 1 },
+      },
+    },
+  };
 }
 
 function stream(text: string): void {
@@ -123,7 +168,7 @@ function handle(request: Record<string, unknown>): void {
           sessionId: "pty-session",
           sessionName: "PTY verification",
           autoCompactionEnabled: true,
-          messageCount: emptyHistory ? 0 : 50,
+          messageCount: fusionHistory ? 2 : emptyHistory ? 0 : 50,
           pendingMessageCount: 0,
         });
         send({ type: "extension_ui_request", id: `heartbeat-${stateResponseCount}`, method: "setStatus", statusKey: "fixture-heartbeat", statusText: `heartbeat:${stateResponseCount}` });
@@ -131,15 +176,28 @@ function handle(request: Record<string, unknown>): void {
           decorated = true;
           send({ type: "extension_ui_request", id: "title-1", method: "setTitle", title: "Fixture title" });
           send({ type: "extension_ui_request", id: "status-1", method: "setStatus", statusKey: "alloy-mode", statusText: "mode:plan" });
-          send({ type: "extension_ui_request", id: "widget-1", method: "setWidget", widgetKey: "fixture", widgetLines: ["fixture widget"], widgetPlacement: "aboveEditor" });
+          send({
+            type: "extension_ui_request",
+            id: "widget-1",
+            method: "setWidget",
+            widgetKey: fusionWidget ? "alloy-agents" : "fixture",
+            widgetLines: fusionWidget
+              ? ["◆ Architect ✓ · claude-fable-5", "▲ Builder ✓ · gpt-5.6-sol", "⧉ Synthesizer ● · fable-5"]
+              : ["fixture widget"],
+            widgetPlacement: "aboveEditor",
+          });
         }
       }, Number.isFinite(startupDelayMs) && startupDelayMs > 0 ? startupDelayMs : 0);
       return;
     case "get_messages":
       respond(request, {
-        messages: emptyHistory ? [] : Array.from({ length: 50 }, (_, index) =>
-          message(index % 2 === 0 ? "user" : "assistant", `hydrated history item ${String(index + 1).padStart(2, "0")}`),
-        ),
+        messages: fusionHistory
+          ? [message("user", "/fusion Compare both approaches"), fusionResult()]
+          : emptyHistory
+            ? []
+            : Array.from({ length: 50 }, (_, index) =>
+                message(index % 2 === 0 ? "user" : "assistant", `hydrated history item ${String(index + 1).padStart(2, "0")}`),
+              ),
       });
       return;
     case "get_commands":

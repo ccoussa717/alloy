@@ -69,16 +69,21 @@ test("fusion proposal view renders Architect and Builder output side by side", (
   panel.upsertAgent(p, {
     role: "architect",
     status: "running",
+    model: "anthropic/claude-fable-5",
+    effort: "high",
     output: "Architecture boundaries and risks",
   });
   panel.upsertAgent(p, {
     role: "builder",
     status: "running",
+    model: "openai-codex/gpt-5.6-sol",
+    effort: "medium",
     output: "Implementation steps and tests",
   });
 
   const lines = panel.renderFusionPaneLines(p, 100);
   assert.match(lines.join("\n"), /Architect.*Builder/);
+  assert.match(lines.join("\n"), /fable-5.*high.*gpt-5\.6-sol.*medium/);
   assert.ok(
     lines.some(
       (line) =>
@@ -92,22 +97,34 @@ test("fusion proposal view renders Architect and Builder output side by side", (
 test("fusion panes stack on narrow terminals and synthesis uses full width", () => {
   const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-3" });
   panel.setPhase(p, "PROPOSING");
-  panel.upsertAgent(p, { role: "architect", status: "ok", output: "ARCH OUTPUT" });
-  panel.upsertAgent(p, { role: "builder", status: "ok", output: "BUILD OUTPUT" });
+  panel.upsertAgent(p, { role: "architect", status: "ok", model: "anthropic/claude-fable-5", output: `${"boundary ".repeat(80)}ARCH OUTPUT` });
+  panel.upsertAgent(p, { role: "builder", status: "ok", model: "openai-codex/gpt-5.6-sol", output: `${"implementation ".repeat(80)}BUILD OUTPUT` });
   let lines = panel.renderFusionPaneLines(p, 50);
   assert.ok(lines.findIndex((line) => line.includes("ARCH OUTPUT")) < lines.findIndex((line) => line.includes("BUILD OUTPUT")));
+  assert.ok(lines.length <= 14);
 
   panel.setPhase(p, "SYNTHESIZING");
   panel.upsertAgent(p, {
     role: "synthesizer",
     status: "running",
-    output: "Combined recommendation",
+    model: "anthropic/claude-fable-5",
+    output: `${"verification ".repeat(80)}Combined recommendation`,
   });
   lines = panel.renderFusionPaneLines(p, 100);
+  assert.match(lines.join("\n"), /ARCH OUTPUT.*BUILD OUTPUT/);
   assert.match(lines.join("\n"), /Synthesizer/);
   assert.match(lines.join("\n"), /Combined recommendation/);
-  assert.doesNotMatch(lines[1], /Architect.*Builder/);
+  assert.match(lines.join("\n"), /Architect.*Builder/);
+  assert.ok(lines.length <= 14);
+
+  const widget = panel.renderFusionWidgetLines(p);
+  assert.ok(widget.length <= 6);
+  assert.match(widget.join("\n"), /Architect/);
+  assert.match(widget.join("\n"), /Builder/);
+  assert.match(widget.join("\n"), /Synthesizer/);
+  assert.ok(widget.every((line) => panel.visibleWidth(line) <= 32));
 
   lines = panel.renderFusionPaneLines(p, 12);
   assert.ok(lines.every((line) => panel.visibleWidth(line) <= 12));
+  assert.ok(lines.length <= 14);
 });

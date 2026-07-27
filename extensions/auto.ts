@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -30,7 +31,7 @@ const {
   saveGlobalFusionConfig,
 } = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
-const { renderFusionPaneLines, renderPanelThemed, renderPanelLines } = require(
+const { renderFusionPaneLines, renderFusionWidgetLines, renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
 );
 const { resolveParentChildSpawnOpts } = require(
@@ -49,8 +50,8 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
     const isFusion = (panel as { title?: string })?.title === "ALLOY FUSION";
     if (isFusion) {
       if (ctx?.mode === "rpc") {
-        ui.setWidget("alloy-agents", renderFusionPaneLines(panel, 80), {
-          placement: "belowEditor",
+        ui.setWidget("alloy-agents", renderFusionWidgetLines(panel), {
+          placement: "aboveEditor",
         });
       } else {
         ui.setWidget(
@@ -69,7 +70,7 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
             },
             invalidate() {},
           }),
-          { placement: "belowEditor" },
+          { placement: "aboveEditor" },
         );
       }
     } else {
@@ -105,7 +106,7 @@ export function formatFusionLines(summary: any) {
     `Architect: ${models.architect || "n/a"}`,
     `Builder: ${models.builder || "n/a"}`,
     `Synthesizer: ${models.synthesizer || "n/a"}`,
-    `Usage: ${Number(usage.input) || 0} input, ${Number(usage.output) || 0} output, ${Number(usage.turns) || 0} turns, $${(Number(usage.cost) || 0).toFixed(4)}`,
+    `Usage: ${Number(usage.input) || 0} input, ${Number(usage.output) || 0} output, ${Number(usage.turns) || 0} turns, ${formatFusionCost(usage)}`,
     `Artifacts: ${summary.runDir}`,
     "",
     "Synthesis:",
@@ -128,10 +129,218 @@ export function formatFusionLines(summary: any) {
   return lines;
 }
 
+const FUSION_TRANSCRIPT_BODY_BYTES = 768;
+const FUSION_TRANSCRIPT_OBJECTIVE_BYTES = 512;
+const FUSION_CONTEXT_OBJECTIVE_BYTES = 128;
+const FUSION_METADATA_BYTES = 128;
+const FUSION_PATH_BYTES = 512;
+
+function truncateUtf8(value: unknown, maxBytes: number) {
+  const bytes = Buffer.from(String(value || ""), "utf8");
+  if (bytes.length <= maxBytes) return bytes.toString("utf8");
+  let end = maxBytes;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+function truncateFusionBody(value: unknown, artifact: string) {
+  const text = String(value || "");
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= FUSION_TRANSCRIPT_BODY_BYTES) return text;
+  const suffix = `\n\n… [truncated for transcript; full artifact: ${artifact}]`;
+  const bodyBytes = Math.max(0, FUSION_TRANSCRIPT_BODY_BYTES - Buffer.byteLength(suffix));
+  return `${truncateUtf8(text, bodyBytes)}${suffix}`;
+}
+
+function finiteNonNegative(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function presentationUsage(value: any) {
+  const cost = finiteNonNegative(value?.cost);
+  return {
+    input: finiteNonNegative(value?.input) || 0,
+    output: finiteNonNegative(value?.output) || 0,
+    cost,
+    costKnown: value?.costKnown !== false && cost !== null,
+    turns: finiteNonNegative(value?.turns) || 0,
+  };
+}
+
+function presentationModels(value: any) {
+  return Object.fromEntries(
+    FUSION_ROLES.map((role) => [role, truncateUtf8(value?.[role], FUSION_METADATA_BYTES)]),
+  );
+}
+
+function presentationRouting(value: any) {
+  return Object.fromEntries(
+    FUSION_ROLES.map((role) => {
+      const route = value?.[role];
+      return [role, route && typeof route === "object" ? {
+        reason: truncateUtf8(route.reason, FUSION_METADATA_BYTES),
+        fallbackUsed: Boolean(route.fallbackUsed),
+      } : null];
+    }),
+  );
+}
+
+function selectFusionProposals(value: unknown) {
+  const proposals = Array.isArray(value) ? value : [];
+  const invalidRoles = proposals.filter(
+    (proposal: any) => proposal?.role !== "architect" && proposal?.role !== "builder",
+  );
+  const duplicateRoles = ["architect", "builder"].filter(
+    (role) => proposals.filter((proposal: any) => proposal?.role === role).length > 1,
+  );
+  const selected = ["architect", "builder"]
+    .map((role) => {
+      const matches = proposals.filter((proposal: any) => proposal?.role === role);
+      return matches.length === 1 ? matches[0] : null;
+    })
+    .filter(Boolean);
+  const errors = [
+    invalidRoles.length ? "unknown proposal role" : "",
+    ...duplicateRoles.map((role) => `duplicate ${role} role`),
+  ].filter(Boolean);
+  return { proposals: selected, errors };
+}
+
+export function createFusionPresentationSummary(summary: any) {
+  const runDir = truncateUtf8(summary?.runDir, FUSION_PATH_BYTES);
+  const selection = selectFusionProposals(summary?.proposals);
+  const errors = [
+    truncateUtf8(summary?.error, FUSION_TRANSCRIPT_OBJECTIVE_BYTES),
+    selection.errors.length ? `Malformed Fusion provenance: ${selection.errors.join(", ")}` : "",
+  ].filter(Boolean);
+  return {
+    kind: "fusion",
+    mode: "plan",
+    status: truncateUtf8(summary?.status, FUSION_METADATA_BYTES) || "UNKNOWN",
+    runId: truncateUtf8(summary?.runId, FUSION_METADATA_BYTES),
+    runDir,
+    objective: truncateUtf8(summary?.objective, FUSION_TRANSCRIPT_OBJECTIVE_BYTES),
+    error: truncateUtf8(errors.join("; "), FUSION_METADATA_BYTES) || null,
+    models: presentationModels(summary?.models),
+    requestedEfforts: presentationModels(summary?.requestedEfforts),
+    proposals: selection.proposals.map((proposal: any) => {
+          const role = truncateUtf8(proposal?.role, FUSION_METADATA_BYTES);
+          const artifactRole = role === "architect" || role === "builder" ? role : "proposal";
+          return {
+          role,
+          model: truncateUtf8(proposal?.model, FUSION_METADATA_BYTES),
+          ok: proposal?.ok === true,
+          contractOk: proposal?.contractOk === true,
+          error: truncateUtf8(proposal?.error, FUSION_METADATA_BYTES) || null,
+          text: truncateFusionBody(
+            proposal?.text,
+            join(runDir, "fusion", `${artifactRole}.md`),
+          ),
+          usage: presentationUsage(proposal?.usage),
+          durationMs: finiteNonNegative(proposal?.durationMs),
+        };
+      }),
+    synthesis: truncateFusionBody(
+      summary?.synthesis,
+      join(runDir, "fusion", "synthesis.md"),
+    ),
+    synthesizer: summary?.synthesizer
+      ? {
+          model: truncateUtf8(summary.synthesizer.model, FUSION_METADATA_BYTES),
+          ok: summary.synthesizer.ok === true,
+          contractOk: summary.synthesizer.contractOk === true,
+          error: truncateUtf8(summary.synthesizer.error, FUSION_METADATA_BYTES) || null,
+          usage: presentationUsage(summary.synthesizer.usage),
+          durationMs: finiteNonNegative(summary.synthesizer.durationMs),
+        }
+      : null,
+    usage: presentationUsage(summary?.usage),
+    missingProviders: Array.isArray(summary?.missingProviders)
+      ? summary.missingProviders.slice(0, 3).map((provider: unknown) => truncateUtf8(provider, 64))
+      : [],
+    routing: presentationRouting(summary?.routing),
+  };
+}
+
+function formatFusionCost(usage: any) {
+  const cost = finiteNonNegative(usage?.cost);
+  return usage?.costKnown === false || cost === null
+    ? "cost unknown"
+    : `$${cost.toFixed(4)}`;
+}
+
+export function formatFusionContextLines(summary: any) {
+  const models = summary?.models || {};
+  const usage = summary?.usage || {};
+  const lines = [
+    `Fusion ${truncateUtf8(summary?.status, FUSION_METADATA_BYTES) || "UNKNOWN"} (${truncateUtf8(summary?.runId, FUSION_METADATA_BYTES) || "unknown run"})`,
+    `Objective: ${truncateUtf8(summary?.objective, FUSION_CONTEXT_OBJECTIVE_BYTES) || "not recorded"}`,
+    `Architect: ${truncateUtf8(models.architect, FUSION_METADATA_BYTES) || "n/a"}`,
+    `Builder: ${truncateUtf8(models.builder, FUSION_METADATA_BYTES) || "n/a"}`,
+    `Synthesizer: ${truncateUtf8(models.synthesizer, FUSION_METADATA_BYTES) || "n/a"}`,
+    `Usage: ${finiteNonNegative(usage.input) || 0} input, ${finiteNonNegative(usage.output) || 0} output, ${finiteNonNegative(usage.turns) || 0} turns, ${formatFusionCost(usage)}`,
+    `Artifacts: ${truncateUtf8(summary?.runDir, FUSION_PATH_BYTES) || "n/a"}`,
+    "Bounded transcript previews; full outputs in run artifacts.",
+  ];
+  if (summary?.error) lines.push(`Error: ${truncateUtf8(summary.error, FUSION_METADATA_BYTES)}`);
+  if (summary?.error === "provider_unavailable") {
+    if (summary.missingProviders?.length) {
+      lines.push(`Provider unavailable in this Alloy session: ${summary.missingProviders.slice(0, 3).map((provider: unknown) => truncateUtf8(provider, 64)).join(", ")}`);
+    }
+    for (const route of Object.values(summary.routing || {}) as any[]) {
+      if (route?.reason) lines.push(`Route reason: ${truncateUtf8(route.reason, FUSION_METADATA_BYTES)}`);
+    }
+  }
+  return lines;
+}
+
+export function formatFusionPresentationLines(summary: any) {
+  const lines = [
+    `FUSION // ${summary?.status || "UNKNOWN"}`,
+    summary?.runId ? `run: ${summary.runId}` : "",
+    summary?.objective ? `prompt: ${summary.objective}` : "",
+  ].filter(Boolean);
+  if (summary?.error) lines.push(`× ${summary.error}`);
+  const proposals = Array.isArray(summary?.proposals) ? summary.proposals : [];
+  for (const role of ["architect", "builder"]) {
+    const matches = proposals.filter((proposal: any) => proposal?.role === role);
+    if (matches.length !== 1) continue;
+    const proposal = matches[0];
+    lines.push("", `${role.toUpperCase()} // ${proposal?.model || "unknown model"}`);
+    lines.push(proposal?.ok === true ? "✓ done" : "× failed");
+    if (proposal?.error) lines.push(`× ${proposal.error}`);
+    lines.push(proposal?.text || "(no output)");
+  }
+  if (summary?.synthesizer || summary?.synthesis) {
+    lines.push(
+      "",
+      `SYNTHESIZER // ${summary?.synthesizer?.model || summary?.models?.synthesizer || "unknown model"}`,
+      summary?.synthesizer?.ok === true ? "✓ done" : "× failed",
+      ...(summary?.synthesizer?.error ? [`× ${summary.synthesizer.error}`] : []),
+      summary?.synthesis || "(no output)",
+    );
+  }
+  lines.push("", `usage: ${finiteNonNegative(summary?.usage?.input) || 0} input · ${finiteNonNegative(summary?.usage?.output) || 0} output · ${finiteNonNegative(summary?.usage?.turns) || 0} turns · ${formatFusionCost(summary?.usage)}`);
+  if (summary?.runDir) lines.push("", `artifacts: ${summary.runDir}`);
+  return lines;
+}
+
 function clearPanel(ctx?: { ui?: ExtensionContext["ui"] }) {
   const ui = ctx?.ui || panelUi;
   try {
     ui?.setWidget?.("alloy-agents", undefined);
+  } catch {
+    // ignore
+  }
+}
+
+function clearFusionPanel(ctx?: { ui?: ExtensionContext["ui"] }) {
+  const ui = ctx?.ui || panelUi;
+  clearPanel(ctx);
+  try {
+    ui?.setStatus?.("alloy-fusion", undefined);
   } catch {
     // ignore
   }
@@ -270,6 +479,23 @@ async function setupFusion(ctx: ExtensionContext) {
 }
 
 export function registerAuto(pi: ExtensionAPI) {
+  pi.registerMessageRenderer?.("alloy-fusion", (message, { outputPad }, theme) => {
+    const details = message.details as any;
+    const lines = details?.kind === "fusion"
+      ? formatFusionPresentationLines(createFusionPresentationSummary(details))
+      : [String(message.content || "")];
+    const text = lines
+      .map((line) =>
+        /^(FUSION|ARCHITECT|BUILDER|SYNTHESIZER) \/\//.test(line)
+          ? theme.fg("accent", line)
+          : line.startsWith("× ")
+            ? theme.fg("error", line)
+            : line,
+      )
+      .join("\n");
+    return new Text(text, outputPad, 1, (value) => theme.bg("customMessageBg", value));
+  });
+
   pi.registerCommand("auto", {
     description:
       "Auto pipeline with fix loops: scout → plan → build → check → review ↺ fix. /auto <request>",
@@ -431,18 +657,41 @@ export function registerAuto(pi: ExtensionAPI) {
             }
           },
         });
-        const lines = formatFusionLines(summary);
+        const presented = createFusionPresentationSummary(summary);
+        const lines = formatFusionContextLines(presented);
         pi.sendMessage({
           customType: "alloy-fusion",
           content: lines.join("\n"),
           display: true,
-          details: summary,
+          details: presented,
         });
-        await ctx.ui.select(`Fusion ${summary.status}`, lines);
       } catch (err) {
-        ctx.ui.notify(String((err as Error).message || err), "error");
+        const message = String((err as Error).message || err);
+        ctx.ui.notify(message, "error");
+        try {
+          const presented = createFusionPresentationSummary({
+            kind: "fusion",
+            status: "FAILED",
+            objective: request,
+            runId: "",
+            runDir: "",
+            proposals: [],
+            synthesis: "",
+            synthesizer: null,
+            error: message,
+          });
+          pi.sendMessage({
+            customType: "alloy-fusion",
+            content: `Fusion failed: ${truncateUtf8(message, FUSION_METADATA_BYTES)}`,
+            display: true,
+            details: presented,
+          });
+        } catch {
+          // The notification above is the last available reporting path.
+        }
       } finally {
         ctx.ui.setWorkingMessage?.();
+        clearFusionPanel(ctx);
       }
     },
   });
@@ -540,23 +789,26 @@ export function registerAuto(pi: ExtensionAPI) {
             resolveSessionCredentialLease(models, ctx.modelRegistry),
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
         });
+        const presented = createFusionPresentationSummary(summary);
         return {
           content: [
             {
               type: "text",
-              text: formatFusionLines(summary).join("\n"),
+              text: formatFusionLines(presented).join("\n"),
             },
           ],
-          details: summary,
+          details: presented,
         };
       } catch (err) {
-        const message = (err as Error).message || String(err);
+        const message = truncateUtf8((err as Error).message || String(err), FUSION_METADATA_BYTES);
         return {
           content: [
             { type: "text", text: `Fusion failed: ${message}` },
           ],
           details: { error: true, message },
         };
+      } finally {
+        clearFusionPanel(ctx);
       }
     },
   });

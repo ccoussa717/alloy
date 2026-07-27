@@ -1036,7 +1036,8 @@ describe("parent propagation for model-callable tools", () => {
     assert.match(fusionToolBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionToolBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionToolBody, /Type\.Literal\(["']build["']\)/);
-    assert.match(fusionToolBody, /formatFusionLines\(summary\)/);
+    assert.match(fusionToolBody, /createFusionPresentationSummary\(summary\)/);
+    assert.match(fusionToolBody, /formatFusionLines\(presented\)/);
 
     const fusionCommandIdx = autoSrc.indexOf('registerCommand("fusion"');
     const panelCommandIdx = autoSrc.indexOf('registerCommand("panel"');
@@ -1047,7 +1048,8 @@ describe("parent propagation for model-callable tools", () => {
     assert.match(fusionCommandBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionCommandBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionCommandBody, /\^build\\b|\^plan\\b|plan\|build/);
-    assert.match(fusionCommandBody, /formatFusionLines\(summary\)/);
+    assert.match(fusionCommandBody, /createFusionPresentationSummary\(summary\)/);
+    assert.match(fusionCommandBody, /formatFusionContextLines\(presented\)/);
     assert.match(autoSrc, /function formatFusionLines[\s\S]*summary\.synthesis/);
     assert.match(
       autoSrc,

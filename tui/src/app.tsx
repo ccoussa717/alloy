@@ -2,7 +2,7 @@ import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type ScrollBo
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock, type TranscriptToolStatus } from "./content";
+import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type FusionTranscriptAgent, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
   commandCompletion,
   commandSuggestions,
@@ -133,6 +133,21 @@ export function sidebarLayout(width: number, manual: boolean | null) {
   };
 }
 
+export function fusionResultLayout(width: number): "columns" | "stack" {
+  return width >= 90 ? "columns" : "stack";
+}
+
+export function fusionWidgetTone(
+  lines: string[],
+  line: string,
+  index: number,
+): "accent" | "accentDim" | "muted" {
+  if (!lines[0]?.includes("ALLOY FUSION") && !lines.some((item) => /^[◆▲⧉]/.test(item))) return "muted";
+  if (index === 0 || /Architect|Builder|Synthesizer/.test(line)) return "accent";
+  if (/^[┌├└]/.test(line)) return "accentDim";
+  return "muted";
+}
+
 export interface AlloyAppProps {
   client: RpcClient;
   initialState: SessionState;
@@ -164,7 +179,95 @@ function cleanStatus(value: string): string {
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").trim();
 }
 
-function Block(props: { block: TranscriptBlock; user?: boolean; streaming?: boolean; execution?: ToolExecution; transcriptStatus?: TranscriptToolStatus; activityGlyph?: string }) {
+function compactCount(value: number): string {
+  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}k` : String(value);
+}
+
+function fusionStats(agent: FusionTranscriptAgent): string {
+  const parts = [agent.durationMs === null ? "latency unavailable" : `${(agent.durationMs / 1_000).toFixed(1)}s`];
+  parts.push(`in ${compactCount(agent.usage.input)} out ${compactCount(agent.usage.output)}`);
+  parts.push(`${agent.usage.turns} turn${agent.usage.turns === 1 ? "" : "s"}`);
+  parts.push(agent.usage.costKnown && agent.usage.cost !== null ? `$${agent.usage.cost.toFixed(4)}` : "cost unknown");
+  return parts.join(" · ");
+}
+
+function FusionAgentResult(props: { agent: FusionTranscriptAgent; grow?: boolean }) {
+  const label = () => props.agent.role.toUpperCase();
+  const glyph = () => props.agent.role === "architect" ? "◆" : props.agent.role === "builder" ? "▲" : "⧉";
+  return (
+    <box
+      width={props.grow ? undefined : "100%"}
+      flexGrow={props.grow ? 1 : 0}
+      flexBasis={props.grow ? 0 : undefined}
+      minWidth={0}
+      flexDirection="column"
+      border={["left"]}
+      borderColor={theme.accent}
+      backgroundColor={theme.panel}
+      paddingLeft={2}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+    >
+      <text fg={theme.accent}>{glyph()} {label()} · {props.agent.model}</text>
+      <text fg={props.agent.status === "done" ? theme.success : theme.error}>
+        {props.agent.status === "done" ? "✓" : "×"} {props.agent.status} · effort {props.agent.effort}
+      </text>
+      <text fg={theme.dim}>{fusionStats(props.agent)}</text>
+      <Show when={props.agent.error}>
+        <text fg={theme.error}>{props.agent.error}</text>
+      </Show>
+      <box height={1} />
+      <markdown
+        syntaxStyle={syntaxStyle}
+        internalBlockMode="top-level"
+        content={props.agent.text || "(no output)"}
+        tableOptions={{ style: "grid" }}
+        fg={theme.text}
+        bg={theme.panel}
+      />
+    </box>
+  );
+}
+
+function FusionResult(props: { block: Extract<TranscriptBlock, { kind: "fusion" }>; width: number }) {
+  const columns = () => fusionResultLayout(props.width) === "columns";
+  return (
+    <box flexDirection="column" gap={1}>
+      <text fg={theme.accent}>FUSION // {props.block.status}</text>
+      <text fg={theme.dim}>{props.block.runId}</text>
+      <Show when={props.block.objective}>
+        <text fg={theme.muted}>prompt: {props.block.objective}</text>
+      </Show>
+      <Show when={props.block.error}>
+        <text fg={theme.error}>× {props.block.error}</text>
+      </Show>
+      <Show when={props.block.summary}>
+        <markdown
+          syntaxStyle={syntaxStyle}
+          internalBlockMode="top-level"
+          content={props.block.summary!}
+          tableOptions={{ style: "grid" }}
+          fg={theme.text}
+          bg={theme.background}
+        />
+      </Show>
+      <box flexDirection={columns() ? "row" : "column"} gap={1}>
+        <For each={props.block.proposals}>
+          {(agent) => <FusionAgentResult agent={agent} grow={columns()} />}
+        </For>
+      </box>
+      <Show when={props.block.synthesis}>
+        {(agent: () => FusionTranscriptAgent) => <FusionAgentResult agent={agent()} />}
+      </Show>
+      <Show when={props.block.runDir}>
+        <text fg={theme.dim}>artifacts: {props.block.runDir}</text>
+      </Show>
+    </box>
+  );
+}
+
+function Block(props: { block: TranscriptBlock; width?: number; user?: boolean; streaming?: boolean; execution?: ToolExecution; transcriptStatus?: TranscriptToolStatus; activityGlyph?: string }) {
   const color = () => (props.user ? theme.textStrong : theme.text);
   if (props.block.kind === "text") {
     return props.user ? (
@@ -208,6 +311,7 @@ function Block(props: { block: TranscriptBlock; user?: boolean; streaming?: bool
   if (props.block.kind === "image" || props.block.kind === "file") {
     return <text fg={theme.muted}>[{props.block.kind}: {props.block.name ?? props.block.mimeType ?? "attachment"}]</text>;
   }
+  if (props.block.kind === "fusion") return <FusionResult block={props.block} width={props.width ?? 80} />;
   if (props.block.kind === "custom") return <text fg={theme.muted}>{props.block.name}: {props.block.text}</text>;
   return <text fg={theme.muted}>{props.block.text}</text>;
 }
@@ -776,6 +880,7 @@ export function AlloyApp(props: AlloyAppProps) {
                       return (
                         <Block
                           block={block()}
+                          width={Math.max(1, layout().width - layout().horizontalPadding * 2 - 3)}
                           streaming={isStreamingTranscriptMessage(session(), index())}
                           execution={blockId() ? session().toolExecutions[blockId()!] : undefined}
                           transcriptStatus={blockId() ? session().transcriptTools[blockId()!] : undefined}
@@ -841,7 +946,7 @@ export function AlloyApp(props: AlloyAppProps) {
           scrollbarOptions={{ visible: false }}
         >
           <For each={aboveWidgets()}>
-            {(widget) => <For each={widget.lines}>{(line) => <text wrapMode="char" fg={theme.muted}>{line}</text>}</For>}
+            {(widget) => <For each={widget.lines}>{(line, index) => <text wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
           </For>
         </scrollbox>
       </Show>
