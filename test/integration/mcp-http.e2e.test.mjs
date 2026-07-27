@@ -22,9 +22,10 @@ const { McpManager, mcpToolName } = await import(
   join(root, "lib", "mcp-client.mjs")
 );
 
-async function startHttpFixture() {
+async function startHttpFixture(env = {}) {
   const child = spawn(process.execPath, [fixture], {
     cwd: root,
+    env: { ...process.env, EXPECT_USER_ID: "", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const rl = createInterface({ input: child.stdout });
@@ -121,5 +122,32 @@ describe("integration: fake MCP streamable HTTP server", () => {
     });
     assert.equal(results[0].ok, true, results[0].error);
     assert.equal(results[0].transport, "http");
+  });
+
+  it("preserves explicitly reviewed query parameters", async () => {
+    await manager.disconnectAll();
+    const queryFixture = await startHttpFixture({ EXPECT_USER_ID: "operator" });
+    try {
+      const results = await manager.connectEnabled({
+        queryhttp: {
+          transport: "http",
+          url: `${queryFixture.info.url}?user_id=operator`,
+          allowQuery: true,
+          enabled: true,
+        },
+      });
+      assert.equal(results[0].ok, true, results[0].error);
+
+      const ping = await manager.callRegistered(
+        mcpToolName("queryhttp", "ping"),
+        { echo: "query-preserved" },
+      );
+      const pingText =
+        ping?.content?.map((c) => c.text).join("") || JSON.stringify(ping);
+      assert.match(pingText, /query-preserved/);
+    } finally {
+      await manager.disconnectAll();
+      queryFixture.child.kill("SIGTERM");
+    }
   });
 });

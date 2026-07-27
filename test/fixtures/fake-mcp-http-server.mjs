@@ -52,8 +52,18 @@ function createAppServer() {
 }
 
 const PORT = Number(process.env.PORT || 0);
+const EXPECT_USER_ID = process.env.EXPECT_USER_ID || "";
 
 const httpServer = createServer(async (req, res) => {
+  if (EXPECT_USER_ID) {
+    const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
+    if (requestUrl.searchParams.get("user_id") !== EXPECT_USER_ID) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "missing expected user_id" }));
+      return;
+    }
+  }
+
   // Auth probe for header tests
   if (req.headers["x-alloy-test-auth"] === "required") {
     const auth = req.headers.authorization || "";

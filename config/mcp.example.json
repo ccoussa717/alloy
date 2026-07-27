@@ -16,6 +16,15 @@
       },
       "enabled": false
     },
+    "example-http-with-reviewed-query": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp?user_id=operator",
+      "allowQuery": true,
+      "headers": {
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
+      },
+      "enabled": false
+    },
     "example-sse": {
       "transport": "sse",
       "url": "https://mcp.example.com/sse",

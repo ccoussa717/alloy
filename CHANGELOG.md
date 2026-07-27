@@ -16,6 +16,8 @@ and releases use semantic versioning during the 0.x development series.
 - Pinned executable dependencies and added a release-included npm shrinkwrap.
 - Added packed-artifact startup, release metadata, SBOM, and security gates.
 - Required HTTPS for non-loopback remote MCP and hardened local MCP secrets-file handling.
+- Added explicit `allowQuery` opt-in for reviewed remote MCP endpoints that
+  require non-secret routing parameters while retaining default rejection.
 - Switched the coding-agent runtime to Alloy's integrity-pinned Pi 0.82.1 fork,
   adding a fixed transcript viewport, independent transcript navigation, and
   width-safe user-message rails while retaining Pi's native authentication,

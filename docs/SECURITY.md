@@ -66,7 +66,10 @@ credential paths.
 Remote MCP headers can expand environment variables from `~/.pi/alloy/env`.
 That file must be a regular file owned by the current user with mode `0600` and
 must not be a symlink. Every non-loopback remote MCP transport requires HTTPS;
-plaintext HTTP is limited to loopback development.
+plaintext HTTP is limited to loopback development. Remote URL query parameters
+are rejected unless the reviewed server configuration sets `allowQuery: true`.
+Query parameters must contain routing metadata only, never credentials or other
+secrets. URL fragments and embedded credentials are always rejected.
 
 MCP stdio servers run as host processes. Configure them as deliberately as any
 other executable. Published examples never execute floating npm packages.
