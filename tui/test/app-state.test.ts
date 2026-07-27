@@ -7,7 +7,10 @@ import {
   createAppState,
   extensionDialogOptions,
   extensionDialogResponse,
+  initialDialogSelection,
   latestNotifications,
+  modelProviderOptions,
+  modelsForProvider,
   reduceAppRpcMessage,
 } from "../src/app";
 
@@ -93,6 +96,24 @@ describe("integrated app state", () => {
     expect(latestNotifications(notifications).map((item) => item.id)).toEqual([
       "2", "3", "4", "5", "6", "7", "8", "9",
     ]);
+  });
+
+  it("groups models by provider before listing that provider's models", () => {
+    const models = [
+      { id: "grok-4", provider: "xai", name: "Grok 4" },
+      { id: "claude-opus", provider: "anthropic", name: "Opus" },
+      { id: "grok-3", provider: "xai", name: "Grok 3" },
+    ];
+
+    expect(modelProviderOptions(models)).toEqual(["anthropic", "xai"]);
+    expect(modelsForProvider(models, "xai").map((model) => model.id)).toEqual(["grok-3", "grok-4"]);
+    expect(modelsForProvider(models, undefined)).toEqual([]);
+  });
+
+  it("never applies provider selection state to an extension dialog with a colliding id", () => {
+    const providers = ["anthropic", "xai"];
+    expect(initialDialogSelection(null, "model-provider", providers, "xai")).toBe(1);
+    expect(initialDialogSelection({ id: "model-provider", method: "confirm", title: "Allow?" }, "model-provider", providers, "xai")).toBe(0);
   });
 
   it("cancels extension dialogs fail-closed", () => {

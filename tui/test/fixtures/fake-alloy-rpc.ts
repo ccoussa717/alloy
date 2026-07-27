@@ -129,11 +129,14 @@ function handle(request: Record<string, unknown>): void {
     case "get_available_models":
       modelRequestCount++;
       respond(request, {
-        models: [{
-          id: modelRequestCount === 1 ? "stale-model" : "fresh-model",
-          provider: "fake",
-          name: modelRequestCount === 1 ? "Stale" : "Fresh",
-        }],
+        models: modelRequestCount === 1
+          ? [{ id: "stale-model", provider: "fake", name: "Stale" }]
+          : modelRequestCount === 2
+            ? [{ id: "fresh-model", provider: "fake", name: "Fresh" }]
+            : [
+              { id: "fresh-model", provider: "fake", name: "Fresh" },
+              { id: "grok-model", provider: "xai", name: "Grok" },
+            ],
       });
       return;
     case "get_session_stats":

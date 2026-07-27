@@ -7,7 +7,7 @@ export interface CommandContext {
   models: ModelInfo[];
 }
 
-export type LocalDialog = "help" | "model" | "thinking" | "session" | "export";
+export type LocalDialog = "help" | "model-provider" | "model" | "thinking" | "session" | "export";
 
 export type SubmissionResolution =
   | { kind: "none" }
@@ -51,7 +51,7 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
     return request({ type: "export_html" }, { resultDialog: "export" });
   }
   if (name === "/model") {
-    if (!args) return { kind: "dialog", dialog: "model", clearInput: true };
+    if (!args) return { kind: "dialog", dialog: "model-provider", clearInput: true };
     const exact = context.models.find((model) => `${model.provider}/${model.id}` === args || model.id === args);
     const slash = args.indexOf("/");
     const provider = exact?.provider ?? (slash > 0 ? args.slice(0, slash) : undefined);
