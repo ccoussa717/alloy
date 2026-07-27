@@ -108,6 +108,9 @@ test("McpManager rejects incomplete http without url", async () => {
   assert.equal(results.length, 1);
   assert.equal(results[0].ok, false);
   assert.match(results[0].error, /url|missing/i);
+  assert.deepEqual(m.listConnections().map(({ name, status, error }) => ({ name, status, error })), [
+    { name: "bad", status: "error", error: "missing url" },
+  ]);
   await m.disconnectAll();
 });
 

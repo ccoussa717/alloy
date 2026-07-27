@@ -45,9 +45,10 @@ function secretKey(key: string): boolean {
 
 export function redactDisplayText(value: string): string {
   return value
+    .replace(/((?:proxy[-_ ]?)?authorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n]+)/gi, `$1${REDACTED}`)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
     .replace(
-      /((?:api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|password|passwd|authorization|cookie|client[-_ ]?secret|private[-_ ]?key|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+      /((?:api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|password|passwd|cookie|client[-_ ]?secret|private[-_ ]?key|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
       `$1${REDACTED}`,
     )
 }

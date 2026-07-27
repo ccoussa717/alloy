@@ -83,6 +83,7 @@ describe("resolveSubmission", () => {
     expect(resolveSubmission("/thinking", context)).toEqual({ kind: "dialog", dialog: "thinking", clearInput: true });
     expect(resolveSubmission("/help", context)).toEqual({ kind: "dialog", dialog: "help", clearInput: true });
     expect(resolveSubmission("/quit", context)).toEqual({ kind: "exit", clearInput: true });
+    expect(resolveSubmission("/sidebar", context)).toEqual({ kind: "toggle-sidebar", clearInput: true });
   });
 
   it("keeps bare help local but sends help arguments to the registered backend command", () => {
@@ -145,6 +146,7 @@ describe("commandSuggestions", () => {
     expect(suggestions.filter((command) => command.name === "help")).toHaveLength(1);
     expect(suggestions.find((command) => command.name === "help")?.description).toBe("Show Alloy help");
     expect(suggestions.some((command) => command.name === "plan")).toBe(true);
+    expect(suggestions.filter((command) => command.name === "sidebar")).toHaveLength(1);
   });
 
   it("reserves local aliases from conflicting hydrated commands", () => {

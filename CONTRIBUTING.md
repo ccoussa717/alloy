@@ -62,7 +62,8 @@ License in [LICENSE](./LICENSE).
 ## Design rules
 
 - Do not vendor Pi source. Changes to the public Alloy Pi fork must stay within
-  viewport, transcript navigation, and standard user-message presentation.
+  viewport, transcript navigation, standard user-message presentation, and
+  bounded structured RPC state needed by the Alloy frontend.
 - Use Pi for provider authentication.
 - Do not log credential values.
 - Project configuration may not weaken operator policy.

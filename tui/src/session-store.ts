@@ -43,6 +43,38 @@ export interface SessionStats {
   [key: string]: unknown;
 }
 
+export interface SidebarSnapshot {
+  sessionId: string;
+  context: {
+    tokens: number | null;
+    contextWindow: number | null;
+    percent: number | null;
+    cost: number;
+  };
+  mcp: Array<{
+    name: string;
+    status: "connected" | "connecting" | "disconnected" | "disabled" | "failed";
+    error?: string;
+    toolCount?: number;
+    transport?: "stdio" | "http" | "sse";
+  }>;
+  lsp: {
+    supported: boolean;
+    enabled: boolean;
+    items: Array<{
+      id: string;
+      root: string;
+      status: "connected" | "error" | "unavailable";
+      error?: string;
+    }>;
+  };
+  todos: Array<{
+    content: string;
+    status: "pending" | "in_progress" | "completed" | "cancelled";
+    priority: "high" | "medium" | "low";
+  }>;
+}
+
 export interface ToolExecution {
   toolCallId: string;
   toolName: string;
@@ -117,6 +149,7 @@ export interface SessionState {
   commands: SlashCommand[];
   availableModels: ModelInfo[];
   sessionStats: SessionStats | null;
+  sidebarSnapshot: SidebarSnapshot | null;
   backendError: string | null;
   fatalError: string | null;
   currentAssistantMessageId: string | null;
@@ -270,6 +303,86 @@ function errorText(value: unknown, fallback: string): string {
   return fallback;
 }
 
+function sidebarRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function sidebarNumber(value: unknown, nullable = false): number | null {
+  if (nullable && value === null) return null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function sidebarText(value: string, limit: number): string {
+  return redactDisplayText(value)
+    .replace(/((?:token|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi, "$1[REDACTED]")
+    .slice(0, limit);
+}
+
+function parseSidebarSnapshot(value: unknown): SidebarSnapshot | null {
+  const data = sidebarRecord(value);
+  const context = sidebarRecord(data?.context);
+  const lsp = sidebarRecord(data?.lsp);
+  if (!data || typeof data.sessionId !== "string" || data.sessionId.length > 500 || !context || !lsp) return null;
+  if (!Array.isArray(data.mcp) || data.mcp.length > 100 || !Array.isArray(lsp.items) || lsp.items.length > 100) {
+    return null;
+  }
+  if (!Array.isArray(data.todos) || data.todos.length > 100) return null;
+  const tokens = sidebarNumber(context.tokens, true);
+  const contextWindow = sidebarNumber(context.contextWindow, true);
+  const percent = sidebarNumber(context.percent, true);
+  const cost = sidebarNumber(context.cost);
+  if (cost === null || (context.tokens !== null && tokens === null) || (context.contextWindow !== null && contextWindow === null) || (context.percent !== null && percent === null)) {
+    return null;
+  }
+
+  const mcp: SidebarSnapshot["mcp"] = [];
+  for (const value of data.mcp) {
+    const item = sidebarRecord(value);
+    if (!item || typeof item.name !== "string" || !["connected", "connecting", "disconnected", "disabled", "failed"].includes(String(item.status))) return null;
+    if (item.toolCount !== undefined && (typeof item.toolCount !== "number" || !Number.isSafeInteger(item.toolCount) || item.toolCount < 0)) return null;
+    if (item.transport !== undefined && !["stdio", "http", "sse"].includes(String(item.transport))) return null;
+    mcp.push({
+      name: sidebarText(item.name, 200),
+      status: item.status as SidebarSnapshot["mcp"][number]["status"],
+      ...(typeof item.error === "string" ? { error: sidebarText(item.error, 500) } : {}),
+      ...(typeof item.toolCount === "number" ? { toolCount: item.toolCount } : {}),
+      ...(typeof item.transport === "string" ? { transport: item.transport as "stdio" | "http" | "sse" } : {}),
+    });
+  }
+
+  const lspItems: SidebarSnapshot["lsp"]["items"] = [];
+  for (const value of lsp.items) {
+    const item = sidebarRecord(value);
+    if (!item || typeof item.id !== "string" || typeof item.root !== "string" || !["connected", "error", "unavailable"].includes(String(item.status))) return null;
+    lspItems.push({
+      id: sidebarText(item.id, 200),
+      root: sidebarText(item.root, 200),
+      status: item.status as SidebarSnapshot["lsp"]["items"][number]["status"],
+      ...(typeof item.error === "string" ? { error: sidebarText(item.error, 500) } : {}),
+    });
+  }
+
+  const todos: SidebarSnapshot["todos"] = [];
+  for (const value of data.todos) {
+    const item = sidebarRecord(value);
+    if (!item || typeof item.content !== "string" || !["pending", "in_progress", "completed", "cancelled"].includes(String(item.status)) || !["high", "medium", "low"].includes(String(item.priority))) return null;
+    todos.push({
+      content: sidebarText(item.content, 500),
+      status: item.status as SidebarSnapshot["todos"][number]["status"],
+      priority: item.priority as SidebarSnapshot["todos"][number]["priority"],
+    });
+  }
+
+  if (typeof lsp.supported !== "boolean" || typeof lsp.enabled !== "boolean") return null;
+  return {
+    sessionId: data.sessionId,
+    context: { tokens, contextWindow, percent, cost },
+    mcp,
+    lsp: { supported: lsp.supported, enabled: lsp.enabled, items: lspItems },
+    todos,
+  };
+}
+
 export function createInitialState(): SessionState {
   const notifications: NotificationState[] = [];
   return {
@@ -302,6 +415,7 @@ export function createInitialState(): SessionState {
     commands: [],
     availableModels: [],
     sessionStats: null,
+    sidebarSnapshot: null,
     backendError: null,
     fatalError: null,
     currentAssistantMessageId: null,
@@ -332,6 +446,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
               editorText: "",
               title: "",
               extensionDialogs: emptyExtensionDialogs(),
+              sidebarSnapshot: null,
               currentAssistantMessageId: null,
             }
           : state;
@@ -383,6 +498,12 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
       }
       case "get_session_stats":
         return { ...state, sessionStats: message.data as SessionStats, backendError: null };
+      case "get_sidebar_state": {
+        const snapshot = parseSidebarSnapshot(message.data);
+        return snapshot?.sessionId === state.sessionId
+          ? { ...state, sidebarSnapshot: snapshot, backendError: null }
+          : state;
+      }
       case "set_model":
         return { ...state, model: message.data as ModelInfo, backendError: null };
       case "cycle_model": {
@@ -406,6 +527,10 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
   }
 
   switch (message.type) {
+    case "sidebar_state_updated": {
+      const snapshot = parseSidebarSnapshot(message.data);
+      return snapshot?.sessionId === state.sessionId ? { ...state, sidebarSnapshot: snapshot } : state;
+    }
     case "agent_start":
       return { ...state, isStreaming: true, toolExecutions: {}, backendError: null };
     case "agent_end":

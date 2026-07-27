@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { displayPreview, messageBlocks, messageRole, resultText, toolSummary, transcriptToolStates } from "../src/content"
+import { displayPreview, messageBlocks, messageRole, redactDisplayText, resultText, toolSummary, transcriptToolStates } from "../src/content"
+
+describe("redactDisplayText", () => {
+  test("removes complete bearer and basic authorization credentials", () => {
+    expect(redactDisplayText("Authorization: Bearer bearer-secret")).not.toContain("bearer-secret")
+    expect(redactDisplayText("Authorization: Basic dXNlcjpzZWNyZXQ=")).not.toContain("dXNlcjpzZWNyZXQ=")
+    expect(redactDisplayText("Authorization: Digest username=admin response=secret-response")).toBe("Authorization: [REDACTED]")
+    expect(redactDisplayText("Authorization: AWS4-HMAC-SHA256 Signature=secret-signature")).toBe("Authorization: [REDACTED]")
+    expect(redactDisplayText("Authorization: Digest username=admin, response=secret-response; opaque=secret")).toBe("Authorization: [REDACTED]")
+  })
+
+  test("does not corrupt ordinary source and prose", () => {
+    expect(redactDisplayText("const token = await lexer.next()")).toBe("const token = await lexer.next()")
+    expect(redactDisplayText("type Credential = string")).toBe("type Credential = string")
+    expect(redactDisplayText("Use Basic authentication")).toBe("Use Basic authentication")
+  })
+})
 
 describe("messageRole", () => {
   test("normalizes Pi and custom roles without trusting the input", () => {

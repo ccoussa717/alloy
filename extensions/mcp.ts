@@ -26,6 +26,7 @@ const {
   McpManager,
   formatMcpResult,
   isMcpToolName,
+  resolveMcpTransportKind,
 } = require(join(root, "lib", "mcp-client.mjs"));
 const { loadAlloyEnvFile } = require(join(root, "lib", "alloy-env.mjs"));
 const { setMcpStats } = require(join(root, "lib", "state.mjs"));
@@ -33,6 +34,7 @@ const { loadConfig, loadGlobalConfig } = require(join(root, "lib", "config.mjs")
 const { setRuntimeProjectTrust, isProjectTrusted } = require(
   join(root, "lib", "project-trust.mjs"),
 );
+const { setSidebarMcp } = require(join(root, "lib", "sidebar-state.mjs"));
 
 type ServerRow = {
   name: string;
@@ -57,6 +59,61 @@ if (!(g.__alloyMcpRegisteredTools instanceof Map)) {
 }
 const manager = g.__alloyMcpManager;
 const registeredNames = g.__alloyMcpRegisteredTools;
+
+function sidebarMcpRows(cwd: string) {
+  const servers: ServerRow[] = listMcpServers(cwd);
+  const live = manager.listConnections();
+  const rows = servers.map((server) => {
+    const connection = live.find((item: { name: string }) => item.name === server.name);
+    const resolvedTransport = resolveMcpTransportKind({ transport: connection?.transport || server.transport });
+    const transport = ["stdio", "http", "sse"].includes(resolvedTransport) ? resolvedTransport : undefined;
+    const status = connection?.status === "error"
+        ? "failed"
+        : connection?.status || (!server.enabled ? "disabled" : "disconnected");
+    return {
+      name: server.name,
+      status,
+      ...(connection?.error ? { error: String(connection.error) } : {}),
+      ...(connection?.status === "connected" ? { toolCount: connection.toolCount } : {}),
+      ...(transport ? { transport } : {}),
+    };
+  });
+  for (const connection of live) {
+    if (servers.some((server) => server.name === connection.name)) continue;
+    const resolvedTransport = resolveMcpTransportKind({ transport: connection.transport });
+    const transport = ["stdio", "http", "sse"].includes(resolvedTransport) ? resolvedTransport : undefined;
+    rows.push({
+      name: connection.name,
+      status: connection.status === "error" ? "failed" : connection.status,
+      ...(connection.error ? { error: String(connection.error) } : {}),
+      ...(connection.status === "connected" ? { toolCount: connection.toolCount } : {}),
+      ...(transport ? { transport } : {}),
+    });
+  }
+  return rows.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function publishMcpSidebar(cwd: string) {
+  setSidebarMcp(sidebarMcpRows(cwd));
+}
+
+function publishMcpRuntime(cwd: string, ctx?: { ui?: { setStatus?: Function } }) {
+  publishMcpSidebar(cwd);
+  const live = manager.listConnections();
+  const connected = live.filter((item: { status: string }) => item.status === "connected");
+  const toolCount = manager.getRegisteredTools().length;
+  setMcpStats({ connected: connected.length > 0, toolCount });
+  const status = connected.length === 1
+    ? `mcp:${connected[0].name}·${connected[0].toolCount}`
+    : connected.length > 1
+      ? `mcp:${connected.length}/${live.length}·${toolCount}`
+      : live.some((item: { status: string }) => item.status === "connecting")
+        ? "mcp:connecting"
+        : live.some((item: { status: string }) => item.status === "error")
+          ? "mcp:fail"
+          : "mcp:off";
+  ctx?.ui?.setStatus?.("alloy-mcp", status);
+}
 
 function jsonSchemaToTypeBox(schema: Record<string, unknown> | undefined) {
   // Accept any object args — MCP validates on the server side.
@@ -131,29 +188,20 @@ function registerToolsFromManager(pi: ExtensionAPI) {
   return { added, total: manager.getRegisteredTools().length };
 }
 
-function isConnectableSpec(s: {
-  enabled?: boolean;
-  command?: string;
-  url?: string;
-} | null) {
-  if (!s || s.enabled === false) return false;
-  return Boolean(s.command || s.url);
-}
-
 async function connectAll(
   pi: ExtensionAPI,
-  ctx?: { ui?: { notify?: Function; setStatus?: Function } },
+  ctx?: { cwd?: string; ui?: { notify?: Function; setStatus?: Function } },
   selected?: Array<{ name: string; spec: object }>,
 ) {
   // Ensure MCP ${ENV} secrets are present even if launcher did not load them
   loadAlloyEnvFile({ force: true });
   ensureMcpConfig();
+  const cwd = ctx?.cwd || process.cwd();
   const enabled = selected
     ? selected.map(({ name, spec }) => [name, spec] as const)
-    : Object.entries(loadMcpConfig(process.cwd()).servers).filter(([, s]) =>
-        isConnectableSpec(s as { enabled?: boolean; command?: string; url?: string }),
-      );
+    : Object.entries(loadMcpConfig(cwd).servers).filter(([, spec]) => spec?.enabled !== false);
   if (!enabled.length) {
+    publishMcpRuntime(cwd, ctx);
     return {
       results: [] as Array<{
         name: string;
@@ -171,25 +219,13 @@ async function connectAll(
   }
 
   // Quiet by default — no per-server progress toasts
-  const results = await manager.connectEnabled(Object.fromEntries(enabled));
+  const results = await manager.connectEnabled(Object.fromEntries(enabled), {
+    onStateChange: () => publishMcpRuntime(cwd, ctx),
+  });
   const reg = registerToolsFromManager(pi);
+  publishMcpRuntime(cwd, ctx);
   const ok = results.filter((r: { ok: boolean }) => r.ok).length;
   const fail = results.filter((r: { ok: boolean }) => !r.ok);
-  // Compact status: mcp:name×tools or mcp:2/2 t:34
-  let status = `mcp:off`;
-  if (ok > 0) {
-    const live = manager.listConnections().filter(
-      (c: { status: string }) => c.status === "connected",
-    );
-    if (live.length === 1) {
-      status = `mcp:${live[0].name}·${live[0].toolCount}`;
-    } else {
-      status = `mcp:${ok}/${results.length}·${reg.total}`;
-    }
-  } else if (results.length) {
-    status = `mcp:fail`;
-  }
-  ctx?.ui?.setStatus?.("alloy-mcp", status);
   return { results, reg, ok, fail, message: undefined as string | undefined };
 }
 
@@ -214,8 +250,7 @@ export function registerMcp(pi: ExtensionAPI) {
 
       if (cmd === "disconnect") {
         await manager.disconnectAll();
-        setMcpStats({ connected: false, toolCount: 0 });
-        ctx.ui.setStatus("alloy-mcp", "mcp:off");
+        publishMcpRuntime(ctx.cwd || process.cwd(), ctx);
         ctx.ui.notify("MCP disconnected", "info");
         return;
       }
@@ -401,6 +436,7 @@ export function registerMcp(pi: ExtensionAPI) {
         ctx.ui.setStatus("alloy-mcp", `mcp:cfg ${enabled}/${servers.length}`);
       }
       loadMcpConfig(cwd);
+      publishMcpSidebar(cwd);
 
       // connectOnStart: GLOBAL servers only. One quiet status line on success.
       const globalCfg = loadGlobalConfig();

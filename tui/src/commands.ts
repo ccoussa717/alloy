@@ -19,6 +19,7 @@ export type LocalDialog = "help" | "model-provider" | "model" | "thinking" | "se
 export type SubmissionResolution =
   | { kind: "none" }
   | { kind: "exit"; clearInput: true }
+  | { kind: "toggle-sidebar"; clearInput: true }
   | { kind: "dialog"; dialog: LocalDialog; clearInput: true }
   | { kind: "error"; message: string }
   | {
@@ -40,6 +41,7 @@ const LOCAL_COMMANDS: CommandSuggestion[] = [
   { name: "export", description: "Export the session to HTML", aliases: [], source: "local" },
   { name: "model", description: "Select the active model", aliases: [], source: "local" },
   { name: "thinking", description: "Select the thinking level", aliases: [], source: "local" },
+  { name: "sidebar", description: "Toggle workspace sidebar", aliases: [], source: "local" },
   { name: "quit", description: "Exit Alloy", aliases: ["exit", "q"], source: "local" },
 ];
 
@@ -139,6 +141,7 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
     }
     return request({ type: "set_thinking_level", level: args });
   }
+  if (name === "/sidebar" && !args) return { kind: "toggle-sidebar", clearInput: true };
 
   if (name.startsWith("/")) {
     const commandName = name.slice(1);

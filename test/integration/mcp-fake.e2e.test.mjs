@@ -110,4 +110,33 @@ describe("integration: fake MCP stdio server", () => {
     assert.equal(env.ALLOY_FAKE_MARKER, "x");
     assert.ok(env.PATH);
   });
+
+  it("marks an unexpectedly closed server failed and removes its tools", async () => {
+    const local = new McpManager();
+    const states = [];
+    const results = await local.connectEnabled({
+      volatile: { command: process.execPath, args: [fixture], enabled: true },
+    }, {
+      onStateChange: (connections) => states.push(connections),
+    });
+    assert.equal(results[0].ok, true, results[0].error);
+    const connection = local.connections.get("volatile");
+    const pid = connection?.transport?.pid ?? connection?.transport?._process?.pid;
+    assert.ok(pid, "connected stdio transport exposes its child pid");
+    process.kill(pid, "SIGKILL");
+
+    await new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error("timed out waiting for MCP close state")), 2000);
+      const poll = setInterval(() => {
+        if (local.listConnections()[0]?.status !== "error") return;
+        clearInterval(poll);
+        clearTimeout(deadline);
+        resolve();
+      }, 20);
+    });
+    assert.equal(local.listConnections()[0]?.error, "connection closed unexpectedly");
+    assert.equal(local.getRegisteredTools().length, 0);
+    assert.ok(states.some((items) => items[0]?.status === "error"));
+    await local.disconnectAll();
+  });
 });

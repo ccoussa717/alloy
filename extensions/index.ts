@@ -26,6 +26,7 @@ import { registerAgents } from "./agents.ts";
 import { registerToolDisplay } from "./tool-display.ts";
 import { registerNativeCommands } from "./native-commands.ts";
 import { registerAuthCommands } from "./auth-commands.ts";
+import { registerSidebar } from "./sidebar.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,6 +56,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerToolDisplay(pi); // compact one-line tool UI (includes sandbox-aware bash)
   registerMemory(pi);
   registerSkillsImprove(pi);
+  registerSidebar(pi);
   registerMcp(pi);
   registerGit(pi);
   registerWorktree(pi);
