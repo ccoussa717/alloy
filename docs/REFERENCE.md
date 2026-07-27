@@ -463,6 +463,12 @@ Use `~/.pi/alloy/mcp.json` for operator configuration or
         "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
       },
       "enabled": false
+    },
+    "reviewed-remote-with-query": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp?user_id=operator",
+      "allowQuery": true,
+      "enabled": false
     }
   }
 }
@@ -471,6 +477,8 @@ Use `~/.pi/alloy/mcp.json` for operator configuration or
 Supported transports are stdio, Streamable HTTP, and legacy SSE. Use exact,
 reviewed executables for stdio servers; avoid floating `npx -y <package>`
 commands. Non-loopback HTTP and SSE servers must use HTTPS.
+Remote URLs containing reviewed, non-secret query parameters must set
+`"allowQuery": true`; URL fragments and embedded credentials are always rejected.
 
 Put expanded header secrets in `~/.pi/alloy/env` with mode `0600`; never commit
 them. MCP tool names use a sanitized, length-bounded

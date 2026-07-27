@@ -150,4 +150,20 @@ test("remote MCP requires HTTPS for every non-loopback transport", async () => {
     headers: { "X-Custom-Credential": "secret" },
   });
   assert.equal(secure.kind, "http");
+
+  const secureWithReviewedQuery = await mod.createMcpTransport("secure-query", {
+    transport: "http",
+    url: "https://example.com/mcp?user_id=operator",
+    allowQuery: true,
+  });
+  assert.equal(secureWithReviewedQuery.kind, "http");
+
+  await assert.rejects(
+    mod.createMcpTransport("unsafe-fragment", {
+      transport: "http",
+      url: "https://example.com/mcp?user_id=operator#secret",
+      allowQuery: true,
+    }),
+    /fragments/i,
+  );
 });
