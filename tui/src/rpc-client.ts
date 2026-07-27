@@ -299,10 +299,16 @@ export class RpcClient {
 				return false;
 			}
 			this.pending.delete(id);
+			this.notify(message as RpcResponse);
 			pending.resolve(message as RpcResponse);
 			return true;
 		}
 
+		this.notify(message);
+		return true;
+	}
+
+	private notify(message: RpcMessage): void {
 		for (const listener of [...this.listeners]) {
 			try {
 				listener(message);
@@ -310,7 +316,6 @@ export class RpcClient {
 				// A consumer callback must not corrupt transport processing for other listeners.
 			}
 		}
-		return true;
 	}
 
 	private write(message: RpcMessage): Promise<void> {

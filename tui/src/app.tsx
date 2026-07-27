@@ -1,6 +1,7 @@
 import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type ScrollBoxRenderable, type Selection, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
   commandCompletion,
@@ -197,12 +198,19 @@ function Block(props: { block: TranscriptBlock; user?: boolean; streaming?: bool
   return <text fg={theme.muted}>{props.block.text}</text>;
 }
 
+function blockKey(block: TranscriptBlock, index: number): string {
+  if ((block.kind === "tool-call" || block.kind === "tool-result") && block.id) return `${block.kind}:${block.id}`;
+  if (block.kind === "reasoning") return `${block.kind}:${block.source}:${index}`;
+  return `${block.kind}:${index}`;
+}
+
 export function AlloyApp(props: AlloyAppProps) {
   const renderer = useRenderer();
   useSelectionHandler((selection) => copySelectionToClipboard(renderer, selection));
   const dimensions = useTerminalDimensions();
   const layout = createMemo(() => appLayout(dimensions().width, dimensions().height));
-  const [session, setSession] = createSignal(props.initialState);
+  const [sessionStore, setSessionStore] = createStore(props.initialState);
+  const session = () => sessionStore;
   const [localDialog, setLocalDialog] = createSignal<LocalDialog | null>(null);
   const [modelProvider, setModelProvider] = createSignal<string>();
   const [dialogResult, setDialogResult] = createSignal<unknown>();
@@ -232,7 +240,7 @@ export function AlloyApp(props: AlloyAppProps) {
     const next = reduceRpcMessage(current, message);
     const sessionChanged = current.sessionId !== null && next.sessionId !== current.sessionId;
     batch(() => {
-      setSession(next);
+      setSessionStore(reconcile(next));
       if (sessionChanged) {
         composer?.clear();
         lastBackendEditorText = undefined;
@@ -244,7 +252,7 @@ export function AlloyApp(props: AlloyAppProps) {
       }
     });
   };
-  const unsubscribe = props.subscribe((message) => {
+  const applyMessage = (message: ClientRpcMessage) => {
     const previousSessionId = session().sessionId;
     reduce(message);
     const nextSessionId =
@@ -254,8 +262,35 @@ export function AlloyApp(props: AlloyAppProps) {
     if (typeof nextSessionId === "string" && previousSessionId !== null && nextSessionId !== previousSessionId) {
       void refresh();
     }
+  };
+  let eventQueue: ClientRpcMessage[] = [];
+  let eventTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastEventFlush = 0;
+  let refreshPromise: Promise<void> | undefined;
+  const flushEvents = () => {
+    if (eventTimer) clearTimeout(eventTimer);
+    eventTimer = undefined;
+    if (eventQueue.length === 0) return;
+    const events = eventQueue;
+    eventQueue = [];
+    lastEventFlush = Date.now();
+    batch(() => {
+      for (const event of events) applyMessage(event);
+    });
+  };
+  const unsubscribe = props.subscribe((message) => {
+    eventQueue.push(message);
+    if (eventTimer) return;
+    if (Date.now() - lastEventFlush < 16) {
+      eventTimer = setTimeout(flushEvents, 16);
+      return;
+    }
+    flushEvents();
   });
-  onCleanup(unsubscribe);
+  onCleanup(() => {
+    unsubscribe();
+    if (eventTimer) clearTimeout(eventTimer);
+  });
 
   onMount(() => {
     const focusTimer = setTimeout(() => composer?.focus(), 0);
@@ -348,19 +383,26 @@ export function AlloyApp(props: AlloyAppProps) {
   async function request(message: ClientRpcMessage) {
     try {
       const response = await props.client.request(message);
-      if (response) reduce(response);
+      flushEvents();
       return response;
     } catch (error) {
+      flushEvents();
       reduce({ type: "backend_error", error: error instanceof Error ? error.message : String(error) });
       return undefined;
     }
   }
 
-  async function refresh(): Promise<void> {
-    for (const type of ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats"]) {
-      const response = await request({ type });
-      if (!response?.success) return;
-    }
+  function refresh(): Promise<void> {
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
+      for (const type of ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats"]) {
+        const response = await request({ type });
+        if (!response?.success) return;
+      }
+    })().finally(() => {
+      refreshPromise = undefined;
+    });
+    return refreshPromise;
   }
 
   function clearComposer(): void {
@@ -698,24 +740,37 @@ export function AlloyApp(props: AlloyAppProps) {
           </Show>
           <For each={session().messages}>
             {(message, index) => {
-              const role = messageRole(message);
-              const blocks = messageBlocks(message, { previewLines: 8, previewChars: 2_000 });
-              return role === "user" ? (
-                <box marginTop={index() === 0 ? 0 : 1} border={["left"]} borderColor={theme.accent} backgroundColor={theme.user} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} flexShrink={0}>
-                  <For each={blocks}>{(block) => <Block block={block} user />}</For>
-                </box>
-              ) : (
-                <box marginTop={1} paddingLeft={2} paddingRight={1} gap={1} flexShrink={0}>
-                  <For each={blocks}>{(block) => (
-                    <Block
-                      block={block}
-                      streaming={isStreamingTranscriptMessage(session(), index())}
-                      execution={(block.kind === "tool-call" || block.kind === "tool-result") && block.id ? session().toolExecutions[block.id] : undefined}
-                      transcriptStatus={(block.kind === "tool-call" || block.kind === "tool-result") && block.id ? session().transcriptTools[block.id] : undefined}
-                      activityGlyph={activityFrame(activityFrameIndex(), 1)}
-                    />
-                  )}</For>
-                </box>
+              const role = createMemo(() => messageRole(message));
+              const blocks = createMemo(() => messageBlocks(message, { previewLines: 8, previewChars: 2_000 }));
+              const blockKeys = createMemo(() => blocks().map(blockKey));
+              return (
+                <Show when={role() === "user"} fallback={
+                  <box marginTop={1} paddingLeft={2} paddingRight={1} gap={1} flexShrink={0}>
+                    <For each={blockKeys()}>{(key) => {
+                      const block = createMemo(() => blocks()[blockKeys().indexOf(key)]!);
+                      const blockId = createMemo(() => {
+                        const current = block();
+                        return current.kind === "tool-call" || current.kind === "tool-result" ? current.id : undefined;
+                      });
+                      return (
+                        <Block
+                          block={block()}
+                          streaming={isStreamingTranscriptMessage(session(), index())}
+                          execution={blockId() ? session().toolExecutions[blockId()!] : undefined}
+                          transcriptStatus={blockId() ? session().transcriptTools[blockId()!] : undefined}
+                          activityGlyph={activityFrame(activityFrameIndex(), 1)}
+                        />
+                      );
+                    }}</For>
+                  </box>
+                }>
+                  <box marginTop={index() === 0 ? 0 : 1} border={["left"]} borderColor={theme.accent} backgroundColor={theme.user} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} flexShrink={0}>
+                    <For each={blockKeys()}>{(key) => {
+                      const block = createMemo(() => blocks()[blockKeys().indexOf(key)]!);
+                      return <Block block={block()} user />;
+                    }}</For>
+                  </box>
+                </Show>
               );
             }}
           </For>

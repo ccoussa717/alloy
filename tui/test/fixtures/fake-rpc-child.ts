@@ -121,7 +121,7 @@ function handle(request: Record<string, unknown>): void {
 	}
 
 	if (request.type === "delayed_mutation") {
-		setTimeout(() => respond(request, { mutated: true }), 350);
+		setTimeout(() => respond(request, { mutated: true }), 1_250);
 		return;
 	}
 
