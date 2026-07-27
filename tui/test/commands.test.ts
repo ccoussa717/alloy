@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { resolveSubmission, type CommandContext } from "../src/commands";
+import {
+  commandCompletion,
+  commandSuggestions,
+  isExactCommandSuggestion,
+  resolveSubmission,
+  type CommandContext,
+} from "../src/commands";
 
 const context: CommandContext = {
   isStreaming: false,
@@ -124,5 +130,60 @@ describe("resolveSubmission", () => {
 
   it("does not submit empty input", () => {
     expect(resolveSubmission("   ", context)).toEqual({ kind: "none" });
+  });
+});
+
+describe("commandSuggestions", () => {
+  const commands = [
+    { name: "plan", description: "Switch to Plan mode", source: "extension" as const },
+    { name: "login-fixture", description: "Open authentication input", source: "extension" as const },
+    { name: "help", description: "Backend help", source: "extension" as const },
+  ];
+
+  it("merges local and hydrated commands without duplicate names", () => {
+    const suggestions = commandSuggestions("/", commands);
+    expect(suggestions.filter((command) => command.name === "help")).toHaveLength(1);
+    expect(suggestions.find((command) => command.name === "help")?.description).toBe("Show Alloy help");
+    expect(suggestions.some((command) => command.name === "plan")).toBe(true);
+  });
+
+  it("reserves local aliases from conflicting hydrated commands", () => {
+    const conflicting = [
+      ...commands,
+      { name: "q", description: "Conflicting backend command", source: "extension" as const },
+      { name: "exit", description: "Another conflict", source: "extension" as const },
+    ];
+    const suggestions = commandSuggestions("/", conflicting);
+    expect(suggestions.some((command) => command.name === "q")).toBe(false);
+    expect(suggestions.some((command) => command.name === "exit")).toBe(false);
+    expect(commandSuggestions("/q", conflicting)[0]?.name).toBe("quit");
+  });
+
+  it("ranks names, aliases, descriptions, and fuzzy subsequences", () => {
+    expect(commandSuggestions("/pl", commands)[0]?.name).toBe("plan");
+    expect(commandSuggestions("/q", commands)[0]?.name).toBe("quit");
+    expect(commandSuggestions("/auth", commands)[0]?.name).toBe("login-fixture");
+    expect(commandSuggestions("/lgf", commands)[0]?.name).toBe("login-fixture");
+  });
+
+  it("does not suggest after arguments or for ordinary prompts", () => {
+    expect(commandSuggestions("hello", commands)).toEqual([]);
+    expect(commandSuggestions("/plan now", commands)).toEqual([]);
+    expect(commandSuggestions("/plan\nnext", commands)).toEqual([]);
+  });
+
+  it("honors the visible suggestion limit", () => {
+    expect(commandSuggestions("/", commands, 2)).toHaveLength(2);
+    expect(commandSuggestions("/", commands, 0)).toEqual([]);
+  });
+
+  it("completes a selected command and closes the hint query", () => {
+    expect(commandCompletion({ name: "plan" })).toBe("/plan ");
+  });
+
+  it("recognizes exact command names and local aliases", () => {
+    expect(isExactCommandSuggestion("/plan", { name: "plan", aliases: [] })).toBe(true);
+    expect(isExactCommandSuggestion("/q", { name: "quit", aliases: ["exit", "q"] })).toBe(true);
+    expect(isExactCommandSuggestion("/pl", { name: "plan", aliases: [] })).toBe(false);
   });
 });
