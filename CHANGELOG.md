@@ -27,6 +27,12 @@ and releases use semantic versioning during the 0.x development series.
   sticky-tail restoration, image-safe navigation, and sanitized model activity
   labels. Both coding-agent and TUI artifacts are source- and integrity-pinned.
 
+### Fixed
+
+- Prevented Fusion child output from growing quadratically by using compact JSON
+  deltas, bounded newest-event retention, byte-accurate UTF-8 stream handling,
+  and preserved partial output when a child exceeds its stream safety limit.
+
 ## [0.8.2] - 2026-07-24
 
 ### Added
