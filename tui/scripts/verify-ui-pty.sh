@@ -97,6 +97,19 @@ wait_for_text() {
   return 1
 }
 
+wait_for_absence() {
+  local session="$1" unexpected="$2" output="" attempts=0
+  while [ "$attempts" -lt 80 ]; do
+    tmux has-session -t "$session" 2>/dev/null || { printf 'session exited waiting for %s to disappear\n' "$unexpected" >&2; return 1; }
+    output="$(capture "$session")"
+    case "$output" in *"$unexpected"*) ;; *) printf '%s' "$output"; return 0;; esac
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf 'timed out waiting for %s to disappear\n%s\n' "$unexpected" "$output" >&2
+  return 1
+}
+
 wait_for_log() {
   local expected="$1" log="${2:-$LOG}" attempts=0
   while [ "$attempts" -lt 80 ]; do
@@ -195,6 +208,45 @@ wait_for_log '"type":"get_commands"'
 wait_for_log '"type":"get_available_models"'
 wait_for_log '"type":"get_session_stats"'
 
+tmux send-keys -t "$SESSION" -l "/pl"
+slash_hints="$(wait_for_text "$SESSION" 'Switch to Plan mode')"
+assert_contains "$slash_hints" "/plan" "partial slash input shows hydrated command hints"
+tmux send-keys -t "$SESSION" Tab
+tab_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+assert_contains "$tab_completion" "/plan" "Tab completes a partial slash command"
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
+
+tmux send-keys -t "$SESSION" -l "/pl"
+wait_for_text "$SESSION" 'Switch to Plan mode' >/dev/null
+tmux send-keys -t "$SESSION" Enter
+enter_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+assert_contains "$enter_completion" "/plan" "Enter completes a partial slash command"
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
+
+tmux send-keys -t "$SESSION" -l "/m"
+mode_hints="$(wait_for_text "$SESSION" 'Select the active model')"
+assert_contains "$mode_hints" "> /mode" "first matching slash hint is selected"
+tmux send-keys -t "$SESSION" Down
+mode_selected="$(wait_for_text "$SESSION" '> /model')"
+assert_contains "$mode_selected" "Select the active model" "Down selects the next slash hint"
+state_refreshes="$(grep -Fc '"type":"get_state"' "$LOG")"
+wait_for_log_count '"type":"get_state"' "$((state_refreshes + 1))"
+wait_for_text "$SESSION" "heartbeat:$((state_refreshes + 1))" >/dev/null
+assert_contains "$(capture "$SESSION")" "> /model" "heartbeat preserves slash selection"
+tmux send-keys -t "$SESSION" Up
+wait_for_text "$SESSION" '> /mode' >/dev/null
+tmux send-keys -t "$SESSION" Down
+wait_for_text "$SESSION" '> /model' >/dev/null
+tmux send-keys -t "$SESSION" Tab
+selected_completion="$(wait_for_absence "$SESSION" 'Select Alloy mode')"
+assert_contains "$selected_completion" "/model" "Tab completes the selected non-first slash hint"
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace
+tmux send-keys -t "$SESSION" -l "/m"
+wait_for_text "$SESSION" 'Select Alloy mode' >/dev/null
+tmux send-keys -t "$SESSION" Escape
+wait_for_absence "$SESSION" 'Select Alloy mode' >/dev/null
+tmux send-keys -t "$SESSION" BSpace BSpace
+
 tmux pipe-pane -t "$SESSION" -o "$(pipe_capture_command "$SELECTION_OUTPUT")"
 selection_drag="$(printf '\033[<0;3;1M\033[<32;7;1M')"
 tmux send-keys -t "$SESSION" -l "$selection_drag"
@@ -208,6 +260,20 @@ tmux send-keys -t "$SESSION" -l "$selection_release"
 wait_for_log ']52;' "$SELECTION_OUTPUT"
 wait_for_log 'QUxMTw==' "$SELECTION_OUTPUT"
 tmux pipe-pane -t "$SESSION"
+
+tmux send-keys -t "$SESSION" -l "/"
+wait_for_text "$SESSION" '> /approval' >/dev/null
+tmux send-keys -t "$SESSION" Down Down Down Down Down
+tmux resize-window -t "$SESSION" -x 40 -y 10
+wait_for_absence "$SESSION" 'Up/Down select' >/dev/null
+resized_hints="$(wait_for_text "$SESSION" '> /approval')"
+assert_contains "$resized_hints" "Ready" "resized slash hints preserve status visibility"
+tmux send-keys -t "$SESSION" Tab
+resized_completion="$(wait_for_absence "$SESSION" '> /approval')"
+assert_contains "$resized_completion" "/approval" "resize clamps selection to the visible slash hint"
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace
+tmux resize-window -t "$SESSION" -x 80 -y 24
+wait_for_text "$SESSION" 'hydrated history item 50' >/dev/null
 
 tmux send-keys -t "$SESSION" -l "PTY prompt"
 tmux send-keys -t "$SESSION" Enter
@@ -233,6 +299,17 @@ assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
 assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
 assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
 wait_for_text "$SESSION" 'Ready' >/dev/null
+
+tmux send-keys -t "$SESSION" -l "/editor-fixture"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'seed' >/dev/null
+tmux send-keys -t "$SESSION" -l -- "-user"
+wait_for_text "$SESSION" 'seed-user' >/dev/null
+editor_refreshes="$(grep -Fc '"type":"get_state"' "$LOG")"
+wait_for_log_count '"type":"get_state"' "$((editor_refreshes + 1))"
+wait_for_text "$SESSION" "heartbeat:$((editor_refreshes + 1))" >/dev/null
+assert_contains "$(capture "$SESSION")" "seed-user" "heartbeat does not replay stale backend editor text"
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 
 model_refreshes="$(grep -Fc '"type":"get_available_models"' "$LOG")"
 tmux send-keys -t "$SESSION" -l "/model fake/fresh-model"
@@ -340,6 +417,13 @@ tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
 narrow_launch="$(wait_for_text "$NARROW" 'hydrated history item 50')"
 assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
 assert_contains "$narrow_launch" "Ask anything" "40x10 composer"
+tmux send-keys -t "$NARROW" -l "/pl"
+narrow_hints="$(wait_for_text "$NARROW" '> /plan')"
+assert_contains "$narrow_hints" "/plan" "40x10 slash hints remain visible"
+assert_contains "$narrow_hints" "hydrated history item 50" "40x10 hints preserve transcript visibility"
+assert_contains "$narrow_hints" "Ready" "40x10 hints preserve status visibility"
+tmux send-keys -t "$NARROW" Escape
+tmux send-keys -t "$NARROW" BSpace BSpace BSpace
 tmux send-keys -t "$NARROW" -l "/login-fixture"
 tmux send-keys -t "$NARROW" Enter
 narrow_login="$(wait_for_text "$NARROW" 'auth.example.test')"

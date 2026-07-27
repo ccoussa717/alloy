@@ -3,6 +3,9 @@ import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } 
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
+  commandCompletion,
+  commandSuggestions,
+  isExactCommandSuggestion,
   resolveSubmission,
   THINKING_LEVELS,
   type LocalDialog,
@@ -205,6 +208,9 @@ export function AlloyApp(props: AlloyAppProps) {
   const [dialogResult, setDialogResult] = createSignal<unknown>();
   const [selected, setSelected] = createSignal(0);
   const [dialogText, setDialogText] = createSignal("");
+  const [composerText, setComposerText] = createSignal("");
+  const [autocompleteSelected, setAutocompleteSelected] = createSignal(0);
+  const [dismissedAutocompleteText, setDismissedAutocompleteText] = createSignal<string>();
   const [activityFrameIndex, setActivityFrameIndex] = createSignal(0);
   const activityInterval = activityAnimationInterval();
   const activityActive = createMemo(() =>
@@ -217,7 +223,7 @@ export function AlloyApp(props: AlloyAppProps) {
   let composer!: TextareaRenderable;
   let modalInput: TextareaRenderable | undefined;
   let submitting = false;
-  let appliedEditorText = "";
+  let lastBackendEditorText: string | undefined;
   const submissionQueue: Array<{ value: string; restoreOnFailure: boolean }> = [];
   const extensionTimeouts = new Map<string, { delay: number; timer: ReturnType<typeof setTimeout> }>();
 
@@ -228,9 +234,13 @@ export function AlloyApp(props: AlloyAppProps) {
     batch(() => {
       setSession(next);
       if (sessionChanged) {
+        composer?.clear();
+        lastBackendEditorText = undefined;
         setLocalDialog(null);
         setModelProvider(undefined);
         setDialogResult(undefined);
+        setComposerText("");
+        setDismissedAutocompleteText(undefined);
       }
     });
   };
@@ -264,10 +274,12 @@ export function AlloyApp(props: AlloyAppProps) {
 
   createEffect(() => {
     const value = session().editorText;
-    if (!composer || value === appliedEditorText) return;
-    appliedEditorText = value;
+    if (!composer || value === lastBackendEditorText) return;
+    lastBackendEditorText = value;
     composer.setText(value);
     composer.gotoBufferEnd();
+    setComposerText(value);
+    setDismissedAutocompleteText(undefined);
   });
 
   createEffect(() => {
@@ -282,6 +294,36 @@ export function AlloyApp(props: AlloyAppProps) {
   });
 
   const extensionDialog = createMemo(() => activeExtensionDialog(session()));
+  const aboveWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "aboveEditor"));
+  const belowWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "belowEditor"));
+  const notifications = createMemo(() => latestNotifications(session().notifications));
+  const autocompleteCapacity = createMemo(() => {
+    const height = layout().height;
+    const composerRows = layout().composerMaxHeight + (layout().showComposerMeta ? 2 : 0);
+    const fixedRows = 1 + (layout().showIdentity ? 1 : 0) + composerRows;
+    const notificationRows = notifications().length > 0 ? Math.min(4, Math.max(1, Math.floor(height / 4))) : 0;
+    const aboveRows = aboveWidgets().length > 0
+      ? Math.min(6, Math.max(1, Math.floor(height / 3)))
+      : 0;
+    const belowRows = belowWidgets().length > 0 ? height : 0;
+    return Math.max(0, height - fixedRows - notificationRows - aboveRows - belowRows - 1);
+  });
+  const showAutocompleteFooter = createMemo(() => layout().height > 10 && autocompleteCapacity() > 1);
+  const autocompleteLimit = createMemo(() => {
+    const desired = layout().height <= 10 ? 1 : layout().height <= 16 ? 2 : Math.min(8, Math.max(3, Math.floor(layout().height / 4)));
+    return Math.max(0, Math.min(desired, autocompleteCapacity() - (showAutocompleteFooter() ? 1 : 0)));
+  });
+  const autocompleteItems = createMemo(() => commandSuggestions(composerText(), session().commands, autocompleteLimit()));
+  const autocompleteOpen = createMemo(() =>
+    !extensionDialog() &&
+    !localDialog() &&
+    autocompleteItems().length > 0 &&
+    dismissedAutocompleteText() !== composerText(),
+  );
+  createEffect(() => {
+    const length = autocompleteItems().length;
+    setAutocompleteSelected((value) => length === 0 ? 0 : Math.min(value, length - 1));
+  });
   const dialogKey = createMemo(() => extensionDialog()?.id ?? localDialog() ?? "");
   createEffect(() => {
     dialogKey();
@@ -323,7 +365,18 @@ export function AlloyApp(props: AlloyAppProps) {
 
   function clearComposer(): void {
     composer.clear();
-    appliedEditorText = "";
+    setComposerText("");
+    setDismissedAutocompleteText(undefined);
+  }
+
+  function completeAutocomplete(): void {
+    const suggestion = autocompleteItems()[autocompleteSelected()];
+    if (!suggestion) return;
+    const value = commandCompletion(suggestion);
+    composer.setText(value);
+    composer.gotoBufferEnd();
+    setComposerText(value);
+    setDismissedAutocompleteText(undefined);
   }
 
   async function runResolution(resolution: SubmissionResolution): Promise<boolean> {
@@ -380,9 +433,9 @@ export function AlloyApp(props: AlloyAppProps) {
     } finally {
       submitting = false;
       if (failedComposerValue !== undefined && !composer.plainText) {
-        appliedEditorText = failedComposerValue;
         composer.setText(failedComposerValue);
         composer.gotoBufferEnd();
+        setComposerText(failedComposerValue);
       }
     }
   }
@@ -539,6 +592,36 @@ export function AlloyApp(props: AlloyAppProps) {
       void submitValue(modeLabel(session().statuses) === "Plan" ? "/build" : "/plan");
       return;
     }
+    if (autocompleteOpen()) {
+      if (event.name === "escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setDismissedAutocompleteText(composerText());
+        return;
+      }
+      if (event.name === "up" || event.name === "down") {
+        event.preventDefault();
+        event.stopPropagation();
+        setAutocompleteSelected((value) =>
+          (value + (event.name === "up" ? -1 : 1) + autocompleteItems().length) % autocompleteItems().length,
+        );
+        return;
+      }
+      if (event.name === "return" && !event.shift) {
+        const suggestion = autocompleteItems()[autocompleteSelected()];
+        if (suggestion && isExactCommandSuggestion(composerText(), suggestion)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        completeAutocomplete();
+        return;
+      }
+      if (event.name === "tab") {
+        event.preventDefault();
+        event.stopPropagation();
+        completeAutocomplete();
+        return;
+      }
+    }
     if (!extensionDialog() && !localDialog()) return;
     if (event.name === "escape") {
       event.preventDefault();
@@ -570,9 +653,6 @@ export function AlloyApp(props: AlloyAppProps) {
   const standaloneToolExecutions = createMemo(() =>
     toolExecutions().filter((tool) => session().transcriptTools[tool.toolCallId] === undefined),
   );
-  const aboveWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "aboveEditor"));
-  const belowWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "belowEditor"));
-  const notifications = createMemo(() => latestNotifications(session().notifications));
   const modelLabel = createMemo(() => {
     const model = session().model;
     return model ? `${model.id} ${model.provider}` : "no model";
@@ -690,6 +770,39 @@ export function AlloyApp(props: AlloyAppProps) {
         </scrollbox>
       </Show>
 
+      <Show when={autocompleteOpen()}>
+        <box
+          flexShrink={0}
+          flexDirection="column"
+          backgroundColor={theme.panelRaised}
+          border={["left"]}
+          borderColor={theme.accent}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <For each={autocompleteItems()}>
+            {(suggestion, index) => (
+              <box
+                height={1}
+                flexShrink={0}
+                flexDirection="row"
+                backgroundColor={index() === autocompleteSelected() ? theme.accent : theme.panelRaised}
+              >
+                <text width={Math.min(20, Math.max(12, Math.floor(layout().width * 0.35)))} fg={index() === autocompleteSelected() ? theme.background : theme.textStrong}>
+                  {index() === autocompleteSelected() ? "> " : "  "}/{suggestion.name}
+                </text>
+                <text flexGrow={1} fg={index() === autocompleteSelected() ? theme.background : theme.muted}>
+                  {suggestion.description}
+                </text>
+              </box>
+            )}
+          </For>
+          <Show when={showAutocompleteFooter()}>
+            <text fg={theme.dim}>{layout().width <= 40 ? "Up/Down | Tab/Enter | Esc" : "Up/Down select | Tab/Enter complete | Esc close"}</text>
+          </Show>
+        </box>
+      </Show>
+
       <box width="100%" flexShrink={0} border={["left"]} borderColor={theme.accent} backgroundColor={theme.panel} paddingLeft={2} paddingRight={2} paddingTop={layout().showComposerMeta ? 1 : 0}>
         <textarea
           ref={(value) => (composer = value)}
@@ -708,7 +821,12 @@ export function AlloyApp(props: AlloyAppProps) {
             { name: "return", shift: true, action: "newline" },
           ]}
           onContentChange={() => {
-            if (composer.plainText !== appliedEditorText) appliedEditorText = "";
+            const value = composer.plainText;
+            if (value !== composerText()) {
+              setComposerText(value);
+              setAutocompleteSelected(0);
+              setDismissedAutocompleteText(undefined);
+            }
           }}
           onSubmit={submitComposer}
         />

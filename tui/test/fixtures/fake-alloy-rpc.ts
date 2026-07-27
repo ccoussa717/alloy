@@ -5,6 +5,7 @@ let sequence = 0;
 let held = false;
 let decorated = false;
 let modelRequestCount = 0;
+let stateResponseCount = 0;
 const logPath = process.env.ALLOY_FAKE_LOG;
 const pidPath = process.env.ALLOY_FAKE_PID_FILE;
 const startupDelayMs = Number(process.env.ALLOY_FAKE_STARTUP_DELAY_MS || 0);
@@ -85,6 +86,7 @@ function handle(request: Record<string, unknown>): void {
   switch (request.type) {
     case "get_state":
       setTimeout(() => {
+        stateResponseCount++;
         respond(request, {
           model: { id: "fixture-model", provider: "fake", name: "Fixture" },
           thinkingLevel: "medium",
@@ -98,6 +100,7 @@ function handle(request: Record<string, unknown>): void {
           messageCount: emptyHistory ? 0 : 50,
           pendingMessageCount: 0,
         });
+        send({ type: "extension_ui_request", id: `heartbeat-${stateResponseCount}`, method: "setStatus", statusKey: "fixture-heartbeat", statusText: `heartbeat:${stateResponseCount}` });
         if (!decorated) {
           decorated = true;
           send({ type: "extension_ui_request", id: "title-1", method: "setTitle", title: "Fixture title" });
@@ -122,6 +125,7 @@ function handle(request: Record<string, unknown>): void {
           { name: "approval", description: "Open approval", source: "extension" },
           { name: "cancel", description: "Open cancellable input", source: "extension" },
           { name: "login-fixture", description: "Open authentication input", source: "extension" },
+          { name: "editor-fixture", description: "Populate the composer", source: "extension" },
           { name: "backend-loss", description: "Terminate the fixture backend", source: "extension" },
         ],
       });
@@ -177,6 +181,8 @@ function handle(request: Record<string, unknown>): void {
           ].join("\n"),
           placeholder: "authorization code",
         });
+      } else if (text === "/editor-fixture") {
+        send({ type: "extension_ui_request", id: "editor-1", method: "set_editor_text", text: "seed" });
       } else if (text === "hold") {
         held = true;
         send({ type: "agent_start" });

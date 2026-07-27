@@ -7,6 +7,13 @@ export interface CommandContext {
   models: ModelInfo[];
 }
 
+export interface CommandSuggestion {
+  name: string;
+  description: string;
+  aliases: string[];
+  source: "local" | NonNullable<SlashCommand["source"]>;
+}
+
 export type LocalDialog = "help" | "model-provider" | "model" | "thinking" | "session" | "export";
 
 export type SubmissionResolution =
@@ -23,6 +30,72 @@ export type SubmissionResolution =
     };
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+const LOCAL_COMMANDS: CommandSuggestion[] = [
+  { name: "help", description: "Show Alloy help", aliases: [], source: "local" },
+  { name: "new", description: "Start a new session", aliases: [], source: "local" },
+  { name: "clone", description: "Clone the current session", aliases: [], source: "local" },
+  { name: "compact", description: "Compact session context", aliases: [], source: "local" },
+  { name: "session", description: "Show session statistics", aliases: [], source: "local" },
+  { name: "export", description: "Export the session to HTML", aliases: [], source: "local" },
+  { name: "model", description: "Select the active model", aliases: [], source: "local" },
+  { name: "thinking", description: "Select the thinking level", aliases: [], source: "local" },
+  { name: "quit", description: "Exit Alloy", aliases: ["exit", "q"], source: "local" },
+];
+
+function fuzzySubsequence(query: string, value: string): boolean {
+  let index = 0;
+  for (const character of value) {
+    if (character === query[index]) index++;
+    if (index === query.length) return true;
+  }
+  return query.length === 0;
+}
+
+function suggestionScore(query: string, suggestion: CommandSuggestion): number | null {
+  if (!query) return 0;
+  const names = [suggestion.name, ...suggestion.aliases].map((value) => value.toLowerCase());
+  if (names.some((value) => value === query)) return 0;
+  if (names.some((value) => value.startsWith(query))) return 1;
+  if (names.some((value) => value.includes(query))) return 2;
+  if (names.some((value) => fuzzySubsequence(query, value))) return 3;
+  if (suggestion.description.toLowerCase().includes(query)) return 4;
+  return null;
+}
+
+export function commandSuggestions(input: string, commands: SlashCommand[], limit = 50): CommandSuggestion[] {
+  const match = input.match(/^\/([^\s/]*)$/);
+  if (!match) return [];
+  const query = (match[1] ?? "").toLowerCase();
+  const merged = new Map<string, CommandSuggestion>();
+  const reservedLocalNames = new Set(LOCAL_COMMANDS.flatMap((command) => [command.name, ...command.aliases]));
+  for (const command of LOCAL_COMMANDS) merged.set(command.name, command);
+  for (const command of commands) {
+    const name = command.name.replace(/^\//, "").toLowerCase();
+    if (!name || reservedLocalNames.has(name) || merged.has(name)) continue;
+    merged.set(name, {
+      name,
+      description: command.description?.trim() || `${command.source ?? "registered"} command`,
+      aliases: [],
+      source: command.source ?? "extension",
+    });
+  }
+  return [...merged.values()]
+    .map((suggestion) => ({ suggestion, score: suggestionScore(query, suggestion) }))
+    .filter((entry): entry is { suggestion: CommandSuggestion; score: number } => entry.score !== null)
+    .sort((a, b) => a.score - b.score || a.suggestion.name.localeCompare(b.suggestion.name))
+    .slice(0, Math.max(0, limit))
+    .map((entry) => entry.suggestion);
+}
+
+export function commandCompletion(suggestion: Pick<CommandSuggestion, "name">): string {
+  return `/${suggestion.name} `;
+}
+
+export function isExactCommandSuggestion(input: string, suggestion: Pick<CommandSuggestion, "name" | "aliases">): boolean {
+  const value = input.match(/^\/([^\s/]*)$/)?.[1]?.toLowerCase();
+  return value === suggestion.name || suggestion.aliases.includes(value ?? "");
+}
 
 function request(request: RpcMessage, options: Partial<Extract<SubmissionResolution, { kind: "request" }>> = {}) {
   return { kind: "request", request, clearInput: true, ...options } as const;
