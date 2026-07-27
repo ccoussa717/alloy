@@ -14,6 +14,10 @@ SPLASH="$BASE-splash"
 REMOTE_AUTO="$BASE-remote-auto"
 REMOTE_ON="$BASE-remote-on"
 STREAM="$BASE-stream"
+FUSION_WIDE="$BASE-fusion-wide"
+FUSION_MEDIUM="$BASE-fusion-medium"
+FUSION_COMPACT="$BASE-fusion-compact"
+FUSION_WIDGET="$BASE-fusion-widget"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
@@ -23,7 +27,7 @@ REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
 STREAM_OUTPUT="$ROOT/test/fixtures/.$BASE-stream.raw"
 
 cleanup() {
-  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$FUSION_WIDE" "$FUSION_MEDIUM" "$FUSION_COMPACT" "$FUSION_WIDGET" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
   rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$STREAM_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
@@ -35,8 +39,8 @@ for command in bun cat grep pgrep sleep stty tmux wc; do
 done
 
 run_command() {
-  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_ACTIVITY_ANIMATION=%q SSH_CONNECTION=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
-    "$ROOT" "${1:-0}" "${2:-on}" "${3:-}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
+  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_ACTIVITY_ANIMATION=%q SSH_CONNECTION=%q ALLOY_FAKE_FUSION_HISTORY=%q ALLOY_FAKE_FUSION_WIDGET=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
+    "$ROOT" "${1:-0}" "${2:-on}" "${3:-}" "${4:-0}" "${5:-0}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
 }
 
 capture() { tmux capture-pane -t "$1" -p; }
@@ -85,6 +89,30 @@ assert_not_contains() {
     *"$2"*) printf 'assertion failed: %s\nunexpected: %s\noutput:\n%s\n' "$3" "$2" "$1" >&2; exit 1 ;;
     *) ;;
   esac
+}
+
+assert_line_contains_both() {
+  local output="$1" left="$2" right="$3" label="$4" line=""
+  while IFS= read -r line; do
+    case "$line" in *"$left"*"$right"*|*"$right"*"$left"*) return 0;; esac
+  done <<EOF
+$output
+EOF
+  printf 'assertion failed: %s\nexpected one line containing both %s and %s\noutput:\n%s\n' "$label" "$left" "$right" "$output" >&2
+  exit 1
+}
+
+collect_pages() {
+  local session="$1" pages="$2" output="" page=0
+  output="$(capture "$session")"
+  while [ "$page" -lt "$pages" ]; do
+    tmux send-keys -t "$session" PageUp
+    sleep 0.1
+    output="$output
+$(capture "$session")"
+    page=$((page + 1))
+  done
+  printf '%s' "$output"
 }
 
 wait_for_text() {
@@ -197,6 +225,8 @@ SPLASH_RUN="$(run_command 1)"
 REMOTE_AUTO_RUN="$(run_command 0 auto fixture)"
 REMOTE_ON_RUN="$(run_command 0 on fixture)"
 STREAM_RUN="$(run_command 1 off)"
+FUSION_RUN="$(run_command 0 on '' 1)"
+FUSION_WIDGET_RUN="$(run_command 1 on '' 0 1)"
 
 exercise_early_signal TERM 143 "$EARLY_TERM"
 exercise_early_signal INT 130 "$EARLY_INT"
@@ -537,4 +567,36 @@ splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
 assert_contains "$splash" "──────────────────────────" "green splash divider"
 tmux send-keys -t "$SPLASH" C-c
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+tmux new-session -d -s "$FUSION_WIDE" -x 140 -y 30 "$FUSION_RUN"
+wait_for_text "$FUSION_WIDE" 'artifacts: /tmp/fusion-pty' >/dev/null
+fusion_wide="$(collect_pages "$FUSION_WIDE" 4)"
+assert_contains "$fusion_wide" "FUSION // COMPLETE" "140x30 hydrated Fusion header"
+assert_line_contains_both "$fusion_wide" "ARCHITECT" "BUILDER" "140x30 Fusion keeps role cards side by side"
+assert_contains "$fusion_wide" "SYNTHESIZER" "140x30 Fusion synthesis remains full-width below proposals"
+tmux kill-session -t "$FUSION_WIDE"
+
+tmux new-session -d -s "$FUSION_MEDIUM" -x 80 -y 24 "$FUSION_RUN"
+wait_for_text "$FUSION_MEDIUM" 'artifacts: /tmp/fusion-pty' >/dev/null
+fusion_medium="$(collect_pages "$FUSION_MEDIUM" 4)"
+assert_contains "$fusion_medium" "ARCHITECT" "80x24 stacked Fusion preserves Architect"
+assert_contains "$fusion_medium" "BUILDER" "80x24 stacked Fusion preserves Builder"
+assert_contains "$fusion_medium" "SYNTHESIZER" "80x24 stacked Fusion preserves synthesis"
+tmux kill-session -t "$FUSION_MEDIUM"
+
+tmux new-session -d -s "$FUSION_COMPACT" -x 40 -y 10 "$FUSION_RUN"
+wait_for_text "$FUSION_COMPACT" 'artifacts: /tmp/fusion-pty' >/dev/null
+fusion_compact="$(collect_pages "$FUSION_COMPACT" 12)"
+assert_contains "$fusion_compact" "ARCHITECT" "40x10 stacked Fusion preserves Architect"
+assert_contains "$fusion_compact" "BUILDER" "40x10 stacked Fusion preserves Builder"
+assert_contains "$fusion_compact" "SYNTHESIZER" "40x10 stacked Fusion preserves synthesis"
+tmux kill-session -t "$FUSION_COMPACT"
+
+tmux new-session -d -s "$FUSION_WIDGET" -x 40 -y 10 "$FUSION_WIDGET_RUN"
+fusion_widget="$(wait_for_text "$FUSION_WIDGET" 'Synthesizer')"
+assert_contains "$fusion_widget" "Architect" "40x10 live Fusion widget preserves Architect"
+assert_contains "$fusion_widget" "Builder" "40x10 live Fusion widget preserves Builder"
+assert_contains "$fusion_widget" "Synthesizer" "40x10 live Fusion widget preserves Synthesizer"
+assert_contains "$fusion_widget" "Ask anything" "40x10 live Fusion widget preserves composer"
+tmux kill-session -t "$FUSION_WIDGET"
+
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

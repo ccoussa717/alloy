@@ -180,12 +180,15 @@ test("architect and builder run in parallel before attributed synthesis", async 
     ["anthropic/synthesizer"],
   ]);
   assert.equal(summary.status, "COMPLETE");
+  assert.equal(summary.objective, "Design the feature");
   assert.equal(summary.synthesis, synthesis);
   assert.equal(summary.proposals.length, 2);
+  assert.ok(summary.proposals.every((proposal) => Number.isFinite(proposal.durationMs)));
   assert.deepEqual(summary.proposals.map((proposal) => proposal.stdoutBytes), [123, 123]);
   assert.deepEqual(summary.proposals.map((proposal) => proposal.eventCount), [4, 4]);
   assert.equal(summary.synthesizer.stdoutBytes, 123);
   assert.equal(summary.synthesizer.eventCount, 4);
+  assert.ok(Number.isFinite(summary.synthesizer.durationMs));
   assert.equal(summary.usage.cost, 0.3);
   assert.deepEqual(summary.requestedEfforts, {
     architect: "high",
@@ -396,6 +399,8 @@ test("thrown proposal failure persists FAILED status and skips synthesis", async
   assert.equal(calls, 2);
   assert.equal(summary.status, "FAILED");
   assert.equal(summary.proposals[1].error, "child_failed");
+  assert.deepEqual(summary.proposals[1].usage, { input: 0, output: 0, cost: null, turns: 0, costKnown: false });
+  assert.equal(summary.usage.costKnown, false);
   assert.equal(JSON.parse(readFileSync(join(runDir, "summary.json"), "utf8")).status, "FAILED");
 });
 
@@ -416,6 +421,7 @@ test("thrown synthesis failure persists FAILED status", async () => {
 
   assert.equal(summary.status, "FAILED");
   assert.equal(summary.synthesizer.error, "child_failed");
+  assert.equal(summary.usage.costKnown, false);
   assert.equal(JSON.parse(readFileSync(join(runDir, "summary.json"), "utf8")).status, "FAILED");
 });
 
@@ -789,7 +795,32 @@ test("routed Fusion settles reservations on thrown child errors", async () => {
 
   assert.equal(workflow.settlements.length, 1);
   assert.equal(workflow.settlements[0].usage.costKnown, false);
-  assert.equal(summary.status, "BUDGET_EXCEEDED");
+  assert.equal(summary.status, "FAILED");
+  assert.equal(summary.error, "child_failed");
+  assert.equal(summary.usage.costKnown, false);
+});
+
+test("routed Fusion preserves thrown synthesis failure over unknown usage", async () => {
+  const runDir = makeRunDir();
+  const workflow = routedFusionDeps(runDir, async (options) => {
+    if (options.role === "fusion-synthesizer") throw new Error("synthesis exploded");
+    return {
+      ok: true,
+      text: proposals[options.role],
+      model: options.model,
+      usage: { input: 1, output: 1, cost: 0.1, turns: 1, costKnown: true },
+    };
+  });
+
+  const summary = await fusion.runFusionWithDependencies(
+    { request: "Preserve synthesis failure", cwd: process.cwd(), modelRegistry: {} },
+    workflow.deps,
+  );
+
+  assert.equal(workflow.settlements.length, 3);
+  assert.equal(summary.status, "FAILED");
+  assert.equal(summary.error, "child_failed");
+  assert.equal(summary.usage.costKnown, false);
 });
 
 for (const callback of ["onPanel", "onProgress"]) {
@@ -964,6 +995,7 @@ test("legacy Fusion unknown proposal cost fails closed before synthesis", async 
   assert.equal(summary.status, "BUDGET_EXCEEDED");
   assert.equal(summary.error, "budget_usage_unavailable");
   assert.equal(summary.synthesis, "");
+  assert.equal(summary.usage.costKnown, false);
 });
 
 test("legacy Fusion unknown synthesis cost fails closed", async () => {
@@ -986,7 +1018,27 @@ test("legacy Fusion unknown synthesis cost fails closed", async () => {
 
   assert.equal(summary.status, "BUDGET_EXCEEDED");
   assert.equal(summary.error, "budget_usage_unavailable");
+  assert.equal(summary.usage.costKnown, false);
 });
+
+for (const malformedCost of [null, "0.25", -1]) {
+  test(`legacy Fusion rejects malformed cost ${String(malformedCost)}`, async () => {
+    const runDir = makeRunDir();
+    const summary = await fusion.runFusionWithDependencies(
+      { request: "Reject malformed usage", cwd: process.cwd() },
+      deps(runDir, async (options) => ({
+        ok: true,
+        text: proposals[options.role] || synthesis,
+        model: options.model,
+        usage: { input: 1, output: 1, cost: malformedCost, turns: 1 },
+      })),
+    );
+
+    assert.equal(summary.status, "BUDGET_EXCEEDED");
+    assert.equal(summary.error, "budget_usage_unavailable");
+    assert.equal(summary.usage.costKnown, false);
+  });
+}
 
 test("legacy Fusion proposal cancellation wins over unknown usage", async () => {
   const runDir = makeRunDir();

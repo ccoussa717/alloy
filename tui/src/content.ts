@@ -1,5 +1,24 @@
 export type MessageRole = "user" | "assistant" | "tool" | "system" | "custom" | "unknown"
 
+export type FusionTranscriptUsage = {
+  input: number
+  output: number
+  cost: number | null
+  costKnown: boolean
+  turns: number
+}
+
+export type FusionTranscriptAgent = {
+  role: "architect" | "builder" | "synthesizer"
+  model: string
+  effort: string
+  status: "done" | "failed"
+  durationMs: number | null
+  text: string
+  usage: FusionTranscriptUsage
+  error?: string
+}
+
 export type TranscriptBlock =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string; source: "thinking" | "reasoning"; redacted: boolean }
@@ -15,6 +34,17 @@ export type TranscriptBlock =
     }
   | { kind: "image"; mimeType?: string; data?: string; url?: string; name?: string }
   | { kind: "file"; mimeType?: string; data?: string; url?: string; name?: string }
+  | {
+      kind: "fusion"
+      status: string
+      runId: string
+      runDir: string
+      objective: string
+      proposals: FusionTranscriptAgent[]
+      synthesis?: FusionTranscriptAgent
+      error?: string
+      summary?: string
+    }
   | { kind: "custom"; name: string; text: string; value: unknown }
   | { kind: "unknown"; text: string; value: unknown }
 
@@ -401,6 +431,95 @@ function customBlocks(message: UnknownRecord, role: string): TranscriptBlock[] {
   }
 
   const name = redactDisplayText(stringField(message, "customType") || role || "custom")
+  if (name === "alloy-fusion") {
+    const details = recordValue(field(message, "details"))
+    if (details && stringField(details, "kind") === "fusion") {
+      const efforts = recordValue(field(details, "requestedEfforts"))
+      const normalizeUsage = (value: unknown): FusionTranscriptUsage => {
+        const usage = recordValue(value)
+        const finiteNonNegative = (key: string): number | null => {
+          const amount = numberField(usage, key)
+          return amount !== undefined && amount >= 0 ? amount : null
+        }
+        const cost = finiteNonNegative("cost")
+        return {
+          input: finiteNonNegative("input") ?? 0,
+          output: finiteNonNegative("output") ?? 0,
+          cost,
+          costKnown: field(usage, "costKnown") !== false && cost !== null,
+          turns: finiteNonNegative("turns") ?? 0,
+        }
+      }
+      const normalizeAgent = (
+        value: unknown,
+        agentRole: FusionTranscriptAgent["role"],
+        textOverride?: string,
+      ): FusionTranscriptAgent | undefined => {
+        const agent = recordValue(value)
+        if (!agent) return undefined
+        const error = stringField(agent, "error")
+        const normalized: FusionTranscriptAgent = {
+          role: agentRole,
+          model: redactDisplayText(stringField(agent, "model") || "unknown model"),
+          effort: redactDisplayText(stringField(efforts, agentRole) || "default"),
+          status: field(agent, "ok") === true ? "done" : "failed",
+          durationMs: (() => {
+            const duration = numberField(agent, "durationMs")
+            return duration !== undefined && duration >= 0 ? duration : null
+          })(),
+          text: redactDisplayText(textOverride ?? stringField(agent, "text") ?? ""),
+          usage: normalizeUsage(field(agent, "usage")),
+        }
+        if (error) normalized.error = redactDisplayText(error)
+        return normalized
+      }
+      const rawProposals = Array.isArray(field(details, "proposals"))
+        ? field(details, "proposals") as unknown[]
+        : []
+      const proposalRecords = rawProposals
+        .map((proposal) => recordValue(proposal))
+        .filter((proposal): proposal is UnknownRecord => proposal !== undefined)
+      const proposalRoles = proposalRecords.map((proposal) => stringField(proposal, "role"))
+      const provenanceErrors: string[] = []
+      if (proposalRoles.some((roleName) => roleName !== "architect" && roleName !== "builder")) {
+        provenanceErrors.push("unknown proposal role")
+      }
+      for (const roleName of ["architect", "builder"] as const) {
+        if (proposalRoles.filter((role) => role === roleName).length > 1) {
+          provenanceErrors.push(`duplicate ${roleName} role`)
+        }
+      }
+      const proposals = (["architect", "builder"] as const)
+        .map((roleName) => {
+          const matches = proposalRecords.filter((candidate) => stringField(candidate, "role") === roleName)
+          return matches.length === 1 ? normalizeAgent(matches[0], roleName) : undefined
+        })
+        .filter((proposal): proposal is FusionTranscriptAgent => proposal !== undefined)
+      const synthesis = normalizeAgent(
+        field(details, "synthesizer"),
+        "synthesizer",
+        stringField(details, "synthesis") || "",
+      )
+      const block: Extract<TranscriptBlock, { kind: "fusion" }> = {
+        kind: "fusion",
+        status: redactDisplayText(stringField(details, "status") || "UNKNOWN"),
+        runId: redactDisplayText(stringField(details, "runId") || ""),
+        runDir: redactDisplayText(stringField(details, "runDir") || ""),
+        objective: redactDisplayText(stringField(details, "objective") || ""),
+        proposals,
+      }
+      if (synthesis) block.synthesis = synthesis
+      const workflowError = stringField(details, "error")
+      const errors = [workflowError, provenanceErrors.length ? `Malformed Fusion provenance: ${provenanceErrors.join(", ")}` : undefined]
+        .filter((error): error is string => Boolean(error))
+      if (errors.length) block.error = redactDisplayText(errors.join("; "))
+      if (workflowError || (proposals.length === 0 && !synthesis)) {
+        const summary = contentText(field(message, "content"))
+        if (summary) block.summary = summary
+      }
+      return [block]
+    }
+  }
   const content = field(message, "content") ?? field(message, "summary") ?? field(message, "details")
   if (Array.isArray(content)) {
     return content.map((part) => {

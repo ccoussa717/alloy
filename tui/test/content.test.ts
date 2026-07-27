@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { displayPreview, messageBlocks, messageRole, redactDisplayText, resultText, toolSummary, transcriptToolStates } from "../src/content"
+import { displayPreview, messageBlocks, messageRole, redactDisplayText, resultText, toolSummary, transcriptToolStates, type TranscriptBlock } from "../src/content"
 
 describe("redactDisplayText", () => {
   test("removes complete bearer and basic authorization credentials", () => {
@@ -164,6 +164,182 @@ describe("messageBlocks", () => {
         value: { command: "pwd", output: "/tmp", exitCode: 0 },
       },
     ])
+  })
+
+  test("normalizes Alloy Fusion results for durable transcript rendering", () => {
+    expect(
+      messageBlocks({
+        role: "custom",
+        customType: "alloy-fusion",
+        content: "fallback summary",
+        details: {
+          kind: "fusion",
+          status: "COMPLETE",
+          runId: "fusion-1",
+          runDir: "/tmp/fusion-1",
+          objective: "Compare both approaches",
+          requestedEfforts: {
+            architect: "high",
+            builder: "medium",
+            synthesizer: "low",
+          },
+          proposals: [
+            {
+              role: "architect",
+              model: "anthropic/claude-fable-5",
+              ok: true,
+              durationMs: 1_250,
+              text: "## Architecture\n\nKeep the boundary explicit.",
+              usage: { input: 1_200, output: 340, cost: 0.0123, turns: 2 },
+            },
+            {
+              role: "builder",
+              model: "openai-codex/gpt-5.6-sol",
+              ok: true,
+              durationMs: 980,
+              text: "## Build\n\nShip the smallest complete slice.",
+              usage: { input: 900, output: 280, cost: 0.0098, turns: 1 },
+            },
+          ],
+          synthesis: "## Recommendation\n\nCombine both approaches.",
+          synthesizer: {
+            ok: true,
+            model: "anthropic/claude-fable-5",
+            durationMs: 640,
+            usage: { input: 2_500, output: 410, cost: 0.015, turns: 1 },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        kind: "fusion",
+        status: "COMPLETE",
+        runId: "fusion-1",
+        runDir: "/tmp/fusion-1",
+        objective: "Compare both approaches",
+        proposals: [
+          {
+            role: "architect",
+            model: "anthropic/claude-fable-5",
+            effort: "high",
+            status: "done",
+            durationMs: 1_250,
+            text: "## Architecture\n\nKeep the boundary explicit.",
+            usage: { input: 1_200, output: 340, cost: 0.0123, costKnown: true, turns: 2 },
+          },
+          {
+            role: "builder",
+            model: "openai-codex/gpt-5.6-sol",
+            effort: "medium",
+            status: "done",
+            durationMs: 980,
+            text: "## Build\n\nShip the smallest complete slice.",
+            usage: { input: 900, output: 280, cost: 0.0098, costKnown: true, turns: 1 },
+          },
+        ],
+        synthesis: {
+          role: "synthesizer",
+          model: "anthropic/claude-fable-5",
+          effort: "low",
+          status: "done",
+          durationMs: 640,
+          text: "## Recommendation\n\nCombine both approaches.",
+          usage: { input: 2_500, output: 410, cost: 0.015, costKnown: true, turns: 1 },
+        },
+      },
+    ])
+  })
+
+  test("keeps actionable Fusion failure text when no role result exists", () => {
+    expect(
+      messageBlocks({
+        role: "custom",
+        customType: "alloy-fusion",
+        content: "Provider unavailable in this Alloy session: anthropic",
+        details: {
+          kind: "fusion",
+          status: "FAILED",
+          runId: "fusion-failed",
+          runDir: "/tmp/fusion-failed",
+          proposals: [],
+          synthesis: "",
+          synthesizer: null,
+          error: "provider_unavailable",
+        },
+      })[0],
+    ).toMatchObject({
+      kind: "fusion",
+      status: "FAILED",
+      error: "provider_unavailable",
+      summary: "Provider unavailable in this Alloy session: anthropic",
+    })
+  })
+
+  test("keeps partial failure guidance and distinguishes unknown metrics from zero", () => {
+    const block = messageBlocks({
+      role: "custom",
+      customType: "alloy-fusion",
+      content: "Provider unavailable in this Alloy session: openai-codex\nRoute reason: authentication required",
+      details: {
+        kind: "fusion",
+        status: "FAILED",
+        runId: "fusion-partial",
+        runDir: "/tmp/fusion-partial",
+        objective: "Compare both approaches",
+        requestedEfforts: { architect: "high" },
+        proposals: [{
+          role: "architect",
+          model: "anthropic/claude-fable-5",
+          ok: true,
+          durationMs: -5,
+          text: "Architect result",
+          usage: { input: -1, output: 0, cost: -1, costKnown: false, turns: 0 },
+        }],
+        synthesis: "",
+        synthesizer: null,
+        error: "provider_unavailable",
+      },
+    })[0]
+
+    expect(block).toMatchObject({
+      kind: "fusion",
+      objective: "Compare both approaches",
+      error: "provider_unavailable",
+      summary: "Provider unavailable in this Alloy session: openai-codex\nRoute reason: authentication required",
+      proposals: [{
+        durationMs: null,
+        usage: { input: 0, output: 0, cost: null, costKnown: false, turns: 0 },
+      }],
+    })
+  })
+
+  test("accepts only explicit unique proposal roles and forces synthesis provenance", () => {
+    const block = messageBlocks({
+      role: "custom",
+      customType: "alloy-fusion",
+      content: "Fusion COMPLETE",
+      details: {
+        kind: "fusion",
+        status: "COMPLETE",
+        proposals: [
+          { role: "unknown", model: "spoofed", ok: true, text: "Spoofed architect" },
+          { role: "architect", model: "architect-1", ok: true, text: "Real architect" },
+          { role: "architect", model: "architect-2", ok: true, text: "Duplicate architect" },
+          { role: "builder", model: "builder", ok: true, text: "Real builder" },
+        ],
+        synthesis: "Real synthesis",
+        synthesizer: { role: "architect", model: "synth", ok: true },
+      },
+    })[0]
+
+    expect(block).toMatchObject({
+      kind: "fusion",
+      proposals: [
+        { role: "builder", model: "builder", text: "Real builder" },
+      ],
+      synthesis: { role: "synthesizer", model: "synth", text: "Real synthesis" },
+    })
+    expect((block as Extract<TranscriptBlock, { kind: "fusion" }>).error).toMatch(/malformed.*unknown.*duplicate architect/i)
   })
 
   test("turns malformed and future content into inspectable unknown blocks", () => {
