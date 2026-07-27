@@ -107,10 +107,8 @@ test("architect and builder run in parallel before attributed synthesis", async 
     maxActive = Math.max(maxActive, active);
     options.onEvent?.({
       type: "message_update",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: `live ${options.role}` }],
-      },
+      assistantMessageEvent: { type: "text_delta", delta: "live" },
+      outputText: `live ${options.role}`,
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     active--;
@@ -120,6 +118,8 @@ test("architect and builder run in parallel before attributed synthesis", async 
       text,
       model: options.model,
       usage: { input: 10, output: 5, cost: 0.1, turns: 1 },
+      stdoutBytes: 123,
+      eventCount: 4,
       events: [],
     };
   };
@@ -182,6 +182,10 @@ test("architect and builder run in parallel before attributed synthesis", async 
   assert.equal(summary.status, "COMPLETE");
   assert.equal(summary.synthesis, synthesis);
   assert.equal(summary.proposals.length, 2);
+  assert.deepEqual(summary.proposals.map((proposal) => proposal.stdoutBytes), [123, 123]);
+  assert.deepEqual(summary.proposals.map((proposal) => proposal.eventCount), [4, 4]);
+  assert.equal(summary.synthesizer.stdoutBytes, 123);
+  assert.equal(summary.synthesizer.eventCount, 4);
   assert.equal(summary.usage.cost, 0.3);
   assert.deepEqual(summary.requestedEfforts, {
     architect: "high",
@@ -543,6 +547,8 @@ test("routed Fusion uses fallback evidence, matching leases, and serial proposal
         text: proposals[options.role] || synthesis,
         model: options.model,
         usage: { input: 1, output: 1, cost: 0.1, turns: 1, costKnown: true },
+        stdoutBytes: 123,
+        eventCount: 4,
       };
     },
   );
@@ -579,6 +585,10 @@ test("routed Fusion uses fallback evidence, matching leases, and serial proposal
   assert.equal(reservations.length, 3);
   assert.equal(settlements.length, 3);
   assert.equal(summary.status, "COMPLETE");
+  assert.deepEqual(summary.proposals.map((proposal) => proposal.stdoutBytes), [123, 123]);
+  assert.deepEqual(summary.proposals.map((proposal) => proposal.eventCount), [4, 4]);
+  assert.equal(summary.synthesizer.stdoutBytes, 123);
+  assert.equal(summary.synthesizer.eventCount, 4);
   assert.equal(summary.routing.architect.reason, "fallback");
   assert.match(summary.panel.join("\n"), /fallback/);
 

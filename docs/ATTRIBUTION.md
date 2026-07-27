@@ -7,12 +7,12 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Field | Value |
 |---|---|
 | Package | `@earendil-works/pi-coding-agent` |
-| Version | `0.82.1` plus Alloy viewport and structured sidebar RPC patches |
+| Version | `0.82.1` plus Alloy viewport, structured sidebar RPC, and compact JSON transport patches |
 | License | **MIT** |
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
 | Alloy fork | https://github.com/ccoussa717/pi |
-| Runtime artifact | `alloy-tui-v0.82.1.4`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
+| Runtime artifact | `alloy-tui-v0.82.1.5`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
 
 See [PI_FORK.md](./PI_FORK.md) for the source commit, artifact hashes,
 dependency-graph decision, upgrade procedure, and rollback procedure.

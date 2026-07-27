@@ -367,6 +367,9 @@ describe("mechanical enforcer consumption", () => {
     const joined = result.spawnPlan.args.join(" ");
     assert.match(joined, /child-enforcer/);
     assert.match(joined, /--no-extensions|--extension/);
+    const jsonEvents = result.spawnPlan.args.indexOf("--json-events");
+    assert.ok(jsonEvents >= 0);
+    assert.equal(result.spawnPlan.args[jsonEvents + 1], "compact");
   });
 
   it("runChildAgent passes an explicit thinking level as one Pi argument", async () => {
