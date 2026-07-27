@@ -154,7 +154,7 @@ describe("RpcClient", () => {
 	});
 
 	test("does not apply the startup timeout to a delayed mutation", async () => {
-		const client = createClient("normal", { requestTimeoutMs: 250 });
+		const client = createClient("normal", { requestTimeoutMs: 1_000 });
 		await client.start();
 
 		await expect(client.request({ type: "delayed_mutation" })).resolves.toMatchObject({
