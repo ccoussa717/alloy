@@ -528,7 +528,8 @@ assert_contains "$narrow_hints" "/plan" "40x10 slash hints remain visible"
 assert_contains "$narrow_hints" "hydrated history item 50" "40x10 hints preserve transcript visibility"
 assert_contains "$narrow_hints" "Ready" "40x10 hints preserve status visibility"
 tmux send-keys -t "$NARROW" Escape
-tmux send-keys -t "$NARROW" BSpace BSpace BSpace
+sleep 0.1
+tmux send-keys -t "$NARROW" BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux send-keys -t "$NARROW" -l "/login-fixture"
 tmux send-keys -t "$NARROW" Enter
 narrow_login="$(wait_for_text "$NARROW" 'auth.example.test')"
