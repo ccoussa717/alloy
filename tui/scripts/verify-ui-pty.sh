@@ -12,18 +12,20 @@ LOSS="$BASE-loss"
 SPLASH="$BASE-splash"
 REMOTE_AUTO="$BASE-remote-auto"
 REMOTE_ON="$BASE-remote-on"
+STREAM="$BASE-stream"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
 SELECTION_OUTPUT="$ROOT/test/fixtures/.$BASE-selection.raw"
 REMOTE_AUTO_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-auto.raw"
 REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
+STREAM_OUTPUT="$ROOT/test/fixtures/.$BASE-stream.raw"
 
 cleanup() {
-  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
-  rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
+  rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$STREAM_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
 }
 trap cleanup EXIT
 
@@ -193,6 +195,7 @@ RUN="$(run_command 0)"
 SPLASH_RUN="$(run_command 1)"
 REMOTE_AUTO_RUN="$(run_command 0 auto fixture)"
 REMOTE_ON_RUN="$(run_command 0 on fixture)"
+STREAM_RUN="$(run_command 1 off)"
 
 exercise_early_signal TERM 143 "$EARLY_TERM"
 exercise_early_signal INT 130 "$EARLY_INT"
@@ -413,6 +416,54 @@ tmux send-keys -t "$SESSION" C-c
 sleep 0.3
 tmux has-session -t "$SESSION" 2>/dev/null && { printf 'idle Ctrl-C did not exit\n' >&2; exit 1; }
 
+tmux new-session -d -s "$STREAM" -x 100 -y 30 "$STREAM_RUN"
+wait_for_text "$STREAM" 'Ask anything' >/dev/null
+tmux pipe-pane -t "$STREAM" -o "$(pipe_capture_command "$STREAM_OUTPUT")"
+tmux send-keys -t "$STREAM" -l "flicker stream"
+tmux send-keys -t "$STREAM" Enter
+wait_for_text "$STREAM" 'const value120 = 120;' >/dev/null
+wait_for_text "$STREAM" 'Ready' >/dev/null
+tmux pipe-pane -t "$STREAM"
+node - "$STREAM_OUTPUT" 100 30 <<'NODE'
+const fs = require("node:fs");
+const [path, widthValue, heightValue] = process.argv.slice(2);
+const data = fs.readFileSync(path);
+const width = Number(widthValue);
+const height = Number(heightValue);
+const begin = Buffer.from("\x1b[?2026h");
+const end = Buffer.from("\x1b[?2026l");
+const sizes = [];
+let offset = 0;
+while (true) {
+  const start = data.indexOf(begin, offset);
+  if (start < 0) break;
+  const finish = data.indexOf(end, start + begin.length);
+  if (finish < 0) break;
+  sizes.push(finish - start - begin.length);
+  offset = finish + end.length;
+}
+const largest = Math.max(0, ...sizes);
+const sorted = sizes.toSorted((a, b) => a - b);
+const percentile = (value) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * value))] ?? 0;
+const viewport = width * height;
+const oversized = sizes.filter((size) => size > viewport).length;
+const p90 = percentile(0.9);
+console.log(`stream frames=${sizes.length} p90=${p90} p99=${percentile(0.99)} largest=${largest} overViewport=${oversized} viewport=${viewport}`);
+if (sizes.length === 0) {
+  console.error("streaming output emitted no synchronized frames");
+  process.exit(1);
+}
+if (data.includes(Buffer.from("\x1b[2J")) || data.includes(Buffer.from("\x1b[3J"))) {
+  console.error("streaming output emitted a full-screen clear");
+  process.exit(1);
+}
+if (p90 > viewport || oversized / sizes.length > 0.03 || largest > viewport * 2) {
+  console.error(`streaming output caused repeated viewport repaints: p90=${p90} largest=${largest} oversized=${oversized} viewport=${viewport}`);
+  process.exit(1);
+}
+NODE
+tmux kill-session -t "$STREAM"
+
 tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
 narrow_launch="$(wait_for_text "$NARROW" 'hydrated history item 50')"
 assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
@@ -462,4 +513,4 @@ splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
 assert_contains "$splash" "──────────────────────────" "green splash divider"
 tmux send-keys -t "$SPLASH" C-c
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

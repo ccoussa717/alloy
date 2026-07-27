@@ -58,6 +58,7 @@ describe("RpcClient", () => {
 		const messages: RpcMessage[] = [];
 		const received = new Promise<void>((resolve) => {
 			client.onMessage((message) => {
+				if (message.type === "response") return;
 				messages.push(message);
 				if (messages.length === 2) resolve();
 			});
@@ -83,6 +84,19 @@ describe("RpcClient", () => {
 
 		expect(firstResponse).toMatchObject({ command: "first", data: { order: 1 } });
 		expect(secondResponse).toMatchObject({ command: "second", data: { order: 2 } });
+	});
+
+	test("emits each response before resolving its request", async () => {
+		const client = createClient("normal");
+		await client.start();
+		const order: string[] = [];
+		client.onMessage((message) => {
+			if (message.type === "response" && message.command === "trigger_extension") order.push("event");
+		});
+
+		await client.request({ type: "trigger_extension" }).then(() => order.push("resolved"));
+
+		expect(order).toEqual(["event", "resolved"]);
 	});
 
 	test("emits extension UI requests and writes extension UI responses", async () => {

@@ -59,12 +59,11 @@ async function main(): Promise<number> {
     await client.start();
 
     let initial: SessionState = createInitialState();
-    const hydration = await Promise.all(
+    await Promise.all(
       ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats"].map((type) =>
         client.request({ type }),
       ),
     );
-    for (const response of hydration) initial = reduceRpcMessage(initial, response);
     for (const message of pending.splice(0)) initial = reduceRpcMessage(initial, message);
 
     renderer = await createCliRenderer({
@@ -108,9 +107,8 @@ async function main(): Promise<number> {
       if (probing || finished) return;
       probing = true;
       void client.request({ type: "get_state" }, { observational: true, timeoutMs: 5_000 }).then(
-        (response) => {
+        () => {
           probing = false;
-          listener?.(response);
         },
         (error) => {
           probing = false;

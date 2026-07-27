@@ -81,6 +81,32 @@ function stream(text: string): void {
   }, 650);
 }
 
+function streamFlickerFixture(): void {
+  const id = `assistant-${++sequence}`;
+  const lines: string[] = [];
+  let emitted = 0;
+  let latestMessage: Record<string, unknown> | undefined;
+  send({ type: "agent_start" });
+  send({
+    type: "message_start",
+    message: { id, role: "assistant", content: [{ type: "text", text: "```typescript\n" }], timestamp: Date.now() },
+  });
+
+  const timer = setInterval(() => {
+    for (let burst = 0; burst < 2 && emitted < 120; burst++) {
+      emitted++;
+      lines.push(`const value${emitted} = ${emitted};`);
+      const text = `\`\`\`typescript\n${lines.join("\n")}${emitted === 120 ? "\n```" : ""}`;
+      latestMessage = { id, role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() };
+      send({ type: "message_update", message: latestMessage, assistantMessageEvent: { type: "text_delta", delta: lines.at(-1) } });
+    }
+    if (emitted < 120) return;
+    clearInterval(timer);
+    send({ type: "message_end", message: latestMessage! });
+    send({ type: "agent_end" });
+  }, 35);
+}
+
 function handle(request: Record<string, unknown>): void {
   log(request);
   switch (request.type) {
@@ -186,6 +212,8 @@ function handle(request: Record<string, unknown>): void {
       } else if (text === "hold") {
         held = true;
         send({ type: "agent_start" });
+      } else if (text === "flicker stream") {
+        streamFlickerFixture();
       } else if (text === "/backend-loss") {
         setTimeout(() => process.exit(37), 50);
       } else if (text === "/mode" || text === "/plan" || text === "/build") {
