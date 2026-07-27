@@ -6,8 +6,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -99,38 +101,9 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
 }
 
 export function formatFusionLines(summary: any) {
-  const models = summary.models || {};
-  const usage = summary.usage || {};
-  const lines = [
-    `Fusion ${summary.status} (${summary.runId})`,
-    `Architect: ${models.architect || "n/a"}`,
-    `Builder: ${models.builder || "n/a"}`,
-    `Synthesizer: ${models.synthesizer || "n/a"}`,
-    `Usage: ${Number(usage.input) || 0} input, ${Number(usage.output) || 0} output, ${Number(usage.turns) || 0} turns, ${formatFusionCost(usage)}`,
-    `Artifacts: ${summary.runDir}`,
-    "",
-    "Synthesis:",
-    summary.synthesis || "(not produced)",
-  ];
-  if (summary.synthesizer) {
-    lines.splice(6, 0, `Synthesis artifact: ${join(summary.runDir, "fusion", "synthesis.md")}`);
-  }
-  if (summary.error === "provider_unavailable") {
-    const reasons = Object.values(summary.routing || {})
-      .map((route: any) => route?.reason)
-      .filter(Boolean);
-    lines.splice(
-      6,
-      0,
-      `Provider unavailable in this Alloy session: ${(summary.missingProviders || []).join(", ")}`,
-      ...reasons.map((reason) => `Route reason: ${reason}`),
-    );
-  }
-  return lines;
+  return formatFusionContextLines(summary);
 }
 
-const FUSION_TRANSCRIPT_BODY_BYTES = 768;
-const FUSION_TRANSCRIPT_OBJECTIVE_BYTES = 512;
 const FUSION_CONTEXT_OBJECTIVE_BYTES = 128;
 const FUSION_METADATA_BYTES = 128;
 const FUSION_PATH_BYTES = 512;
@@ -141,15 +114,6 @@ function truncateUtf8(value: unknown, maxBytes: number) {
   let end = maxBytes;
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
   return bytes.subarray(0, end).toString("utf8");
-}
-
-function truncateFusionBody(value: unknown, artifact: string) {
-  const text = String(value || "");
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= FUSION_TRANSCRIPT_BODY_BYTES) return text;
-  const suffix = `\n\n… [truncated for transcript; full artifact: ${artifact}]`;
-  const bodyBytes = Math.max(0, FUSION_TRANSCRIPT_BODY_BYTES - Buffer.byteLength(suffix));
-  return `${truncateUtf8(text, bodyBytes)}${suffix}`;
 }
 
 function finiteNonNegative(value: unknown) {
@@ -209,10 +173,10 @@ function selectFusionProposals(value: unknown) {
 }
 
 export function createFusionPresentationSummary(summary: any) {
-  const runDir = truncateUtf8(summary?.runDir, FUSION_PATH_BYTES);
+  const runDir = String(summary?.runDir || "");
   const selection = selectFusionProposals(summary?.proposals);
   const errors = [
-    truncateUtf8(summary?.error, FUSION_TRANSCRIPT_OBJECTIVE_BYTES),
+    String(summary?.error || ""),
     selection.errors.length ? `Malformed Fusion provenance: ${selection.errors.join(", ")}` : "",
   ].filter(Boolean);
   return {
@@ -221,37 +185,30 @@ export function createFusionPresentationSummary(summary: any) {
     status: truncateUtf8(summary?.status, FUSION_METADATA_BYTES) || "UNKNOWN",
     runId: truncateUtf8(summary?.runId, FUSION_METADATA_BYTES),
     runDir,
-    objective: truncateUtf8(summary?.objective, FUSION_TRANSCRIPT_OBJECTIVE_BYTES),
-    error: truncateUtf8(errors.join("; "), FUSION_METADATA_BYTES) || null,
+    objective: String(summary?.objective || ""),
+    error: errors.join("; ") || null,
     models: presentationModels(summary?.models),
     requestedEfforts: presentationModels(summary?.requestedEfforts),
     proposals: selection.proposals.map((proposal: any) => {
-          const role = truncateUtf8(proposal?.role, FUSION_METADATA_BYTES);
-          const artifactRole = role === "architect" || role === "builder" ? role : "proposal";
-          return {
-          role,
-          model: truncateUtf8(proposal?.model, FUSION_METADATA_BYTES),
-          ok: proposal?.ok === true,
-          contractOk: proposal?.contractOk === true,
-          error: truncateUtf8(proposal?.error, FUSION_METADATA_BYTES) || null,
-          text: truncateFusionBody(
-            proposal?.text,
-            join(runDir, "fusion", `${artifactRole}.md`),
-          ),
-          usage: presentationUsage(proposal?.usage),
-          durationMs: finiteNonNegative(proposal?.durationMs),
-        };
-      }),
-    synthesis: truncateFusionBody(
-      summary?.synthesis,
-      join(runDir, "fusion", "synthesis.md"),
-    ),
+      const role = truncateUtf8(proposal?.role, FUSION_METADATA_BYTES);
+      return {
+        role,
+        model: truncateUtf8(proposal?.model, FUSION_METADATA_BYTES),
+        ok: proposal?.ok === true,
+        contractOk: proposal?.contractOk === true,
+        error: String(proposal?.error || "") || null,
+        text: String(proposal?.text || ""),
+        usage: presentationUsage(proposal?.usage),
+        durationMs: finiteNonNegative(proposal?.durationMs),
+      };
+    }),
+    synthesis: String(summary?.synthesis || ""),
     synthesizer: summary?.synthesizer
       ? {
           model: truncateUtf8(summary.synthesizer.model, FUSION_METADATA_BYTES),
           ok: summary.synthesizer.ok === true,
           contractOk: summary.synthesizer.contractOk === true,
-          error: truncateUtf8(summary.synthesizer.error, FUSION_METADATA_BYTES) || null,
+          error: String(summary.synthesizer.error || "") || null,
           usage: presentationUsage(summary.synthesizer.usage),
           durationMs: finiteNonNegative(summary.synthesizer.durationMs),
         }
@@ -262,6 +219,75 @@ export function createFusionPresentationSummary(summary: any) {
       : [],
     routing: presentationRouting(summary?.routing),
   };
+}
+
+export function createFusionTransportSummary(summary: any) {
+  const presented = createFusionPresentationSummary(summary);
+  const summaryPath = presented.runDir ? join(presented.runDir, "summary.json") : "";
+  let summarySha256 = "";
+  try {
+    summarySha256 = createHash("sha256").update(readFileSync(summaryPath)).digest("hex");
+  } catch {
+    // Pre-run failures do not have a durable summary artifact.
+  }
+  const artifactBacked = Boolean(summarySha256);
+  const transportError = presented.runDir && !artifactBacked
+    ? "Full Fusion output unavailable: the run artifact could not be read safely."
+    : "";
+  return {
+    kind: "fusion",
+    mode: "plan",
+    status: presented.status,
+    runId: presented.runId,
+    runDir: presented.runDir,
+    bodyStorage: artifactBacked ? "artifact" : "inline",
+    summaryPath: artifactBacked ? summaryPath : "",
+    summarySha256,
+    objective: truncateUtf8(presented.objective, FUSION_CONTEXT_OBJECTIVE_BYTES),
+    error: truncateUtf8(
+      [presented.error, transportError].filter(Boolean).join("; "),
+      FUSION_METADATA_BYTES,
+    ) || null,
+  };
+}
+
+function artifactUnavailable(summary: any) {
+  const message = "Full Fusion output unavailable: the run artifact could not be read safely.";
+  return {
+    ...summary,
+    error: [summary?.error, message].filter(Boolean).join("; "),
+  };
+}
+
+export function hydrateFusionPresentationSummary(summary: any) {
+  if (summary?.bodyStorage !== "artifact") return createFusionPresentationSummary(summary);
+  try {
+    const runsRoot = realpathSync(getRunsDir());
+    const runDir = realpathSync(String(summary.runDir || ""));
+    const summaryPath = realpathSync(String(summary.summaryPath || ""));
+    if (
+      !runDir.startsWith(`${runsRoot}${sep}`) ||
+      summaryPath !== join(runDir, "summary.json")
+    ) {
+      return artifactUnavailable(summary);
+    }
+    const storedBytes = readFileSync(summaryPath);
+    const digest = createHash("sha256").update(storedBytes).digest("hex");
+    if (digest !== String(summary.summarySha256 || "")) {
+      return artifactUnavailable(summary);
+    }
+    const stored = JSON.parse(storedBytes.toString("utf8"));
+    if (
+      stored?.kind !== "fusion" ||
+      String(stored.runId || "") !== String(summary.runId || "") ||
+      realpathSync(String(stored.runDir || "")) !== runDir
+    ) {
+      return artifactUnavailable(summary);
+    }
+    return createFusionPresentationSummary(stored);
+  } catch {
+    return artifactUnavailable(summary);
+  }
 }
 
 function formatFusionCost(usage: any) {
@@ -282,7 +308,7 @@ export function formatFusionContextLines(summary: any) {
     `Synthesizer: ${truncateUtf8(models.synthesizer, FUSION_METADATA_BYTES) || "n/a"}`,
     `Usage: ${finiteNonNegative(usage.input) || 0} input, ${finiteNonNegative(usage.output) || 0} output, ${finiteNonNegative(usage.turns) || 0} turns, ${formatFusionCost(usage)}`,
     `Artifacts: ${truncateUtf8(summary?.runDir, FUSION_PATH_BYTES) || "n/a"}`,
-    "Bounded transcript previews; full outputs in run artifacts.",
+    "Full outputs are shown in the terminal and saved to artifacts; model context remains metadata-only.",
   ];
   if (summary?.error) lines.push(`Error: ${truncateUtf8(summary.error, FUSION_METADATA_BYTES)}`);
   if (summary?.error === "provider_unavailable") {
@@ -482,7 +508,7 @@ export function registerAuto(pi: ExtensionAPI) {
   pi.registerMessageRenderer?.("alloy-fusion", (message, { outputPad }, theme) => {
     const details = message.details as any;
     const lines = details?.kind === "fusion"
-      ? formatFusionPresentationLines(createFusionPresentationSummary(details))
+      ? formatFusionPresentationLines(hydrateFusionPresentationSummary(details))
       : [String(message.content || "")];
     const text = lines
       .map((line) =>
@@ -657,8 +683,9 @@ export function registerAuto(pi: ExtensionAPI) {
             }
           },
         });
-        const presented = createFusionPresentationSummary(summary);
-        const lines = formatFusionContextLines(presented);
+        const context = createFusionPresentationSummary(summary);
+        const presented = createFusionTransportSummary(summary);
+        const lines = formatFusionContextLines(context);
         pi.sendMessage({
           customType: "alloy-fusion",
           content: lines.join("\n"),
@@ -669,7 +696,7 @@ export function registerAuto(pi: ExtensionAPI) {
         const message = String((err as Error).message || err);
         ctx.ui.notify(message, "error");
         try {
-          const presented = createFusionPresentationSummary({
+          const presented = createFusionTransportSummary({
             kind: "fusion",
             status: "FAILED",
             objective: request,
@@ -789,12 +816,13 @@ export function registerAuto(pi: ExtensionAPI) {
             resolveSessionCredentialLease(models, ctx.modelRegistry),
           onPanel: (panel: unknown) => paintPanel(panel, ctx),
         });
-        const presented = createFusionPresentationSummary(summary);
+        const context = createFusionPresentationSummary(summary);
+        const presented = createFusionTransportSummary(summary);
         return {
           content: [
             {
               type: "text",
-              text: formatFusionLines(presented).join("\n"),
+              text: formatFusionLines(context).join("\n"),
             },
           ],
           details: presented,

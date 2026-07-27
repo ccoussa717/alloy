@@ -117,7 +117,7 @@ test("fusion panes stack on narrow terminals and synthesis uses full width", () 
   assert.match(lines.join("\n"), /Architect.*Builder/);
   assert.ok(lines.length <= 14);
 
-  const widget = panel.renderFusionWidgetLines(p);
+  const widget = panel.renderFusionWidgetLines(p, 32);
   assert.ok(widget.length <= 6);
   assert.match(widget.join("\n"), /Architect/);
   assert.match(widget.join("\n"), /Builder/);
@@ -127,4 +127,46 @@ test("fusion panes stack on narrow terminals and synthesis uses full width", () 
   lines = panel.renderFusionPaneLines(p, 12);
   assert.ok(lines.every((line) => panel.visibleWidth(line) <= 12));
   assert.ok(lines.length <= 14);
+});
+
+test("fusion live widget shows the objective and current role output", () => {
+  const p = panel.createPanelState({
+    title: "ALLOY FUSION",
+    runId: "fusion-live",
+    objective: "Decide how to make the terminal output complete",
+  });
+  panel.setPhase(p, "PROPOSING");
+  panel.upsertAgent(p, {
+    role: "architect",
+    status: "running",
+    model: "anthropic/claude-fable-5",
+    output: "Inspecting transcript boundaries and context isolation",
+  });
+  panel.upsertAgent(p, {
+    role: "builder",
+    status: "running",
+    model: "openai-codex/gpt-5.6-sol",
+    detail: "Tracing the OpenTUI renderer",
+  });
+
+  const lines = panel.renderFusionWidgetLines(p, 80);
+  assert.match(lines.join("\n"), /Objective: Decide how to make the terminal output complete/);
+  assert.match(lines.join("\n"), /Architect.*Inspecting transcript boundaries/);
+  assert.match(lines.join("\n"), /Builder.*Tracing the OpenTUI renderer/);
+  assert.ok(lines.length <= 6);
+  assert.ok(lines.every((line) => panel.visibleWidth(line) <= 80));
+
+  const compact = panel.renderFusionWidgetLines(p, 32);
+  assert.match(compact.join("\n"), /Architect.*Inspecting/);
+  assert.match(compact.join("\n"), /Builder.*Tracing/);
+
+  const transported = panel.renderFusionWidgetLines(p);
+  assert.match(transported.join("\n"), /Objective: Decide how to make the terminal output complete/);
+  assert.match(transported.join("\n"), /Inspecting transcript boundaries and context isolation/);
+
+  const huge = panel.createPanelState({ title: "ALLOY FUSION", objective: "x".repeat(1_100_000) });
+  panel.upsertAgent(huge, { role: "architect", status: "running", output: "Visible activity" });
+  const hugeLines = panel.renderFusionWidgetLines(huge);
+  assert.ok(Buffer.byteLength(JSON.stringify(hugeLines)) < 20_000);
+  assert.match(hugeLines.join("\n"), /Visible activity/);
 });

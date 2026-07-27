@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { displayPreview, messageBlocks, messageRole, redactDisplayText, resultText, toolSummary, transcriptToolStates, type TranscriptBlock } from "../src/content"
 
 describe("redactDisplayText", () => {
@@ -248,6 +252,106 @@ describe("messageBlocks", () => {
         },
       },
     ])
+  })
+
+  test("preserves complete Fusion role output in durable transcript blocks", () => {
+    const architect = `Architect starts\n${"architecture detail ".repeat(2_000)}\nARCHITECT END`
+    const builder = `Builder starts\n${"implementation detail ".repeat(2_000)}\nBUILDER END`
+    const synthesis = `## Agreements\nShared evidence.\n\n## Disagreements\nAttributed differences.\n\n## Consensus\n${"actionable answer ".repeat(2_000)}\nCONSENSUS END`
+    const [block] = messageBlocks({
+      role: "custom",
+      customType: "alloy-fusion",
+      details: {
+        kind: "fusion",
+        status: "COMPLETE",
+        objective: "Show every result in the terminal",
+        proposals: [
+          { role: "architect", model: "anthropic/a", ok: true, text: architect },
+          { role: "builder", model: "openai-codex/b", ok: true, text: builder },
+        ],
+        synthesis,
+        synthesizer: { model: "anthropic/s", ok: true },
+      },
+    })
+
+    expect(block).toMatchObject({
+      kind: "fusion",
+      objective: "Show every result in the terminal",
+      proposals: [{ text: architect }, { text: builder }],
+      synthesis: { text: synthesis },
+    })
+  })
+
+  test("hydrates complete Fusion output from an artifact-backed transport record", () => {
+    const home = mkdtempSync(join(tmpdir(), "alloy-tui-fusion-"))
+    const previousHome = process.env.ALLOY_HOME
+    process.env.ALLOY_HOME = home
+    try {
+      const runDir = join(home, "runs", "fusion-artifact")
+      mkdirSync(runDir, { recursive: true })
+      const summary = {
+        kind: "fusion",
+        status: "COMPLETE",
+        runId: "fusion-artifact",
+        runDir,
+        objective: "Render the complete result",
+        proposals: [
+          { role: "architect", model: "anthropic/a", ok: true, text: `ARCH ${"full ".repeat(50_000)}END` },
+          { role: "builder", model: "openai-codex/b", ok: true, text: `BUILD ${"full ".repeat(50_000)}END` },
+        ],
+        synthesis: `## Agreements\nShared.\n\n## Disagreements\n- Architect: A\n- Builder: B\n- Status: open\n\n## Consensus\n- Decision: C\n- Caveats: D\n${"full ".repeat(50_000)}END`,
+        synthesizer: { model: "anthropic/s", ok: true },
+      }
+      const summaryPath = join(runDir, "summary.json")
+      writeFileSync(summaryPath, JSON.stringify(summary))
+      const summarySha256 = createHash("sha256").update(readFileSync(summaryPath)).digest("hex")
+
+      const details = {
+        kind: "fusion",
+        bodyStorage: "artifact",
+        summaryPath,
+        summarySha256,
+        status: "COMPLETE",
+        runId: "fusion-artifact",
+        runDir,
+        objective: "Render the complete result",
+      }
+      const [block] = messageBlocks({
+        role: "custom",
+        customType: "alloy-fusion",
+        details,
+      })
+
+      expect(block).toMatchObject({
+        kind: "fusion",
+        objective: summary.objective,
+        proposals: [{ text: summary.proposals[0]!.text }, { text: summary.proposals[1]!.text }],
+        synthesis: { text: summary.synthesis },
+      })
+
+      const toolBlocks = messageBlocks({
+        role: "toolResult",
+        toolName: "alloy_fusion",
+        content: [{ type: "text", text: "Fusion metadata" }],
+        details,
+      })
+      expect(toolBlocks[1]).toMatchObject({
+        kind: "fusion",
+        proposals: [{ text: summary.proposals[0]!.text }, { text: summary.proposals[1]!.text }],
+        synthesis: { text: summary.synthesis },
+      })
+      const spoofed = messageBlocks({
+        role: "toolResult",
+        toolName: "unrelated_tool",
+        content: [{ type: "text", text: "Not Fusion" }],
+        details,
+      })
+      expect(spoofed.some((item) => item.kind === "fusion")).toBe(false)
+    } finally {
+      if (previousHome === undefined) delete process.env.ALLOY_HOME
+      else process.env.ALLOY_HOME = previousHome
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   test("keeps actionable Fusion failure text when no role result exists", () => {

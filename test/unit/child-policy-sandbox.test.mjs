@@ -1036,8 +1036,8 @@ describe("parent propagation for model-callable tools", () => {
     assert.match(fusionToolBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionToolBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionToolBody, /Type\.Literal\(["']build["']\)/);
-    assert.match(fusionToolBody, /createFusionPresentationSummary\(summary\)/);
-    assert.match(fusionToolBody, /formatFusionLines\(presented\)/);
+    assert.match(fusionToolBody, /createFusionTransportSummary\(summary\)/);
+    assert.match(fusionToolBody, /formatFusionLines\(context\)/);
 
     const fusionCommandIdx = autoSrc.indexOf('registerCommand("fusion"');
     const panelCommandIdx = autoSrc.indexOf('registerCommand("panel"');
@@ -1048,13 +1048,9 @@ describe("parent propagation for model-callable tools", () => {
     assert.match(fusionCommandBody, /modelRegistry:\s*ctx\.modelRegistry/);
     assert.match(fusionCommandBody, /resolveParentChildSpawnOpts\(\{\s*mode:\s*["']plan["']/);
     assert.doesNotMatch(fusionCommandBody, /\^build\\b|\^plan\\b|plan\|build/);
-    assert.match(fusionCommandBody, /createFusionPresentationSummary\(summary\)/);
-    assert.match(fusionCommandBody, /formatFusionContextLines\(presented\)/);
-    assert.match(autoSrc, /function formatFusionLines[\s\S]*summary\.synthesis/);
-    assert.match(
-      autoSrc,
-      /function formatFusionLines[\s\S]*join\(summary\.runDir, "fusion", "synthesis\.md"\)/,
-    );
+    assert.match(fusionCommandBody, /createFusionTransportSummary\(summary\)/);
+    assert.match(fusionCommandBody, /formatFusionContextLines\(context\)/);
+    assert.doesNotMatch(fusionToolBody, /summary\.synthesis/);
 
     // agents.ts alloy_task tool similarly
     const agentsSrc = readFileSync(join(root, "extensions/agents.ts"), "utf8");

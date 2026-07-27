@@ -1,4 +1,6 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 let input = "";
 let sequence = 0;
@@ -38,6 +40,43 @@ function message(role: "user" | "assistant", content: string, id?: string) {
 }
 
 function fusionResult() {
+  const runDir = join(process.env.ALLOY_HOME || "/tmp", "runs", "fusion-pty");
+  const summary = {
+    kind: "fusion",
+    status: "COMPLETE",
+    runId: "fusion-pty",
+    runDir,
+    objective: "Compare both approaches",
+    requestedEfforts: { architect: "high", builder: "medium", synthesizer: "low" },
+    proposals: [
+      {
+        role: "architect",
+        model: "anthropic/claude-fable-5",
+        ok: true,
+        durationMs: 1_250,
+        text: "## Architecture\n\nKeep boundaries explicit.\n\n- Preserve artifacts",
+        usage: { input: 1_200, output: 340, cost: 0.0123, turns: 2 },
+      },
+      {
+        role: "builder",
+        model: "openai-codex/gpt-5.6-sol",
+        ok: true,
+        durationMs: 980,
+        text: "## Build\n\nShip the smallest complete slice.\n\n- Verify behavior",
+        usage: { input: 900, output: 280, cost: 0.0098, turns: 1 },
+      },
+    ],
+    synthesis: "## Agreements\n\nBoth models support explicit verification.\n\n## Disagreements\n\n- Architect: Prefer stronger boundaries.\n- Builder: Prefer a smaller slice.\n- Status: resolved — preserve the stronger boundary.\n\n## Consensus\n\n- Decision: Ship the smallest slice that preserves the stronger boundary.\n- Caveats: Verify the boundary before release.",
+    synthesizer: {
+      ok: true,
+      model: "anthropic/claude-fable-5",
+      durationMs: 640,
+      usage: { input: 2_500, output: 410, cost: 0.015, turns: 1 },
+    },
+  };
+  mkdirSync(runDir, { recursive: true });
+  const summaryBytes = Buffer.from(JSON.stringify(summary));
+  writeFileSync(join(runDir, "summary.json"), summaryBytes);
   return {
     id: `fusion-${++sequence}`,
     role: "custom",
@@ -46,36 +85,14 @@ function fusionResult() {
     timestamp: Date.now() + sequence,
     details: {
       kind: "fusion",
-      status: "COMPLETE",
-      runId: "fusion-pty",
-      runDir: "/tmp/fusion-pty",
-      objective: "Compare both approaches",
-      requestedEfforts: { architect: "high", builder: "medium", synthesizer: "low" },
-      proposals: [
-        {
-          role: "architect",
-          model: "anthropic/claude-fable-5",
-          ok: true,
-          durationMs: 1_250,
-          text: "## Architecture\n\nKeep boundaries explicit.\n\n- Preserve artifacts",
-          usage: { input: 1_200, output: 340, cost: 0.0123, turns: 2 },
-        },
-        {
-          role: "builder",
-          model: "openai-codex/gpt-5.6-sol",
-          ok: true,
-          durationMs: 980,
-          text: "## Build\n\nShip the smallest complete slice.\n\n- Verify behavior",
-          usage: { input: 900, output: 280, cost: 0.0098, turns: 1 },
-        },
-      ],
-      synthesis: "## Recommendation\n\nCombine both approaches with explicit verification.",
-      synthesizer: {
-        ok: true,
-        model: "anthropic/claude-fable-5",
-        durationMs: 640,
-        usage: { input: 2_500, output: 410, cost: 0.015, turns: 1 },
-      },
+      mode: "plan",
+      status: summary.status,
+      runId: summary.runId,
+      runDir: summary.runDir,
+      objective: summary.objective,
+      bodyStorage: "artifact",
+      summaryPath: join(runDir, "summary.json"),
+      summarySha256: createHash("sha256").update(summaryBytes).digest("hex"),
     },
   };
 }
@@ -182,7 +199,13 @@ function handle(request: Record<string, unknown>): void {
             method: "setWidget",
             widgetKey: fusionWidget ? "alloy-agents" : "fixture",
             widgetLines: fusionWidget
-              ? ["◆ Architect ✓ · claude-fable-5", "▲ Builder ✓ · gpt-5.6-sol", "⧉ Synthesizer ● · fable-5"]
+              ? [
+                  "ALLOY FUSION · SYNTHESIZING",
+                  "Objective: Compare both approaches",
+                  "◆ Architect ✓ Boundaries identified · claude-fable-5",
+                  "▲ Builder ✓ Implementation traced · gpt-5.6-sol",
+                  "⧉ Synthesizer ● Comparing conclusions · fable-5",
+                ]
               : ["fixture widget"],
             widgetPlacement: "aboveEditor",
           });

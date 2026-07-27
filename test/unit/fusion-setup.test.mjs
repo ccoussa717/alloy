@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import * as autoExtension from "../../extensions/auto.ts";
 
-const { createFusionPresentationSummary, formatFusionContextLines, registerAuto } = autoExtension;
+const {
+  createFusionPresentationSummary,
+  createFusionTransportSummary,
+  formatFusionContextLines,
+  hydrateFusionPresentationSummary,
+  registerAuto,
+} = autoExtension;
 
 function registerFusionCommand(sentMessages = [], messageRenderers = new Map()) {
   const commands = new Map();
@@ -46,7 +53,7 @@ test("Fusion operator output names routed provider failures", () => {
     runDir: "/tmp/run-1",
     models: {},
     usage: {},
-    synthesis: "",
+    synthesis: "DO NOT ENTER MODEL CONTEXT",
     error: "provider_unavailable",
     missingProviders: ["anthropic"],
     routing: {
@@ -58,9 +65,10 @@ test("Fusion operator output names routed provider failures", () => {
 
   assert.match(lines.join("\n"), /anthropic/);
   assert.match(lines.join("\n"), /no eligible configured model for planning/);
+  assert.doesNotMatch(lines.join("\n"), /DO NOT ENTER MODEL CONTEXT/);
 });
 
-test("Fusion transcript details are bounded while context contains metadata only", () => {
+test("Fusion transcript keeps complete output while context contains metadata only", () => {
   const largeProposal = "architect result ".repeat(20_000);
   const largeSynthesis = "synthesis result ".repeat(20_000);
   const summary = {
@@ -90,79 +98,114 @@ test("Fusion transcript details are bounded while context contains metadata only
   const presented = createFusionPresentationSummary(summary);
   const context = formatFusionContextLines(presented).join("\n");
 
-  assert.ok(Buffer.byteLength(JSON.stringify(presented)) < 12_000);
   assert.equal("hostileMetadata" in presented, false);
   assert.equal("panel" in presented, false);
-  assert.match(presented.proposals[0].text, /truncated.*artifact/);
-  assert.match(presented.synthesis, /truncated.*artifact/);
+  assert.equal(presented.objective, summary.objective);
+  assert.equal(presented.proposals[0].text, largeProposal);
+  assert.equal(presented.synthesis, largeSynthesis);
+  assert.doesNotMatch(JSON.stringify(presented), /truncated for transcript/);
   assert.equal(summary.proposals[0].text, largeProposal);
   assert.doesNotMatch(context, /architect result/);
   assert.doesNotMatch(context, /synthesis result/);
   assert.match(context, /Compare the implementations/);
   assert.ok(Buffer.byteLength(context) < 2_000);
-  assert.match(context, /Bounded transcript previews; full outputs in run artifacts/);
+  assert.match(context, /Full outputs are shown in the terminal/);
+  assert.match(context, /model context remains metadata-only/);
   assert.match(context, /\/tmp\/run-large/);
-
-  const saturated = createFusionPresentationSummary({
-    ...summary,
-    runId: "r".repeat(20_000),
-    runDir: `/${"path/".repeat(20_000)}`,
-    models: Object.fromEntries(["architect", "builder", "synthesizer"].map((role) => [role, "model".repeat(20_000)])),
-    requestedEfforts: Object.fromEntries(["architect", "builder", "synthesizer"].map((role) => [role, "effort".repeat(20_000)])),
-    proposals: ["architect", "builder"].map((role) => ({
-      role,
-      requestedModel: "requested".repeat(20_000),
-      model: "model".repeat(20_000),
-      ok: false,
-      error: "error".repeat(20_000),
-      text: `${role} `.repeat(20_000),
-      usage: { input: 1, output: 2, cost: 3, turns: 4, costKnown: true },
-    })),
-    synthesis: "synthesis ".repeat(20_000),
-    synthesizer: {
-      model: "model".repeat(20_000),
-      ok: false,
-      error: "error".repeat(20_000),
-      usage: { input: 1, output: 2, cost: 3, turns: 4, costKnown: true },
-    },
-    missingProviders: Array.from({ length: 100 }, () => "provider".repeat(20_000)),
-    routing: Object.fromEntries(["architect", "builder", "synthesizer"].map((role) => [role, {
-      model: "model".repeat(20_000),
-      provider: "provider".repeat(20_000),
-      reason: "reason".repeat(20_000),
-    }])),
-  });
-  const saturatedContext = formatFusionContextLines(saturated).join("\n");
-  assert.ok(Buffer.byteLength(JSON.stringify(saturated)) < 7_000);
-  assert.ok(Buffer.byteLength(saturatedContext) < 2_500);
-
-  const hydratedRecord = JSON.stringify({
-    type: "response",
-    command: "get_messages",
-    success: true,
-    data: {
-      messages: Array.from({ length: 100 }, () => ({
-        role: "custom",
-        customType: "alloy-fusion",
-        content: saturatedContext,
-        details: saturated,
-      })),
-    },
-  });
-  assert.ok(Buffer.byteLength(hydratedRecord) < 1024 * 1024);
 });
 
-test("Fusion transcript truncation preserves valid UTF-8", () => {
+test("Fusion transcript preserves complete UTF-8 output", () => {
+  const proposal = "🧭".repeat(20_000);
+  const synthesis = "🧩".repeat(20_000);
   const presented = createFusionPresentationSummary({
     kind: "fusion",
     runDir: "/tmp/run-unicode",
-    proposals: [{ role: "architect", text: "🧭".repeat(20_000) }],
-    synthesis: "🧩".repeat(20_000),
+    proposals: [{ role: "architect", text: proposal }],
+    synthesis,
   });
 
-  assert.doesNotMatch(presented.proposals[0].text, /�/);
-  assert.doesNotMatch(presented.synthesis, /�/);
-  assert.ok(Buffer.byteLength(JSON.stringify(presented)) < 40_000);
+  assert.equal(presented.proposals[0].text, proposal);
+  assert.equal(presented.synthesis, synthesis);
+});
+
+test("Fusion transport stays below the RPC record limit and hydrates complete output from artifacts", () => {
+  const home = mkdtempSync(join(tmpdir(), "alloy-fusion-transport-"));
+  const previousHome = process.env.ALLOY_HOME;
+  process.env.ALLOY_HOME = home;
+  try {
+    const runDir = join(home, "runs", "fusion-transport");
+    mkdirSync(runDir, { recursive: true });
+    const architect = `ARCH START\n${"architecture ".repeat(100_000)}\nARCH END`;
+    const builder = `BUILD START\n${"implementation ".repeat(100_000)}\nBUILD END`;
+    const synthesis = `## Agreements\nShared.\n\n## Disagreements\n- Architect: A\n- Builder: B\n- Status: open\n\n## Consensus\n- Decision: Proceed carefully.\n- Caveats: Open issue.\n${"consensus ".repeat(100_000)}\nSYNTH END`;
+    const summary = {
+      kind: "fusion",
+      status: "COMPLETE",
+      runId: "fusion-transport",
+      runDir,
+      objective: `Compare everything ${"carefully ".repeat(100_000)}`,
+      proposals: [
+        { role: "architect", model: "anthropic/a", ok: true, text: architect },
+        { role: "builder", model: "openai-codex/b", ok: true, text: builder },
+      ],
+      synthesis,
+      synthesizer: { model: "anthropic/s", ok: true },
+      usage: {},
+    };
+    writeFileSync(join(runDir, "summary.json"), JSON.stringify(summary));
+
+    const transported = createFusionTransportSummary(summary);
+    assert.ok(Buffer.byteLength(JSON.stringify(transported)) < 20_000);
+    const context = formatFusionContextLines(createFusionPresentationSummary(summary)).join("\n");
+    assert.ok(Buffer.byteLength(JSON.stringify({ type: "message_end", message: { customType: "alloy-fusion", content: context, details: transported } })) < 1024 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify({
+      type: "response",
+      command: "get_messages",
+      success: true,
+      data: {
+        messages: Array.from({ length: 100 }, () => ({
+          role: "custom",
+          customType: "alloy-fusion",
+          content: context,
+          details: transported,
+        })),
+      },
+    })) < 1024 * 1024);
+    assert.equal(transported.bodyStorage, "artifact");
+    assert.equal("proposals" in transported, false);
+    assert.equal("synthesis" in transported, false);
+    assert.equal(transported.summarySha256, createHash("sha256").update(readFileSync(join(runDir, "summary.json"))).digest("hex"));
+
+    const hydrated = hydrateFusionPresentationSummary(transported);
+    assert.equal(hydrated.objective, summary.objective);
+    assert.equal(hydrated.proposals[0].text, architect);
+    assert.equal(hydrated.proposals[1].text, builder);
+    assert.equal(hydrated.synthesis, synthesis);
+
+    writeFileSync(join(runDir, "summary.json"), JSON.stringify({ ...summary, synthesis: "tampered" }));
+    const tampered = hydrateFusionPresentationSummary(transported);
+    assert.match(tampered.error, /artifact could not be read safely/);
+    assert.notEqual(tampered.synthesis, "tampered");
+  } finally {
+    if (previousHome === undefined) delete process.env.ALLOY_HOME;
+    else process.env.ALLOY_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("Fusion transport reports a missing completed-run artifact", () => {
+  const transported = createFusionTransportSummary({
+    kind: "fusion",
+    status: "COMPLETE",
+    runId: "missing-run",
+    runDir: "/tmp/alloy-missing-fusion-run",
+    objective: "Show complete output",
+    proposals: [],
+    synthesis: "",
+  });
+
+  assert.equal(transported.bodyStorage, "inline");
+  assert.match(transported.error, /artifact could not be read safely/);
 });
 
 test("Fusion context reports unknown aggregate cost", () => {
@@ -177,7 +220,7 @@ test("Fusion context reports unknown aggregate cost", () => {
   assert.doesNotMatch(context, /\$0\.0000/);
 });
 
-test("native Pi renderer keeps bounded Fusion results visible", () => {
+test("native Pi renderer keeps complete Fusion results visible", () => {
   const renderers = new Map();
   registerFusionCommand([], renderers);
   const renderer = renderers.get("alloy-fusion");
@@ -407,13 +450,19 @@ test("fusion command leaves its result in transcript scrollback without a comple
       },
     };
 
-    await command.handler(`Design the feature ${"deeply ".repeat(20_000)}`, ctx);
+    const objective = `Design the feature ${"deeply ".repeat(20_000)}`;
+    await command.handler(objective, ctx);
 
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].customType, "alloy-fusion");
     assert.equal(sentMessages[0].display, true);
     assert.equal(sentMessages[0].details.kind, "fusion");
-    assert.ok(Buffer.byteLength(JSON.stringify(sentMessages[0])) < 40_000);
+    assert.ok(Buffer.byteLength(JSON.stringify(sentMessages[0])) < 20_000);
+    assert.equal(
+      hydrateFusionPresentationSummary(sentMessages[0].details).objective,
+      objective.trim(),
+    );
+    assert.ok(Buffer.byteLength(sentMessages[0].content) < 2_000);
     assert.equal(widgets[0].options.placement, "aboveEditor");
     assert.equal(widgets.at(-1).content, undefined);
   } finally {
@@ -446,13 +495,17 @@ test("fusion command persists an actionable transcript result when orchestration
       },
     };
 
-    await command.handler(`Design the feature ${"deeply ".repeat(20_000)}`, ctx);
+    const objective = `Design the feature ${"deeply ".repeat(20_000)}`;
+    await command.handler(objective, ctx);
 
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].customType, "alloy-fusion");
     assert.equal(sentMessages[0].details.status, "FAILED");
+    assert.equal(sentMessages[0].details.bodyStorage, "inline");
+    assert.match(objective, new RegExp(`^${sentMessages[0].details.objective}`));
+    assert.ok(Buffer.byteLength(JSON.stringify(sentMessages[0])) < 20_000);
     assert.match(sentMessages[0].content, /invalid effort level/);
-    assert.ok(Buffer.byteLength(JSON.stringify(sentMessages[0])) < 40_000);
+    assert.ok(Buffer.byteLength(sentMessages[0].content) < 2_000);
   } finally {
     if (previousHome === undefined) delete process.env.ALLOY_HOME;
     else process.env.ALLOY_HOME = previousHome;

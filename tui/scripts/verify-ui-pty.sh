@@ -18,6 +18,7 @@ FUSION_WIDE="$BASE-fusion-wide"
 FUSION_MEDIUM="$BASE-fusion-medium"
 FUSION_COMPACT="$BASE-fusion-compact"
 FUSION_WIDGET="$BASE-fusion-widget"
+FUSION_WIDGET_COMPACT="$BASE-fusion-widget-compact"
 EARLY_TERM="$BASE-early-term"
 EARLY_INT="$BASE-early-int"
 LOG="$ROOT/test/fixtures/.$BASE.log"
@@ -25,12 +26,14 @@ SELECTION_OUTPUT="$ROOT/test/fixtures/.$BASE-selection.raw"
 REMOTE_AUTO_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-auto.raw"
 REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
 STREAM_OUTPUT="$ROOT/test/fixtures/.$BASE-stream.raw"
+FAKE_ALLOY_HOME="$ROOT/test/fixtures/.$BASE-home"
 
 cleanup() {
-  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$FUSION_WIDE" "$FUSION_MEDIUM" "$FUSION_COMPACT" "$FUSION_WIDGET" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$FUSION_WIDE" "$FUSION_MEDIUM" "$FUSION_COMPACT" "$FUSION_WIDGET" "$FUSION_WIDGET_COMPACT" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
   rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$STREAM_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
+  rm -rf "$FAKE_ALLOY_HOME"
 }
 trap cleanup EXIT
 
@@ -39,8 +42,8 @@ for command in bun cat grep pgrep sleep stty tmux wc; do
 done
 
 run_command() {
-  printf 'cd %q && ALLOY_FAKE_EMPTY=%q ALLOY_ACTIVITY_ANIMATION=%q SSH_CONNECTION=%q ALLOY_FAKE_FUSION_HISTORY=%q ALLOY_FAKE_FUSION_WIDGET=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
-    "$ROOT" "${1:-0}" "${2:-on}" "${3:-}" "${4:-0}" "${5:-0}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
+  printf 'cd %q && ALLOY_HOME=%q ALLOY_FAKE_EMPTY=%q ALLOY_ACTIVITY_ANIMATION=%q SSH_CONNECTION=%q ALLOY_FAKE_FUSION_HISTORY=%q ALLOY_FAKE_FUSION_WIDGET=%q ALLOY_RPC_COMMAND=%q ALLOY_RPC_ARGS_JSON=%q ALLOY_VERSION=0.8.2 ALLOY_FAKE_LOG=%q bun run start' \
+    "$ROOT" "$FAKE_ALLOY_HOME" "${1:-0}" "${2:-on}" "${3:-}" "${4:-0}" "${5:-0}" "$BUN_BIN" "[\"$FIXTURE\"]" "$LOG"
 }
 
 capture() { tmux capture-pane -t "$1" -p; }
@@ -569,15 +572,18 @@ assert_contains "$splash" "─────────────────�
 tmux send-keys -t "$SPLASH" C-c
 
 tmux new-session -d -s "$FUSION_WIDE" -x 140 -y 30 "$FUSION_RUN"
-wait_for_text "$FUSION_WIDE" 'artifacts: /tmp/fusion-pty' >/dev/null
+wait_for_text "$FUSION_WIDE" 'artifacts:' >/dev/null
 fusion_wide="$(collect_pages "$FUSION_WIDE" 4)"
 assert_contains "$fusion_wide" "FUSION // COMPLETE" "140x30 hydrated Fusion header"
 assert_line_contains_both "$fusion_wide" "ARCHITECT" "BUILDER" "140x30 Fusion keeps role cards side by side"
 assert_contains "$fusion_wide" "SYNTHESIZER" "140x30 Fusion synthesis remains full-width below proposals"
+assert_contains "$fusion_wide" "Agreements" "140x30 Fusion synthesis shows agreements"
+assert_contains "$fusion_wide" "Disagreements" "140x30 Fusion synthesis shows disagreements"
+assert_contains "$fusion_wide" "Consensus" "140x30 Fusion synthesis shows consensus"
 tmux kill-session -t "$FUSION_WIDE"
 
 tmux new-session -d -s "$FUSION_MEDIUM" -x 80 -y 24 "$FUSION_RUN"
-wait_for_text "$FUSION_MEDIUM" 'artifacts: /tmp/fusion-pty' >/dev/null
+wait_for_text "$FUSION_MEDIUM" 'artifacts:' >/dev/null
 fusion_medium="$(collect_pages "$FUSION_MEDIUM" 4)"
 assert_contains "$fusion_medium" "ARCHITECT" "80x24 stacked Fusion preserves Architect"
 assert_contains "$fusion_medium" "BUILDER" "80x24 stacked Fusion preserves Builder"
@@ -585,19 +591,28 @@ assert_contains "$fusion_medium" "SYNTHESIZER" "80x24 stacked Fusion preserves s
 tmux kill-session -t "$FUSION_MEDIUM"
 
 tmux new-session -d -s "$FUSION_COMPACT" -x 40 -y 10 "$FUSION_RUN"
-wait_for_text "$FUSION_COMPACT" 'artifacts: /tmp/fusion-pty' >/dev/null
-fusion_compact="$(collect_pages "$FUSION_COMPACT" 12)"
+wait_for_text "$FUSION_COMPACT" 'artifacts:' >/dev/null
+fusion_compact="$(collect_pages "$FUSION_COMPACT" 20)"
 assert_contains "$fusion_compact" "ARCHITECT" "40x10 stacked Fusion preserves Architect"
 assert_contains "$fusion_compact" "BUILDER" "40x10 stacked Fusion preserves Builder"
 assert_contains "$fusion_compact" "SYNTHESIZER" "40x10 stacked Fusion preserves synthesis"
 tmux kill-session -t "$FUSION_COMPACT"
 
-tmux new-session -d -s "$FUSION_WIDGET" -x 40 -y 10 "$FUSION_WIDGET_RUN"
+tmux new-session -d -s "$FUSION_WIDGET" -x 80 -y 24 "$FUSION_WIDGET_RUN"
 fusion_widget="$(wait_for_text "$FUSION_WIDGET" 'Synthesizer')"
-assert_contains "$fusion_widget" "Architect" "40x10 live Fusion widget preserves Architect"
-assert_contains "$fusion_widget" "Builder" "40x10 live Fusion widget preserves Builder"
-assert_contains "$fusion_widget" "Synthesizer" "40x10 live Fusion widget preserves Synthesizer"
-assert_contains "$fusion_widget" "Ask anything" "40x10 live Fusion widget preserves composer"
+assert_contains "$fusion_widget" "Objective: Compare both approaches" "live Fusion widget shows the objective"
+assert_contains "$fusion_widget" "Architect" "80x24 live Fusion widget preserves Architect"
+assert_contains "$fusion_widget" "Builder" "80x24 live Fusion widget preserves Builder"
+assert_contains "$fusion_widget" "Synthesizer" "80x24 live Fusion widget preserves Synthesizer"
+assert_contains "$fusion_widget" "Boundaries identified" "live Fusion widget shows Architect output"
+assert_contains "$fusion_widget" "Implementation traced" "live Fusion widget shows Builder output"
 tmux kill-session -t "$FUSION_WIDGET"
+
+tmux new-session -d -s "$FUSION_WIDGET_COMPACT" -x 40 -y 10 "$FUSION_WIDGET_RUN"
+fusion_widget_compact="$(wait_for_text "$FUSION_WIDGET_COMPACT" 'Architect')"
+assert_contains "$fusion_widget_compact" "Objective: Compare both approaches" "40x10 live Fusion widget shows the objective"
+assert_contains "$fusion_widget_compact" "Boundaries identified" "40x10 live Fusion widget shows current role output"
+assert_contains "$fusion_widget_compact" "Ask anything" "40x10 live Fusion widget preserves composer"
+tmux kill-session -t "$FUSION_WIDGET_COMPACT"
 
 printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

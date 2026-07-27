@@ -946,7 +946,7 @@ export function AlloyApp(props: AlloyAppProps) {
           scrollbarOptions={{ visible: false }}
         >
           <For each={aboveWidgets()}>
-            {(widget) => <For each={widget.lines}>{(line, index) => <text wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
+            {(widget) => <For each={widget.lines}>{(line, index) => <text height={1} wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
           </For>
         </scrollbox>
       </Show>

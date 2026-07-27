@@ -57,18 +57,15 @@ Regression risk.
 Run tests.`,
 };
 
-const synthesis = `## Consensus
-Shared answer.
-## Architect contributions
-System boundaries.
-## Builder contributions
-Implementation details.
-## Conflicts and resolution
-Selected the safer path.
-## Rejected claims
-Unsupported assumptions.
-## Final recommendation
-Build the bounded workflow.`;
+const synthesis = `## Agreements
+Both models support a bounded workflow.
+## Disagreements
+- Architect: Prioritize explicit boundaries.
+- Builder: Prioritize implementation size.
+- Status: resolved — use the smallest implementation that preserves the boundary.
+## Consensus
+- Decision: Build the smallest workflow that preserves the explicit boundary.
+- Caveats: Verify the boundary before release.`;
 
 function deps(runDir, runChildAgent, lease = null) {
   return {
@@ -100,6 +97,7 @@ test("architect and builder run in parallel before attributed synthesis", async 
   const leaseRequests = [];
   let active = 0;
   let maxActive = 0;
+  const architectTail = `ARCHITECT TAIL ${"x".repeat(60_100)}`;
   const panels = [];
   const runChildAgent = async (options) => {
     calls.push(options);
@@ -112,7 +110,9 @@ test("architect and builder run in parallel before attributed synthesis", async 
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     active--;
-    const text = proposals[options.role] || synthesis;
+    const text = options.role === "fusion-architect"
+      ? `${proposals[options.role]}\n${architectTail}`
+      : proposals[options.role] || synthesis;
     return {
       ok: true,
       text,
@@ -171,9 +171,16 @@ test("architect and builder run in parallel before attributed synthesis", async 
     panels.some((panel) => {
       const architect = panel.agents.find((agent) => agent.role === "architect");
       const builder = panel.agents.find((agent) => agent.role === "builder");
-      return architect?.output?.includes("live fusion-architect") && builder?.output?.includes("live fusion-builder");
+      return panel.objective === "Design the feature" && architect?.output?.includes("live fusion-architect") && builder?.output?.includes("live fusion-builder");
     }),
   );
+  const synthesisPrompt = calls[2].prompt;
+  assert.ok(synthesisPrompt.indexOf("## Agreements") < synthesisPrompt.indexOf("## Disagreements"));
+  assert.ok(synthesisPrompt.indexOf("## Disagreements") < synthesisPrompt.indexOf("## Consensus"));
+  assert.match(synthesisPrompt, /attribute each model's position/i);
+  assert.match(synthesisPrompt, /do not invent agreement/i);
+  assert.match(synthesisPrompt, /- Status: resolved\|open\|none/);
+  assert.match(synthesisPrompt, /ARCHITECT TAIL/);
   assert.deepEqual(leaseRequests, [
     ["anthropic/architect"],
     ["openai-codex/builder"],
@@ -653,17 +660,22 @@ test("routed Fusion runs proposals in parallel when concurrency permits", async 
   const runDir = makeRunDir();
   let active = 0;
   let maxActive = 0;
+  let synthesisPrompt = "";
+  const architectTail = `ROUTED ARCHITECT TAIL ${"x".repeat(60_100)}`;
   const cfg = routedFusionConfig({ maxConcurrency: 2 });
   const { deps: workflowDeps, preparations, reservations } = routedFusionDeps(
     runDir,
     async (options) => {
+      if (options.role === "fusion-synthesizer") synthesisPrompt = options.prompt;
       active++;
       maxActive = Math.max(maxActive, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active--;
       return {
         ok: true,
-        text: proposals[options.role] || synthesis,
+        text: options.role === "fusion-architect"
+          ? `${proposals[options.role]}\n${architectTail}`
+          : proposals[options.role] || synthesis,
         model: options.model,
         usage: { input: 1, output: 1, cost: 0.1, turns: 1, costKnown: true },
       };
@@ -682,6 +694,7 @@ test("routed Fusion runs proposals in parallel when concurrency permits", async 
   assert.equal(reservations.slice(0, 2).reduce((sum, item) => sum + item.budgetUsd, 0), 2);
   assert.deepEqual(reservations.slice(0, 2).map((item) => item.budgetUsd), [1, 1]);
   assert.equal(summary.status, "COMPLETE");
+  assert.match(synthesisPrompt, /ROUTED ARCHITECT TAIL/);
 });
 
 test("routed Fusion abort stops the serial workflow before the next launch", async () => {
