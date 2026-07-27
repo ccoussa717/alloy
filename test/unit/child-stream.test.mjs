@@ -76,6 +76,31 @@ test("compact events produce cumulative live output and stream metrics", async (
   assert.ok(result.events.every((event) => event.outputText === undefined));
 });
 
+test("live output excludes reasoning-shaped blocks that carry text", async () => {
+  const live = [];
+  const result = await runChildAgent({
+    prompt: "keep reasoning hidden",
+    cwd: project,
+    onEvent: (event) => live.push(event.outputText),
+    spawnImpl: () => fakeChild((child) => {
+      const message = {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "hidden chain of thought" },
+          { type: "text", text: "visible answer" },
+        ],
+      };
+      child.stdout.write(jsonLine({ type: "message_start", message }));
+      child.stdout.write(jsonLine({ type: "message_end", message }));
+      child.emit("close", 0);
+    }),
+  });
+
+  assert.equal(result.text, "visible answer");
+  assert.equal(live.filter(Boolean).at(-1), "visible answer");
+  assert.ok(live.every((value) => !value?.includes("hidden chain of thought")));
+});
+
 test("stdout limits retain partial assistant output and classify the failure", async () => {
   const limited = await runChildAgent({
     prompt: "preserve partial output",

@@ -383,6 +383,7 @@ test("alloy_fusion tool paints panes through its execution context", async () =>
     const widgets = [];
     const tool = registerFusionTool();
     const ctx = {
+      mode: "rpc",
       modelRegistry: {
         find: (provider, id) => ({ provider, id }),
         getApiKeyAndHeaders: async () => ({
@@ -408,6 +409,14 @@ test("alloy_fusion tool paints panes through its execution context", async () =>
 
     assert.ok(widgets.length >= 1);
     assert.equal(widgets[0].options.placement, "aboveEditor");
+    assert.equal(widgets[0].options.data.kind, "alloy.fusion.live");
+    assert.equal(widgets[0].options.data.version, 1);
+    assert.deepEqual(widgets[0].options.data.agents.map((agent) => agent.role), [
+      "architect",
+      "builder",
+      "synthesizer",
+    ]);
+    assert.ok(Buffer.byteLength(JSON.stringify(widgets[0].options.data)) < 20_000);
     assert.equal(widgets.at(-1).content, undefined);
     assert.match(result.content[0].text, /Provider unavailable in this Alloy session/);
     assert.equal(result.details.error, "provider_unavailable");
@@ -430,6 +439,7 @@ test("fusion command leaves its result in transcript scrollback without a comple
     const ctx = {
       cwd: process.cwd(),
       hasUI: true,
+      mode: "rpc",
       modelRegistry: {
         find: (provider, id) => ({ provider, id }),
         getApiKeyAndHeaders: async () => ({ ok: false, error: "provider unavailable" }),
@@ -464,6 +474,7 @@ test("fusion command leaves its result in transcript scrollback without a comple
     );
     assert.ok(Buffer.byteLength(sentMessages[0].content) < 2_000);
     assert.equal(widgets[0].options.placement, "aboveEditor");
+    assert.equal(widgets[0].options.data.kind, "alloy.fusion.live");
     assert.equal(widgets.at(-1).content, undefined);
   } finally {
     if (previousHome === undefined) delete process.env.ALLOY_HOME;

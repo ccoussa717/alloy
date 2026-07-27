@@ -311,7 +311,12 @@ Fusion is plan-only. Architect and Builder inspect independently, and a fresh
 Synthesizer receives both validated proposals. An eligible successful run
 launches exactly three child-agent roles. Each role may use multiple model turns
 while reading the repository. Auth, abort, validation, and budget failures stop
-earlier.
+earlier. During the run, OpenTUI renders Architect and Builder side by side at
+normal widths, including visible model output and read-tool activity, then adds
+the Synthesizer below them. At 40-column or 10-row dimensions, the panel reduces
+to a four-row summary so the composer remains usable. The final attributed
+result remains in transcript scrollback; non-OpenTUI RPC hosts retain the
+string-line widget fallback.
 
 Auto attempts a checkpoint when running in a Git repository, prefers a worktree,
 and runs up to `budgets.maxFixRounds` fix rounds after diagnostic or review

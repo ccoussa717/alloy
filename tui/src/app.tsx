@@ -19,6 +19,8 @@ import {
   isStreamingTranscriptMessage,
   reduceRpcMessage,
   type ExtensionDialog,
+  type FusionLiveAgentState,
+  type FusionLivePanelState,
   type ModelInfo,
   type NotificationState,
   type RpcMessage,
@@ -100,11 +102,13 @@ export function initialDialogSelection(
 }
 
 export function copySelectionToClipboard(
-  renderer: Pick<CliRenderer, "copyToClipboardOSC52">,
+  renderer: Pick<CliRenderer, "clearSelection" | "copyToClipboardOSC52">,
   selection: Pick<Selection, "getSelectedText">,
 ): boolean {
   const text = selection.getSelectedText();
-  return text.length > 0 && renderer.copyToClipboardOSC52(text);
+  if (!text || !renderer.copyToClipboardOSC52(text)) return false;
+  renderer.clearSelection();
+  return true;
 }
 
 export function appLayout(width: number, height: number) {
@@ -135,6 +139,43 @@ export function sidebarLayout(width: number, manual: boolean | null) {
 
 export function fusionResultLayout(width: number): "columns" | "stack" {
   return width >= 90 ? "columns" : "stack";
+}
+
+export function fusionLiveLayout(width: number, height: number) {
+  return {
+    columns: width >= 60,
+    maxHeight: height <= 10 ? 4 : Math.min(14, Math.max(6, Math.floor(height / 2))),
+  };
+}
+
+export function fusionLiveCompact(width: number, height: number, synthesisActive: boolean): boolean {
+  const layout = fusionLiveLayout(width, height);
+  const requiredRows = layout.columns
+    ? synthesisActive ? 10 : 6
+    : synthesisActive ? 14 : 10;
+  return width <= 40 || height <= 10 || layout.maxHeight < requiredRows;
+}
+
+export function fusionLiveOutputPreview(value: string, width: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  const limit = Math.max(1, Math.floor(width));
+  if (Bun.stringWidth(normalized) <= limit) return normalized;
+  const tailWidth = Math.max(0, limit - Bun.stringWidth("…"));
+  const segments = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(normalized)];
+  let used = 0;
+  let tail = "";
+  for (let index = segments.length - 1; index >= 0; index--) {
+    const segment = segments[index]!.segment;
+    const segmentWidth = Bun.stringWidth(segment);
+    if (used + segmentWidth > tailWidth) break;
+    used += segmentWidth;
+    tail = segment + tail;
+  }
+  return `…${tail}`;
+}
+
+export function fusionLiveStatusGlyph(status: FusionLiveAgentState["status"]): string {
+  return status === "running" ? "●" : status === "ok" ? "✓" : status === "fail" ? "×" : status === "skip" ? "○" : "·";
 }
 
 export function fusionWidgetTone(
@@ -267,6 +308,97 @@ function FusionResult(props: { block: Extract<TranscriptBlock, { kind: "fusion" 
   );
 }
 
+function liveRoleLabel(role: FusionLiveAgentState["role"]): string {
+  if (role === "architect") return "ARCHITECT";
+  if (role === "builder") return "BUILDER";
+  return "SYNTHESIZER";
+}
+
+function liveRoleGlyph(role: FusionLiveAgentState["role"]): string {
+  if (role === "architect") return "◆";
+  if (role === "builder") return "▲";
+  return "⧉";
+}
+
+export function fusionLiveRoleActivity(agent: FusionLiveAgentState): string {
+  const event = agent.events[0];
+  return agent.status !== "running"
+    ? agent.activity
+    : event
+    ? `${event.status === "running" ? "using" : event.status} ${event.tool}${event.detail ? ` · ${event.detail}` : ""}`
+    : agent.activity;
+}
+
+function FusionLiveRolePane(props: { agent: FusionLiveAgentState; frame: number; outputWidth: number; grow?: boolean }) {
+  const running = () => props.agent.status === "running";
+  const output = () => fusionLiveOutputPreview(props.agent.output, props.outputWidth);
+  return (
+    <box
+      width={props.grow ? undefined : "100%"}
+      flexGrow={props.grow ? 1 : 0}
+      flexBasis={props.grow ? 0 : undefined}
+      minWidth={0}
+      flexDirection="column"
+      border={["left"]}
+      borderColor={theme.accent}
+      backgroundColor={theme.panel}
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      <text height={1} fg={theme.accent}>{liveRoleGlyph(props.agent.role)} {liveRoleLabel(props.agent.role)}{props.agent.model ? ` · ${props.agent.model}` : ""}</text>
+      <text height={1} fg={props.agent.status === "fail" ? theme.error : running() ? theme.warning : props.agent.status === "ok" ? theme.success : theme.muted}>
+        {running() ? activityFrame(props.frame, 4) : fusionLiveStatusGlyph(props.agent.status)} {props.agent.status}{props.agent.effort ? ` · ${props.agent.effort}` : ""} · {fusionLiveRoleActivity(props.agent)}
+      </text>
+      <For each={props.agent.events.slice(0, 1)}>
+        {(event) => <text height={1} fg={event.status === "failed" ? theme.error : theme.dim}>TOOL {event.tool}{event.detail ? ` · ${event.detail}` : ""}</text>}
+      </For>
+      <Show when={output()}>
+        <text height={1} fg={theme.text}>MODEL OUTPUT · {output()}</text>
+      </Show>
+    </box>
+  );
+}
+
+function FusionLiveDashboard(props: { panel: FusionLivePanelState; width: number; height: number; frame: number }) {
+  const architect = () => props.panel.agents.find((agent) => agent.role === "architect");
+  const builder = () => props.panel.agents.find((agent) => agent.role === "builder");
+  const synthesizer = () => props.panel.agents.find((agent) => agent.role === "synthesizer");
+  const proposals = () => [architect(), builder()].filter((agent): agent is FusionLiveAgentState => agent !== undefined);
+  const synthesisActive = () => synthesizer() !== undefined && synthesizer()!.status !== "pending";
+  const compact = () => fusionLiveCompact(props.width, props.height, synthesisActive());
+  return (
+    <Show
+      when={!compact()}
+      fallback={
+        <box flexDirection="column">
+          <text height={1} fg={theme.accent}>ALLOY FUSION · {props.panel.phase}</text>
+          <Show when={!synthesisActive() && props.panel.objective}>
+            <text height={1} fg={theme.muted}>Objective: {props.panel.objective}</text>
+          </Show>
+          <For each={synthesisActive() ? [...proposals(), synthesizer()!] : proposals()}>
+            {(agent) => <text height={1} fg={agent.status === "fail" ? theme.error : agent.status === "ok" ? theme.success : theme.accent}>{liveRoleGlyph(agent.role)} {liveRoleLabel(agent.role)} {fusionLiveStatusGlyph(agent.status)} {agent.status} {fusionLiveRoleActivity(agent)}</text>}
+          </For>
+        </box>
+      }
+    >
+      <box flexDirection="column">
+        <text height={1} fg={theme.accent}>ALLOY FUSION · {props.panel.phase}</text>
+        <Show when={props.panel.objective}>
+          <text height={1} fg={theme.muted}>Objective: {props.panel.objective}</text>
+        </Show>
+        <box flexDirection={fusionLiveLayout(props.width, props.height).columns ? "row" : "column"} gap={fusionLiveLayout(props.width, props.height).columns ? 1 : 0}>
+          <For each={proposals()}>
+            {(agent) => <FusionLiveRolePane agent={agent} frame={props.frame} outputWidth={fusionLiveLayout(props.width, props.height).columns ? Math.max(8, Math.floor(props.width / 2) - 18) : Math.max(8, props.width - 18)} grow={fusionLiveLayout(props.width, props.height).columns} />}
+          </For>
+        </box>
+        <Show when={synthesisActive()}>
+          <FusionLiveRolePane agent={synthesizer()!} frame={props.frame} outputWidth={Math.max(8, props.width - 18)} />
+        </Show>
+      </box>
+    </Show>
+  );
+}
+
 function Block(props: { block: TranscriptBlock; width?: number; user?: boolean; streaming?: boolean; execution?: ToolExecution; transcriptStatus?: TranscriptToolStatus; activityGlyph?: string }) {
   const color = () => (props.user ? theme.textStrong : theme.text);
   if (props.block.kind === "text") {
@@ -324,7 +456,6 @@ function blockKey(block: TranscriptBlock, index: number): string {
 
 export function AlloyApp(props: AlloyAppProps) {
   const renderer = useRenderer();
-  useSelectionHandler((selection) => copySelectionToClipboard(renderer, selection));
   const dimensions = useTerminalDimensions();
   const [manualSidebar, setManualSidebar] = createSignal<boolean | null>(null);
   const sidebar = createMemo(() => sidebarLayout(dimensions().width, manualSidebar()));
@@ -340,6 +471,7 @@ export function AlloyApp(props: AlloyAppProps) {
   const [autocompleteSelected, setAutocompleteSelected] = createSignal(0);
   const [dismissedAutocompleteText, setDismissedAutocompleteText] = createSignal<string>();
   const [activityFrameIndex, setActivityFrameIndex] = createSignal(0);
+  const [copyNoticeVisible, setCopyNoticeVisible] = createSignal(false);
   const activityInterval = activityAnimationInterval();
   const activityActive = createMemo(() =>
     session().isStreaming ||
@@ -354,6 +486,20 @@ export function AlloyApp(props: AlloyAppProps) {
   let lastBackendEditorText: string | undefined;
   const submissionQueue: Array<{ value: string; restoreOnFailure: boolean }> = [];
   const extensionTimeouts = new Map<string, { delay: number; timer: ReturnType<typeof setTimeout> }>();
+  let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  useSelectionHandler((selection) => {
+    if (!copySelectionToClipboard(renderer, selection)) return;
+    if (copyNoticeTimer) clearTimeout(copyNoticeTimer);
+    setCopyNoticeVisible(true);
+    copyNoticeTimer = setTimeout(() => {
+      copyNoticeTimer = undefined;
+      setCopyNoticeVisible(false);
+    }, 1_800);
+  });
+  onCleanup(() => {
+    if (copyNoticeTimer) clearTimeout(copyNoticeTimer);
+  });
 
   const reduce = (message: RpcMessage) => {
     const current = session();
@@ -451,6 +597,9 @@ export function AlloyApp(props: AlloyAppProps) {
   const extensionDialog = createMemo(() => activeExtensionDialog(session()));
   const aboveWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "aboveEditor"));
   const belowWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "belowEditor"));
+  const aboveWidgetMaxHeight = createMemo(() => aboveWidgets().some((widget) => widget.data)
+    ? fusionLiveLayout(layout().width, layout().height).maxHeight
+    : Math.max(1, Math.min(6, Math.floor(layout().height / 3))));
   const notifications = createMemo(() => latestNotifications(session().notifications));
   const autocompleteCapacity = createMemo(() => {
     const height = layout().height;
@@ -458,7 +607,7 @@ export function AlloyApp(props: AlloyAppProps) {
     const fixedRows = 1 + (layout().showIdentity ? 1 : 0) + composerRows;
     const notificationRows = notifications().length > 0 ? Math.min(4, Math.max(1, Math.floor(height / 4))) : 0;
     const aboveRows = aboveWidgets().length > 0
-      ? Math.min(6, Math.max(1, Math.floor(height / 3)))
+      ? aboveWidgetMaxHeight()
       : 0;
     const belowRows = belowWidgets().length > 0 ? height : 0;
     return Math.max(0, height - fixedRows - notificationRows - aboveRows - belowRows - 1);
@@ -939,14 +1088,21 @@ export function AlloyApp(props: AlloyAppProps) {
       </Show>
       <Show when={aboveWidgets().length > 0}>
         <scrollbox
-          maxHeight={Math.max(1, Math.min(6, Math.floor(layout().height / 3)))}
+          maxHeight={aboveWidgetMaxHeight()}
           flexShrink={0}
           paddingLeft={layout().horizontalPadding + 1}
           paddingRight={layout().horizontalPadding}
           scrollbarOptions={{ visible: false }}
         >
           <For each={aboveWidgets()}>
-            {(widget) => <For each={widget.lines}>{(line, index) => <text height={1} wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
+            {(widget) => (
+              <Show
+                when={widget.data}
+                fallback={<For each={widget.lines}>{(line, index) => <text height={1} wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
+              >
+                <FusionLiveDashboard panel={widget.data!} width={Math.max(1, layout().width - layout().horizontalPadding * 2 - 2)} height={layout().height} frame={activityFrameIndex()} />
+              </Show>
+            )}
           </For>
         </scrollbox>
       </Show>
@@ -1035,6 +1191,25 @@ export function AlloyApp(props: AlloyAppProps) {
           </box>
         )}
       </For>
+
+      <Show when={copyNoticeVisible()}>
+        <box
+          position="absolute"
+          zIndex={2500}
+          right={layout().horizontalPadding}
+          top={layout().showIdentity ? 1 : 0}
+          width={Math.min(27, dimensions().width)}
+          height={3}
+          border={true}
+          borderColor={theme.success}
+          backgroundColor={theme.panelRaised}
+          paddingLeft={1}
+          paddingRight={1}
+          alignItems="center"
+        >
+          <text fg={theme.success}>● <span style={{ fg: theme.textStrong }}>Copied to clipboard</span></text>
+        </box>
+      </Show>
 
       <Show when={hasDialog()}>
         <box position="absolute" zIndex={3000} left={0} top={0} width={layout().width} height={layout().height} alignItems="center" paddingTop={Math.max(0, Math.floor(layout().height / 4))} backgroundColor={RGBA.fromInts(0, 0, 0, 170)}>

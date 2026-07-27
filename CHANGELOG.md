@@ -7,6 +7,12 @@ and releases use semantic versioning during the 0.x development series.
 
 ## [Unreleased]
 
+### Added
+
+- Added a native responsive Fusion dashboard that streams bounded Architect,
+  Builder, and Synthesizer model output and read-tool activity while preserving
+  the final attributed transcript and generic RPC widget fallback.
+
 ### Changed
 
 - Replaced generic Fusion workers/build mode with a bounded read-only Architect,
@@ -32,6 +38,11 @@ and releases use semantic versioning during the 0.x development series.
 - Prevented Fusion child output from growing quadratically by using compact JSON
   deltas, bounded newest-event retention, byte-accurate UTF-8 stream handling,
   and preserved partial output when a child exceeds its stream safety limit.
+- Bounded live Fusion model-output repaints while preserving immediate tool and
+  terminal transitions, expanded display redaction for common credential forms,
+  and made newest-output previews terminal-cell aware.
+- Restored the transient green copy confirmation after mouse-selection clipboard
+  writes complete.
 
 ## [0.8.2] - 2026-07-24
 

@@ -88,6 +88,32 @@ export interface ToolExecution {
 export interface WidgetState {
   lines: string[];
   placement: "aboveEditor" | "belowEditor";
+  data?: FusionLivePanelState;
+}
+
+export interface FusionLiveEventState {
+  tool: string;
+  detail: string;
+  status: "running" | "complete" | "failed";
+}
+
+export interface FusionLiveAgentState {
+  role: "architect" | "builder" | "synthesizer";
+  status: "pending" | "running" | "ok" | "fail" | "skip";
+  model: string;
+  effort: string;
+  activity: string;
+  output: string;
+  events: FusionLiveEventState[];
+}
+
+export interface FusionLivePanelState {
+  kind: "alloy.fusion.live";
+  version: 1;
+  runId: string;
+  phase: string;
+  objective: string;
+  agents: FusionLiveAgentState[];
 }
 
 export interface NotificationState {
@@ -316,6 +342,74 @@ function sidebarText(value: string, limit: number): string {
   return redactDisplayText(value)
     .replace(/((?:token|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi, "$1[REDACTED]")
     .slice(0, limit);
+}
+
+function widgetText(value: unknown, limit: number, fromEnd = false): string {
+  const sanitized = redactDisplayText(asString(value))
+    .replace(/((?:token|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi, "$1[REDACTED]")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  return fromEnd ? sanitized.slice(-limit) : sanitized.slice(0, limit);
+}
+
+export function parseFusionLivePanel(value: unknown): FusionLivePanelState | undefined {
+  const panel = sidebarRecord(value);
+  if (panel?.kind !== "alloy.fusion.live" || panel.version !== 1 || !Array.isArray(panel.agents)) {
+    return undefined;
+  }
+  const roles = ["architect", "builder", "synthesizer"] as const;
+  const statuses = new Set(["pending", "running", "ok", "fail", "skip"]);
+  const eventStatuses = new Set(["running", "complete", "failed"]);
+  if (typeof panel.runId !== "string" || typeof panel.phase !== "string" || typeof panel.objective !== "string") {
+    return undefined;
+  }
+  if (panel.agents.length !== roles.length) return undefined;
+  const agents: FusionLiveAgentState[] = [];
+  const seen = new Set<string>();
+  for (const value of panel.agents) {
+    const agent = sidebarRecord(value);
+    if (!agent) return undefined;
+    const role = agent.role;
+    const status = agent.status;
+    if (!roles.includes(role as typeof roles[number]) || typeof status !== "string" || !statuses.has(status) || seen.has(role as string)) {
+      return undefined;
+    }
+    if (typeof agent.model !== "string" || typeof agent.effort !== "string" || typeof agent.activity !== "string" || typeof agent.output !== "string") {
+      return undefined;
+    }
+    const eventsValue = agent.events;
+    if (eventsValue !== undefined && !Array.isArray(eventsValue)) return undefined;
+    const events: FusionLiveEventState[] = [];
+    for (const item of (eventsValue || []).slice(0, 3)) {
+      const event = sidebarRecord(item);
+      if (!event || typeof event.tool !== "string" || typeof event.detail !== "string" || typeof event.status !== "string" || !eventStatuses.has(event.status)) return undefined;
+      events.push({
+        tool: widgetText(event.tool, 64),
+        detail: widgetText(event.detail, 256),
+        status: event.status as FusionLiveEventState["status"],
+      });
+    }
+    seen.add(role as string);
+    agents.push({
+      role: role as FusionLiveAgentState["role"],
+      status: status as FusionLiveAgentState["status"],
+      model: widgetText(agent.model, 256),
+      effort: widgetText(agent.effort, 32),
+      activity: widgetText(agent.activity, 512),
+      output: widgetText(agent.output, 4_096, true),
+      events,
+    });
+  }
+  agents.sort((left, right) => roles.indexOf(left.role) - roles.indexOf(right.role));
+  const parsed: FusionLivePanelState = {
+    kind: "alloy.fusion.live",
+    version: 1,
+    runId: widgetText(panel.runId, 128),
+    phase: widgetText(panel.phase, 64),
+    objective: widgetText(panel.objective, 1_024),
+    agents,
+  };
+  return new TextEncoder().encode(JSON.stringify(parsed)).length < 20_000 ? parsed : undefined;
 }
 
 function parseSidebarSnapshot(value: unknown): SidebarSnapshot | null {
@@ -715,6 +809,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
           }
           if (!Array.isArray(message.widgetLines)) return state;
           const previous = state.widgets[key];
+          const data = parseFusionLivePanel(message.widgetData);
           const placement = message.widgetPlacement === "belowEditor" || message.widgetPlacement === "aboveEditor"
             ? message.widgetPlacement
             : previous?.placement ?? "aboveEditor";
@@ -725,6 +820,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
               [key]: {
                 lines: message.widgetLines.filter((item): item is string => typeof item === "string"),
                 placement,
+                ...(data ? { data } : {}),
               },
             },
           };

@@ -111,7 +111,14 @@ Fusion is a bounded plan-only coordinator: Architect and Builder children run
 concurrently with read-only tools, and a Synthesizer runs only after both output
 contracts validate. An eligible successful run performs exactly three model
 calls; preflight, proposal, abort, and budget failures stop earlier. Fusion has
-no code-writing or automatic validation phase.
+no code-writing or automatic validation phase. In RPC mode, the extension sends
+a bounded, versioned structured widget snapshot alongside the existing string
+lines. Model-output snapshots share a trailing 100 ms update window while tool,
+phase, failure, and final transitions publish immediately. The producer and
+OpenTUI consumer independently redact common credential assignments, token
+signatures, URL userinfo, authorization values, and private-key blocks before
+rendering the native live role dashboard; RPC hosts that ignore the enhancement
+keep the fallback.
 
 ## Docker sandbox (session)
 

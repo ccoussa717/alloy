@@ -104,6 +104,11 @@ test("architect and builder run in parallel before attributed synthesis", async 
     active++;
     maxActive = Math.max(maxActive, active);
     options.onEvent?.({
+      type: "tool_execution_start",
+      toolName: "read",
+      args: { path: `src/${options.role}.ts` },
+    });
+    options.onEvent?.({
       type: "message_update",
       assistantMessageEvent: { type: "text_delta", delta: "live" },
       outputText: `live ${options.role}`,
@@ -125,6 +130,7 @@ test("architect and builder run in parallel before attributed synthesis", async 
   };
 
   const workflowDeps = deps(runDir, runChildAgent);
+  workflowDeps.panelUpdateIntervalMs = 1;
   const loadCredentialLease = workflowDeps.loadCredentialLease;
   workflowDeps.loadCredentialLease = (models) => {
     leaseRequests.push(models);
@@ -174,6 +180,13 @@ test("architect and builder run in parallel before attributed synthesis", async 
       return panel.objective === "Design the feature" && architect?.output?.includes("live fusion-architect") && builder?.output?.includes("live fusion-builder");
     }),
   );
+  assert.ok(
+    panels.some((panel) => panel.ticker.some((event) =>
+      event.tool === "read" &&
+      event.detail.includes("src/fusion-architect.ts") &&
+      event.status === "running"
+    )),
+  );
   const synthesisPrompt = calls[2].prompt;
   assert.ok(synthesisPrompt.indexOf("## Agreements") < synthesisPrompt.indexOf("## Disagreements"));
   assert.ok(synthesisPrompt.indexOf("## Disagreements") < synthesisPrompt.indexOf("## Consensus"));
@@ -217,6 +230,58 @@ test("architect and builder run in parallel before attributed synthesis", async 
   assert.equal(artifactText.includes("secret-b"), false);
   assert.match(artifactText, /"requestedEfforts"/);
   assert.match(artifactText, /"architect": "high"/);
+});
+
+test("model deltas share one bounded panel update window and leave no stale timer", async () => {
+  const runDir = makeRunDir();
+  const panels = [];
+  const timers = new Set();
+  let scheduled = 0;
+  let cancelled = 0;
+  let maxPending = 0;
+  const runChildAgent = async (options) => {
+    for (let index = 1; index <= 100; index++) {
+      options.onEvent?.({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "x" },
+        outputText: `${options.role} ${"x".repeat(index)}`,
+      });
+    }
+    return {
+      ok: true,
+      text: proposals[options.role] || synthesis,
+      model: options.model,
+      usage: { input: 1, output: 1, cost: 0, turns: 1 },
+      events: [],
+    };
+  };
+  const workflowDeps = deps(runDir, runChildAgent);
+  workflowDeps.schedulePanelUpdate = (callback) => {
+    scheduled++;
+    const timer = { callback };
+    timers.add(timer);
+    maxPending = Math.max(maxPending, timers.size);
+    return timer;
+  };
+  workflowDeps.cancelPanelUpdate = (timer) => {
+    if (timers.delete(timer)) cancelled++;
+  };
+
+  const summary = await fusion.runFusionWithDependencies(
+    {
+      request: "Design the feature",
+      cwd: process.cwd(),
+      onPanel: (panel) => panels.push(structuredClone(panel)),
+    },
+    workflowDeps,
+  );
+
+  assert.equal(summary.status, "COMPLETE");
+  assert.ok(scheduled <= 3, `expected at most one update window per child, received ${scheduled}`);
+  assert.equal(maxPending, 1, "parallel streams share one pending update window");
+  assert.equal(cancelled, scheduled, "terminal role updates cancel each pending model repaint");
+  assert.equal(timers.size, 0, "no model repaint remains after Fusion settles");
+  assert.ok(panels.length < 20, `expected bounded panel publications, received ${panels.length}`);
 });
 
 test("invalid proposal skips synthesis and cannot complete", async () => {

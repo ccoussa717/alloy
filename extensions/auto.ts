@@ -33,7 +33,7 @@ const {
   saveGlobalFusionConfig,
 } = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
-const { renderFusionPaneLines, renderFusionWidgetLines, renderPanelThemed, renderPanelLines } = require(
+const { createFusionLivePanel, renderFusionPaneLines, renderFusionWidgetLines, renderPanelThemed, renderPanelLines } = require(
   join(root, "lib", "agent-panel.mjs"),
 );
 const { resolveParentChildSpawnOpts } = require(
@@ -54,6 +54,7 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
       if (ctx?.mode === "rpc") {
         ui.setWidget("alloy-agents", renderFusionWidgetLines(panel), {
           placement: "aboveEditor",
+          data: createFusionLivePanel(panel),
         });
       } else {
         ui.setWidget(
@@ -627,6 +628,7 @@ export function registerAuto(pi: ExtensionAPI) {
       if (request.toLowerCase() === "help") {
         await showFusionLines(ctx, "Fusion help", [
           "/fusion <objective>  Run read-only Architect + Builder + Synthesizer",
+          "                     Stream each role in the native live dashboard",
           "/fusion setup        Select persistent role models and effort",
           "/fusion status       Show effective role settings",
         ]);

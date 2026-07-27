@@ -14,6 +14,19 @@ describe("redactDisplayText", () => {
     expect(redactDisplayText("Authorization: Digest username=admin, response=secret-response; opaque=secret")).toBe("Authorization: [REDACTED]")
   })
 
+  test("removes environment, URL, token, and multiline private-key credentials", () => {
+    const visible = redactDisplayText([
+      'AWS_SECRET_ACCESS_KEY="aws-secret-value"',
+      "remote=https://user:url-password@example.test/repo.git",
+      `github${"_pat_"}abcdefghijklmnopqrstuvwxyz123456`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\nprivate-key-material\n-----END ${"PRIVATE"} KEY-----`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\npartial-key-material`,
+    ].join("\n"))
+
+    expect(visible).toContain("[REDACTED]")
+    expect(visible).not.toMatch(/aws-secret-value|url-password|github_pat_|private-key-material|partial-key-material/)
+  })
+
   test("does not corrupt ordinary source and prose", () => {
     expect(redactDisplayText("const token = await lexer.next()")).toBe("const token = await lexer.next()")
     expect(redactDisplayText("type Credential = string")).toBe("type Credential = string")
