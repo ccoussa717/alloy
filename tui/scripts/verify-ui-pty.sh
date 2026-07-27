@@ -243,12 +243,31 @@ wait_for_text "$SESSION" 'fresh-model fake' >/dev/null
 
 tmux send-keys -t "$SESSION" -l "/model"
 tmux send-keys -t "$SESSION" Enter
-model_dialog="$(wait_for_text "$SESSION" 'Select model')"
-assert_contains "$model_dialog" "fake/fresh-model" "model selector replaces stale backend models"
+provider_dialog="$(wait_for_text "$SESSION" 'Select provider')"
+assert_contains "$provider_dialog" "fake" "model selector groups refreshed models by provider"
+assert_contains "$provider_dialog" "xai" "model selector includes the authenticated xAI provider"
 wait_for_log_count '"type":"get_available_models"' "$((model_refreshes + 2))"
+tmux send-keys -t "$SESSION" Down
 tmux send-keys -t "$SESSION" Enter
-wait_for_log '"type":"set_model","provider":"fake","modelId":"fresh-model"'
-wait_for_text "$SESSION" 'fresh-model fake' >/dev/null
+model_dialog="$(wait_for_text "$SESSION" 'Select xai model')"
+assert_contains "$model_dialog" "grok-model" "provider selection opens only that provider's models"
+tmux send-keys -t "$SESSION" Escape
+provider_back="$(wait_for_text "$SESSION" 'Select provider')"
+assert_contains "$provider_back" "> xai" "model escape returns to the previously selected provider"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'Select xai model' >/dev/null
+tmux send-keys -t "$SESSION" C-c
+sleep 0.1
+assert_not_contains "$(capture "$SESSION")" "Select xai model" "Ctrl+C closes the complete model selector"
+
+tmux send-keys -t "$SESSION" -l "/model"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'Select provider' >/dev/null
+tmux send-keys -t "$SESSION" Down
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'Select xai model' >/dev/null
+tmux send-keys -t "$SESSION" Enter
+wait_for_log '"type":"set_model","provider":"xai","modelId":"grok-model"'
 
 tmux send-keys -t "$SESSION" -l "/login-fixture"
 tmux send-keys -t "$SESSION" Enter

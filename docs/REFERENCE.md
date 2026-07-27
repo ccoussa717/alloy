@@ -113,7 +113,7 @@ response. Device-code flows continue polling in the background after presenting
 the code, leaving the command queue available; Alloy reports completion or
 failure in the TUI. Use `/login-cancel [provider]` to stop a pending device-code
 flow. `/model` refreshes the authenticated model catalog whenever the selector
-opens.
+opens, then groups available models by provider before model selection.
 Alloy rejects secret prompts because RPC input is intentionally not masked;
 enter API keys through environment variables or supported Pi configuration,
 not the TUI.

@@ -15,6 +15,7 @@ import {
   isStreamingTranscriptMessage,
   reduceRpcMessage,
   type ExtensionDialog,
+  type ModelInfo,
   type NotificationState,
   type RpcMessage,
   type SessionState,
@@ -72,6 +73,25 @@ export function extensionDialogResponse(
 
 export function latestNotifications(notifications: NotificationState[]): NotificationState[] {
   return notifications.slice(-8);
+}
+
+export function modelProviderOptions(models: ModelInfo[]): string[] {
+  return [...new Set(models.map((model) => model.provider))].sort((a, b) => a.localeCompare(b));
+}
+
+export function modelsForProvider(models: ModelInfo[], provider: string | undefined): ModelInfo[] {
+  if (!provider) return [];
+  return models.filter((model) => model.provider === provider).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export function initialDialogSelection(
+  dialog: ExtensionDialog | null,
+  localDialog: LocalDialog | null,
+  providers: string[],
+  provider: string | undefined,
+): number {
+  if (dialog || localDialog !== "model-provider") return 0;
+  return Math.max(0, providers.indexOf(provider ?? ""));
 }
 
 export function copySelectionToClipboard(
@@ -181,6 +201,7 @@ export function AlloyApp(props: AlloyAppProps) {
   const layout = createMemo(() => appLayout(dimensions().width, dimensions().height));
   const [session, setSession] = createSignal(props.initialState);
   const [localDialog, setLocalDialog] = createSignal<LocalDialog | null>(null);
+  const [modelProvider, setModelProvider] = createSignal<string>();
   const [dialogResult, setDialogResult] = createSignal<unknown>();
   const [selected, setSelected] = createSignal(0);
   const [dialogText, setDialogText] = createSignal("");
@@ -208,6 +229,7 @@ export function AlloyApp(props: AlloyAppProps) {
       setSession(next);
       if (sessionChanged) {
         setLocalDialog(null);
+        setModelProvider(undefined);
         setDialogResult(undefined);
       }
     });
@@ -264,14 +286,19 @@ export function AlloyApp(props: AlloyAppProps) {
   createEffect(() => {
     dialogKey();
     const dialog = extensionDialog();
-    setSelected(0);
+    const local = localDialog();
+    const selection = !dialog && local === "model-provider"
+      ? initialDialogSelection(null, local, modelProviderOptions(session().availableModels), modelProvider())
+      : 0;
+    setSelected(selection);
     setDialogText(dialog?.method === "editor" ? dialog.prefill ?? "" : "");
   });
 
   const options = createMemo(() => {
     const dialog = extensionDialog();
     if (dialog) return extensionDialogOptions(dialog);
-    if (localDialog() === "model") return session().availableModels.map((model) => `${model.provider}/${model.id}`);
+    if (localDialog() === "model-provider") return modelProviderOptions(session().availableModels);
+    if (localDialog() === "model") return modelsForProvider(session().availableModels, modelProvider()).map((model) => model.id);
     if (localDialog() === "thinking") return [...THINKING_LEVELS];
     return [];
   });
@@ -311,6 +338,7 @@ export function AlloyApp(props: AlloyAppProps) {
     }
     if (resolution.kind === "dialog") {
       setDialogResult(undefined);
+      if (resolution.dialog === "model-provider") setModelProvider(undefined);
       setLocalDialog(resolution.dialog);
       return true;
     }
@@ -427,16 +455,29 @@ export function AlloyApp(props: AlloyAppProps) {
       return;
     }
 
+    if (localDialog() === "model-provider") {
+      const provider = modelProviderOptions(session().availableModels)[selected()];
+      if (!provider) {
+        setLocalDialog(null);
+        setTimeout(() => composer?.focus(), 0);
+        return;
+      }
+      setModelProvider(provider);
+      setLocalDialog("model");
+      return;
+    }
     if (localDialog() === "model") {
-      const model = session().availableModels[selected()];
+      const model = modelsForProvider(session().availableModels, modelProvider())[selected()];
       if (!model) {
         setLocalDialog(null);
+        setModelProvider(undefined);
         setTimeout(() => composer?.focus(), 0);
         return;
       }
       const response = await request({ type: "set_model", provider: model.provider, modelId: model.id });
       if (!response?.success) return;
       setLocalDialog(null);
+      setModelProvider(undefined);
       setTimeout(() => composer?.focus(), 0);
       return;
     }
@@ -453,13 +494,18 @@ export function AlloyApp(props: AlloyAppProps) {
     setTimeout(() => composer?.focus(), 0);
   }
 
-  async function dismissDialog(): Promise<void> {
+  async function dismissDialog(backToProvider = true): Promise<void> {
     const response = cancelExtensionDialog({ session: session() });
     if (response) {
       await answerExtension(response);
       return;
     }
+    if (backToProvider && localDialog() === "model") {
+      setLocalDialog("model-provider");
+      return;
+    }
     setLocalDialog(null);
+    setModelProvider(undefined);
     setTimeout(() => composer?.focus(), 0);
   }
 
@@ -467,7 +513,7 @@ export function AlloyApp(props: AlloyAppProps) {
     if (event.ctrl && event.name === "c") {
       event.preventDefault();
       event.stopPropagation();
-      if (extensionDialog() || localDialog()) void dismissDialog();
+      if (extensionDialog() || localDialog()) void dismissDialog(false);
       else if (session().isStreaming) void request({ type: "abort" });
       else props.onExit(0);
       return;
@@ -542,7 +588,8 @@ export function AlloyApp(props: AlloyAppProps) {
   const hasDialog = createMemo(() => Boolean(extensionDialog() || localDialog()));
   const dialogTitle = createMemo(() => extensionDialog()?.title || {
     help: "Alloy help",
-    model: "Select model",
+    "model-provider": "Select provider",
+    model: `Select ${modelProvider() ?? "provider"} model`,
     thinking: "Thinking level",
     session: "Session statistics",
     export: "Export result",
@@ -710,9 +757,9 @@ export function AlloyApp(props: AlloyAppProps) {
                 </For>
               </scrollbox>
             </Show>
-            <Show when={localDialog() === "model" && options().length === 0}>
+            <Show when={(localDialog() === "model-provider" || localDialog() === "model") && options().length === 0}>
               <box paddingLeft={2} paddingRight={2}>
-                <text fg={theme.warning} wrapMode="word">No authenticated models available. Finish /login or run /doctor.</text>
+                <text fg={theme.warning} wrapMode="word">{localDialog() === "model-provider" ? "No authenticated providers available. Finish /login or run /doctor." : `No models available for ${modelProvider() ?? "this provider"}.`}</text>
               </box>
             </Show>
             <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
@@ -746,7 +793,7 @@ export function AlloyApp(props: AlloyAppProps) {
               <scrollbox maxHeight={Math.max(1, layout().height - 6)} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: false }}><text fg={theme.muted}>{displayText(dialogResult())}</text></scrollbox>
             </Show>
             <box paddingLeft={2} paddingRight={2} paddingTop={1}>
-              <text fg={theme.dim}>{options().length ? "Up/Down select | Enter confirm | Esc cancel" : "Enter close | Esc cancel"}</text>
+              <text fg={theme.dim}>{options().length ? `Up/Down select | Enter confirm | Esc ${localDialog() === "model" ? "back" : "cancel"}` : `Enter close | Esc ${localDialog() === "model" ? "back" : "cancel"}`}</text>
             </box>
           </box>
         </box>

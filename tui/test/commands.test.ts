@@ -73,7 +73,7 @@ describe("resolveSubmission", () => {
   });
 
   it("opens local evidence-backed selectors and help", () => {
-    expect(resolveSubmission("/model", context)).toEqual({ kind: "dialog", dialog: "model", clearInput: true });
+    expect(resolveSubmission("/model", context)).toEqual({ kind: "dialog", dialog: "model-provider", clearInput: true });
     expect(resolveSubmission("/thinking", context)).toEqual({ kind: "dialog", dialog: "thinking", clearInput: true });
     expect(resolveSubmission("/help", context)).toEqual({ kind: "dialog", dialog: "help", clearInput: true });
     expect(resolveSubmission("/quit", context)).toEqual({ kind: "exit", clearInput: true });
