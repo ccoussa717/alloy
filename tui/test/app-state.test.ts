@@ -8,6 +8,11 @@ import {
   extensionDialogOptions,
   extensionDialogResponse,
   fusionResultLayout,
+  fusionLiveCompact,
+  fusionLiveLayout,
+  fusionLiveOutputPreview,
+  fusionLiveRoleActivity,
+  fusionLiveStatusGlyph,
   fusionWidgetTone,
   initialDialogSelection,
   latestNotifications,
@@ -20,17 +25,23 @@ import {
 describe("integrated app state", () => {
   it("copies completed mouse selections to the terminal clipboard", () => {
     const copied: string[] = [];
+    let cleared = 0;
     const renderer = {
       copyToClipboardOSC52(text: string) {
         copied.push(text);
         return true;
       },
+      clearSelection() {
+        cleared++;
+      },
     };
 
     expect(copySelectionToClipboard(renderer, { getSelectedText: () => "https://auth.example.test" })).toBe(true);
     expect(copied).toEqual(["https://auth.example.test"]);
+    expect(cleared).toBe(1);
     expect(copySelectionToClipboard(renderer, { getSelectedText: () => "" })).toBe(false);
     expect(copied).toEqual(["https://auth.example.test"]);
+    expect(cleared).toBe(1);
   });
 
   it("reduces every backend message through the existing session reducer", () => {
@@ -189,5 +200,43 @@ describe("integrated app state", () => {
     expect(fusionWidgetTone(lines, lines[2]!, 2)).toBe("accent");
     expect(fusionWidgetTone(lines, lines[3]!, 3)).toBe("muted");
     expect(fusionWidgetTone(["ALLOY AUTO"], "ALLOY AUTO", 0)).toBe("muted");
+  });
+
+  it("keeps the native Fusion dashboard side by side without hiding the compact composer", () => {
+    expect(fusionLiveLayout(80, 24)).toEqual({ columns: true, maxHeight: 12 });
+    expect(fusionLiveLayout(40, 10)).toEqual({ columns: false, maxHeight: 4 });
+    expect(fusionLiveCompact(80, 24, true)).toBe(false);
+    expect(fusionLiveCompact(80, 11, true)).toBe(true);
+    expect(fusionLiveCompact(50, 24, true)).toBe(true);
+    expect(fusionLiveCompact(50, 30, true)).toBe(false);
+  });
+
+  it("bounds live role output to a single newest-line preview", () => {
+    const preview = fusionLiveOutputPreview(`old\n${"detail ".repeat(100)}CURRENT END`, 36);
+    expect(preview.length).toBeLessThanOrEqual(36);
+    expect(preview).toEndWith("CURRENT END");
+    expect(preview).not.toContain("\n");
+    const widePreview = fusionLiveOutputPreview("old 漢字😀 newest", 10);
+    expect(Bun.stringWidth(widePreview)).toBeLessThanOrEqual(10);
+    expect(widePreview).toEndWith("newest");
+  });
+
+  it("keeps terminal Fusion statuses visually distinct", () => {
+    expect(fusionLiveStatusGlyph("pending")).toBe("·");
+    expect(fusionLiveStatusGlyph("running")).toBe("●");
+    expect(fusionLiveStatusGlyph("ok")).toBe("✓");
+    expect(fusionLiveStatusGlyph("fail")).toBe("×");
+    expect(fusionLiveStatusGlyph("skip")).toBe("○");
+    const agent = {
+      role: "architect" as const,
+      status: "fail" as const,
+      model: "",
+      effort: "",
+      activity: "child timed out",
+      output: "",
+      events: [{ tool: "read", detail: "src/auth.ts", status: "running" as const }],
+    };
+    expect(fusionLiveRoleActivity(agent)).toBe("child timed out");
+    expect(fusionLiveRoleActivity({ ...agent, status: "running" })).toBe("using read · src/auth.ts");
   });
 });

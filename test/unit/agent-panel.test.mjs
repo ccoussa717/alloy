@@ -170,3 +170,92 @@ test("fusion live widget shows the objective and current role output", () => {
   assert.ok(Buffer.byteLength(JSON.stringify(hugeLines)) < 20_000);
   assert.match(hugeLines.join("\n"), /Visible activity/);
 });
+
+test("fusion live snapshots preserve bounded role output and tool activity", () => {
+  const p = panel.createPanelState({
+    title: "ALLOY FUSION",
+    runId: "fusion-structured",
+    objective: `Compare both approaches ${"carefully ".repeat(1_000)}`,
+  });
+  panel.setPhase(p, "PROPOSING");
+  panel.upsertAgent(p, {
+    role: "architect",
+    status: "running",
+    model: "anthropic/claude-fable-5",
+    effort: "high",
+    detail: "Analyzing boundaries",
+    output: `Reasoning summary ${"architecture ".repeat(2_000)}ARCHITECT END`,
+  });
+  panel.upsertAgent(p, {
+    role: "builder",
+    status: "running",
+    model: "openai-codex/gpt-5.6-sol",
+    effort: "medium",
+    detail: "Tracing implementation",
+  });
+  p.ticker = [
+    { agent: "architect", tool: "read", detail: "src/auth.ts", status: "running" },
+    { agent: "builder", tool: "grep", detail: "session boundary", status: "complete" },
+  ];
+
+  const live = panel.createFusionLivePanel(p);
+  assert.equal(live.kind, "alloy.fusion.live");
+  assert.equal(live.version, 1);
+  assert.equal(live.phase, "PROPOSING");
+  assert.match(live.objective, /^Compare both approaches/);
+  assert.deepEqual(live.agents.map((agent) => agent.role), ["architect", "builder", "synthesizer"]);
+  assert.match(live.agents[0].output, /ARCHITECT END$/);
+  assert.deepEqual(live.agents[0].events, [
+    { tool: "read", detail: "src/auth.ts", status: "running" },
+  ]);
+  assert.ok(Buffer.byteLength(JSON.stringify(live)) < 20_000);
+});
+
+test("fusion live snapshots stay below the transport limit after JSON escaping", () => {
+  const p = panel.createPanelState({
+    title: "ALLOY FUSION",
+    runId: "fusion-escaped",
+    objective: `Compare ${'"\\'.repeat(1_000)}`,
+  });
+  for (const role of ["architect", "builder", "synthesizer"]) {
+    panel.upsertAgent(p, {
+      role,
+      status: "running",
+      detail: '"\\'.repeat(1_000),
+      output: `${role.toUpperCase()} START ${'"\\'.repeat(6_000)} ${role.toUpperCase()} END`,
+    });
+  }
+
+  const live = panel.createFusionLivePanel(p);
+  assert.ok(Buffer.byteLength(JSON.stringify(live)) < 20_000);
+  assert.match(live.agents[2].output, /SYNTHESIZER END$/);
+});
+
+test("fusion live snapshots redact secrets before RPC publication", () => {
+  const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-redacted" });
+  panel.upsertAgent(p, {
+    role: "architect",
+    status: "running",
+    output: [
+      "Authorization: Bearer live-panel-secret",
+      "AWS_SECRET_ACCESS_KEY=aws-live-secret",
+      "remote=https://user:url-password@example.test/repo.git",
+      `github${"_pat_"}abcdefghijklmnopqrstuvwxyz123456`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\nprivate-key-material\n-----END ${"PRIVATE"} KEY-----`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\npartial-key-material`,
+    ].join("\n"),
+  });
+  p.ticker = [{
+    agent: "architect",
+    tool: "grep",
+    detail: "token=live-tool-secret",
+    status: "running",
+  }];
+
+  const serialized = JSON.stringify(panel.createFusionLivePanel(p));
+  const fallback = panel.renderFusionWidgetLines(p).join("\n");
+  assert.match(serialized, /\[REDACTED\]/);
+  assert.doesNotMatch(serialized, /live-panel-secret|live-tool-secret|aws-live-secret|url-password|github_pat_|private-key-material|partial-key-material/);
+  assert.match(fallback, /\[REDACTED\]/);
+  assert.doesNotMatch(fallback, /live-panel-secret|live-tool-secret|aws-live-secret|url-password|github_pat_|private-key-material|partial-key-material/);
+});

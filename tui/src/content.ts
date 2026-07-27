@@ -80,10 +80,13 @@ function secretKey(key: string): boolean {
 
 export function redactDisplayText(value: string): string {
   return value
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/g, REDACTED)
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi, `$1${REDACTED}@`)
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{20,}|(?:sk-(?:proj-)?|xai-)[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b/g, REDACTED)
     .replace(/((?:proxy[-_ ]?)?authorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\r\n]+)/gi, `$1${REDACTED}`)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
     .replace(
-      /((?:api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|password|passwd|cookie|client[-_ ]?secret|private[-_ ]?key|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+      /((?:api[-_ ]?key|access[-_ ]?key|secret[-_ ]?access[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|password|passwd|cookie|client[-_ ]?secret|private[-_ ]?key|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
       `$1${REDACTED}`,
     )
 }

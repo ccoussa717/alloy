@@ -137,7 +137,11 @@ by role, or combine independent proposals without changing terminals.
 `/fusion <objective>` is a plan-only coordinator. Architect and Builder inspect
 the same repository independently with repository-confined read tools. A
 Synthesizer runs only after both proposal contracts validate and returns one
-attributed recommendation.
+attributed recommendation. While the run is active, the native dashboard shows
+Architect and Builder side by side with visible model output and tool activity,
+then adds the Synthesizer below them. Compact terminals use a four-row summary
+that keeps the composer available. The completed attributed result remains in
+transcript scrollback.
 
 An eligible successful run launches exactly three routed child-agent roles.
 Each role may take multiple model turns while using read tools. Auth, abort,

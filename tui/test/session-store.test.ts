@@ -568,6 +568,151 @@ describe("extension UI events", () => {
     expect(state.editorText).toBe("queued prompt");
   });
 
+  it("stores validated Fusion live widget data and keeps generic fallback lines", () => {
+    const secret = [
+      "credential=live-panel-secret",
+      "AWS_SECRET_ACCESS_KEY=aws-live-secret",
+      "https://user:url-password@example.test/repo.git",
+      `gh${"p_"}abcdefghijklmnopqrstuvwxyz123456`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\nprivate-key-material\n-----END ${"PRIVATE"} KEY-----`,
+      `-----BEGIN ${"PRIVATE"} KEY-----\npartial-key-material`,
+    ].join("\n");
+    let state = reduceRpcMessage(createInitialState(), {
+      type: "extension_ui_request",
+      id: "fusion-widget-1",
+      method: "setWidget",
+      widgetKey: "alloy-agents",
+      widgetLines: ["Fusion fallback"],
+      widgetPlacement: "aboveEditor",
+      widgetData: {
+        kind: "alloy.fusion.live",
+        version: 1,
+        runId: "fusion-live",
+        phase: "PROPOSING",
+        objective: "Compare both approaches",
+        agents: [
+          {
+            role: "architect",
+            status: "running",
+            model: "anthropic/claude-fable-5",
+            effort: "high",
+            activity: "Analyzing boundaries",
+            output: secret,
+            events: [{ tool: "read", detail: "src/auth.ts", status: "running" }],
+          },
+          {
+            role: "builder",
+            status: "pending",
+            model: "",
+            effort: "",
+            activity: "Waiting",
+            output: "",
+            events: [],
+          },
+          {
+            role: "synthesizer",
+            status: "pending",
+            model: "",
+            effort: "",
+            activity: "Waiting",
+            output: "",
+            events: [],
+          },
+        ],
+      },
+    });
+
+    expect(state.widgets["alloy-agents"]?.lines).toEqual(["Fusion fallback"]);
+    expect(state.widgets["alloy-agents"]?.data).toMatchObject({
+      kind: "alloy.fusion.live",
+      version: 1,
+      objective: "Compare both approaches",
+    });
+    const visible = JSON.stringify(state.widgets["alloy-agents"]?.data);
+    expect(visible).toContain("[REDACTED]");
+    expect(visible).not.toMatch(/live-panel-secret|aws-live-secret|url-password|ghp_|private-key-material|partial-key-material/);
+
+    state = reduceRpcMessage(state, {
+      type: "extension_ui_request",
+      id: "fusion-widget-2",
+      method: "setWidget",
+      widgetKey: "alloy-agents",
+      widgetLines: ["Still usable"],
+      widgetData: {
+        kind: "alloy.fusion.live",
+        version: 1,
+        agents: [{ role: "architect", status: "running" }],
+      },
+    });
+    expect(state.widgets["alloy-agents"]).toEqual({
+      lines: ["Still usable"],
+      placement: "aboveEditor",
+    });
+  });
+
+  it("rejects structured Fusion panels above the transport byte limit", () => {
+    const oversizedOutput = "💡".repeat(4_096);
+    const state = reduceRpcMessage(createInitialState(), {
+      type: "extension_ui_request",
+      id: "fusion-widget-large",
+      method: "setWidget",
+      widgetKey: "alloy-agents",
+      widgetLines: ["Bounded fallback"],
+      widgetData: {
+        kind: "alloy.fusion.live",
+        version: 1,
+        runId: "fusion-large",
+        phase: "PROPOSING",
+        objective: "Compare both approaches",
+        agents: ["architect", "builder", "synthesizer"].map((role) => ({
+          role,
+          status: "running",
+          model: "provider/model",
+          effort: "medium",
+          activity: "Working",
+          output: oversizedOutput,
+          events: [],
+        })),
+      },
+    });
+
+    expect(state.widgets["alloy-agents"]).toEqual({
+      lines: ["Bounded fallback"],
+      placement: "aboveEditor",
+    });
+  });
+
+  it("rejects Fusion panels with malformed required text fields", () => {
+    const state = reduceRpcMessage(createInitialState(), {
+      type: "extension_ui_request",
+      id: "fusion-widget-malformed",
+      method: "setWidget",
+      widgetKey: "alloy-agents",
+      widgetLines: ["Malformed fallback"],
+      widgetData: {
+        kind: "alloy.fusion.live",
+        version: 1,
+        runId: "fusion-malformed",
+        phase: "PROPOSING",
+        objective: 42,
+        agents: ["architect", "builder", "synthesizer"].map((role) => ({
+          role,
+          status: "running",
+          model: "provider/model",
+          effort: "medium",
+          activity: "Working",
+          output: "Visible",
+          events: [],
+        })),
+      },
+    });
+
+    expect(state.widgets["alloy-agents"]).toEqual({
+      lines: ["Malformed fallback"],
+      placement: "aboveEditor",
+    });
+  });
+
   it("surfaces command, extension, backend, and fatal errors", () => {
     let state = reduceRpcMessage(createInitialState(), {
       type: "response",

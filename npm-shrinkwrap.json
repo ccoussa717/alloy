@@ -11,8 +11,8 @@
       "dependencies": {
         "@earendil-works/pi-agent-core": "0.82.1",
         "@earendil-works/pi-ai": "0.82.1",
-        "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-coding-agent-0.82.1.tgz",
-        "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-tui-0.82.1.tgz",
+        "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.6/earendil-works-pi-coding-agent-0.82.1.tgz",
+        "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.6/earendil-works-pi-tui-0.82.1.tgz",
         "@modelcontextprotocol/sdk": "1.29.0",
         "typebox": "1.1.38"
       },
@@ -527,8 +527,8 @@
     },
     "node_modules/@earendil-works/pi-coding-agent": {
       "version": "0.82.1",
-      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-coding-agent-0.82.1.tgz",
-      "integrity": "sha512-DOmpuWo172L1/PyFyvdnptgkCfSNe1P8dIHqbqlhqiuTxlQMKJHoPeRIn7iujdFjP1Bdw7tbMo92MHnQYRzVbA==",
+      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.6/earendil-works-pi-coding-agent-0.82.1.tgz",
+      "integrity": "sha512-PmKlKGGULUZ4ZgGPZcS3tR/J+9av8bnQ8G/hdzOwDaW0bTfIxLUl+woEvF4lkoBndYMYUHAv98vHMO4prT6fHg==",
       "license": "MIT",
       "dependencies": {
         "@earendil-works/pi-agent-core": "^0.82.1",
@@ -908,7 +908,7 @@
     },
     "node_modules/@earendil-works/pi-tui": {
       "version": "0.82.1",
-      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-tui-0.82.1.tgz",
+      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.6/earendil-works-pi-tui-0.82.1.tgz",
       "integrity": "sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==",
       "license": "MIT",
       "dependencies": {

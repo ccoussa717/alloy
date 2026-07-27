@@ -208,6 +208,46 @@ function handle(request: Record<string, unknown>): void {
                 ]
               : ["fixture widget"],
             widgetPlacement: "aboveEditor",
+            ...(fusionWidget
+              ? {
+                  widgetData: {
+                    kind: "alloy.fusion.live",
+                    version: 1,
+                    runId: "fusion-live",
+                    phase: "SYNTHESIZING",
+                    objective: "Compare both approaches",
+                    agents: [
+                      {
+                        role: "architect",
+                        status: "running",
+                        model: "anthropic/claude-fable-5",
+                        effort: "high",
+                        activity: "Analyzing boundaries",
+                        output: `${"Historical architecture detail ".repeat(100)}CURRENT ARCHITECTURE`,
+                        events: [{ tool: "read", detail: "path=src/auth.ts", status: "running" }],
+                      },
+                      {
+                        role: "builder",
+                        status: "running",
+                        model: "openai-codex/gpt-5.6-sol",
+                        effort: "medium",
+                        activity: "Tracing implementation",
+                        output: `${"Historical implementation detail ".repeat(100)}CURRENT IMPLEMENTATION`,
+                        events: [{ tool: "grep", detail: "pattern=session", status: "running" }],
+                      },
+                      {
+                        role: "synthesizer",
+                        status: "running",
+                        model: "anthropic/claude-fable-5",
+                        effort: "low",
+                        activity: "Comparing conclusions",
+                        output: `${"Historical synthesis detail ".repeat(100)}CURRENT SYNTHESIS`,
+                        events: [],
+                      },
+                    ],
+                  },
+                }
+              : {}),
           });
         }
       }, Number.isFinite(startupDelayMs) && startupDelayMs > 0 ? startupDelayMs : 0);
