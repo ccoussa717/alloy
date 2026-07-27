@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto"
+import { readFileSync, realpathSync } from "node:fs"
+import { homedir } from "node:os"
+import { join, sep } from "node:path"
+
 export type MessageRole = "user" | "assistant" | "tool" | "system" | "custom" | "unknown"
 
 export type FusionTranscriptUsage = {
@@ -418,6 +423,40 @@ function contentMedia(content: unknown): TranscriptBlock[] {
   })
 }
 
+function fusionArtifactUnavailable(details: UnknownRecord): UnknownRecord {
+  const message = "Full Fusion output unavailable: the run artifact could not be read safely."
+  const error = stringField(details, "error")
+  return { ...details, error: [error, message].filter(Boolean).join("; ") }
+}
+
+function hydrateFusionDetails(details: UnknownRecord | undefined): UnknownRecord | undefined {
+  if (!details || stringField(details, "bodyStorage") !== "artifact") return details
+  try {
+    const alloyHome = process.env.ALLOY_HOME || join(homedir(), ".pi", "alloy")
+    const runsRoot = realpathSync(join(alloyHome, "runs"))
+    const runDir = realpathSync(stringField(details, "runDir") || "")
+    const summaryPath = realpathSync(stringField(details, "summaryPath") || "")
+    if (!runDir.startsWith(`${runsRoot}${sep}`) || summaryPath !== join(runDir, "summary.json")) {
+      return fusionArtifactUnavailable(details)
+    }
+    const storedBytes = readFileSync(summaryPath)
+    const digest = createHash("sha256").update(storedBytes).digest("hex")
+    if (digest !== stringField(details, "summarySha256")) return fusionArtifactUnavailable(details)
+    const stored = recordValue(JSON.parse(storedBytes.toString("utf8")))
+    if (
+      !stored ||
+      stringField(stored, "kind") !== "fusion" ||
+      stringField(stored, "runId") !== stringField(details, "runId") ||
+      realpathSync(stringField(stored, "runDir") || "") !== runDir
+    ) {
+      return fusionArtifactUnavailable(details)
+    }
+    return stored
+  } catch {
+    return fusionArtifactUnavailable(details)
+  }
+}
+
 function customBlocks(message: UnknownRecord, role: string): TranscriptBlock[] {
   if (role === "bashExecution") {
     const command = redactDisplayText(stringField(message, "command") || "")
@@ -432,7 +471,7 @@ function customBlocks(message: UnknownRecord, role: string): TranscriptBlock[] {
 
   const name = redactDisplayText(stringField(message, "customType") || role || "custom")
   if (name === "alloy-fusion") {
-    const details = recordValue(field(message, "details"))
+    const details = hydrateFusionDetails(recordValue(field(message, "details")))
     if (details && stringField(details, "kind") === "fusion") {
       const efforts = recordValue(field(details, "requestedEfforts"))
       const normalizeUsage = (value: unknown): FusionTranscriptUsage => {
@@ -542,9 +581,10 @@ export function messageBlocks(message: unknown, options: MessageBlockOptions = {
   if (messageRole(value) === "tool") {
     const expanded = resultText(value)
     const preview = previewText(expanded, options)
+    const toolName = stringField(value, "toolName", "name", "tool") || "tool"
     const block: Extract<TranscriptBlock, { kind: "tool-result" }> = {
       kind: "tool-result",
-      name: stringField(value, "toolName", "name", "tool") || "tool",
+      name: toolName,
       isError: field(value, "isError") === true,
       preview: preview.text,
       expanded,
@@ -552,7 +592,16 @@ export function messageBlocks(message: unknown, options: MessageBlockOptions = {
     }
     const id = stringField(value, "toolCallId", "id", "callID")
     if (id !== undefined) block.id = id
-    return [block, ...contentMedia(field(value, "content"))]
+    const details = recordValue(field(value, "details"))
+    const fusion = toolName === "alloy_fusion" && details && stringField(details, "kind") === "fusion"
+      ? customBlocks({
+          role: "custom",
+          customType: "alloy-fusion",
+          content: field(value, "content"),
+          details,
+        }, "custom")
+      : []
+    return [block, ...fusion, ...contentMedia(field(value, "content"))]
   }
 
   if (messageRole(value) === "custom") return customBlocks(value, role)

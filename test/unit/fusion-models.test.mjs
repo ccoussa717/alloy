@@ -196,27 +196,56 @@ test("fusion proposal and synthesis contracts are validated", () => {
     false,
   );
 
-  const synthesis = `## Consensus
-Shared conclusions.
+  const synthesis = `## Agreements
+Shared conclusions supported by both models.
 
-## Architect contributions
-Architecture-specific value.
+## Disagreements
+- Architect: Prefer a stricter boundary.
+- Builder: Prefer a smaller implementation.
+- Status: resolved — preserve the boundary while limiting scope.
 
-## Builder contributions
-Implementation-specific value.
-
-## Conflicts and resolution
-Tradeoffs and choice.
-
-## Rejected claims
-Unsupported ideas.
-
-## Final recommendation
-One actionable answer.`;
+## Consensus
+- Decision: Preserve the boundary and ship the smallest safe slice.
+- Caveats: Validate the boundary with integration tests.`;
   assert.equal(fusion.validateFusionSynthesis(synthesis).ok, true);
   assert.equal(
     fusion.validateFusionSynthesis(
-      synthesis.replace("## Final recommendation", "## Maybe"),
+      synthesis.replace("## Consensus", "## Recommendation"),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    fusion.validateFusionSynthesis(
+      synthesis.replace("- Builder: Prefer a smaller implementation.\n", ""),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    fusion.validateFusionSynthesis(
+      synthesis.replace("- Status: resolved", "- Status: uncertain"),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    fusion.validateFusionSynthesis(
+      synthesis.replace("- Decision: Preserve", "- Suggestion: Preserve"),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    fusion.validateFusionSynthesis(
+      synthesis
+        .replace("- Status: resolved — preserve the boundary while limiting scope.", "- Status: none")
+        .replace("- Architect: Prefer a stricter boundary.", "- Architect: Keep the boundary."),
+    ).ok,
+    false,
+  );
+  assert.equal(
+    fusion.validateFusionSynthesis(
+      synthesis.replace(
+        "- Decision: Preserve the boundary and ship the smallest safe slice.",
+        "- Decision: x",
+      ),
     ).ok,
     false,
   );
@@ -238,8 +267,8 @@ One actionable answer.`;
   assert.equal(
     fusion.validateFusionSynthesis(
       synthesis.replace(
-        "## Architect contributions\nArchitecture-specific value.\n\n## Builder contributions",
-        "## Builder contributions\nImplementation-specific value.\n\n## Architect contributions",
+        "## Agreements\nShared conclusions supported by both models.\n\n## Disagreements",
+        "## Disagreements\nModel differences.\n\n## Agreements",
       ),
     ).ok,
     false,
