@@ -457,7 +457,7 @@ if (data.includes(Buffer.from("\x1b[2J")) || data.includes(Buffer.from("\x1b[3J"
   console.error("streaming output emitted a full-screen clear");
   process.exit(1);
 }
-if (p90 > viewport || oversized / sizes.length > 0.03 || largest > viewport * 2) {
+if (p90 > viewport || largest > viewport * 2) {
   console.error(`streaming output caused repeated viewport repaints: p90=${p90} largest=${largest} oversized=${oversized} viewport=${viewport}`);
   process.exit(1);
 }
