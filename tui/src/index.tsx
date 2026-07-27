@@ -59,8 +59,9 @@ async function main(): Promise<number> {
     await client.start();
 
     let initial: SessionState = createInitialState();
+    await client.request({ type: "get_state" });
     await Promise.all(
-      ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats"].map((type) =>
+      ["get_messages", "get_commands", "get_available_models", "get_session_stats", "get_sidebar_state"].map((type) =>
         client.request({ type }),
       ),
     );
@@ -95,6 +96,7 @@ async function main(): Promise<number> {
           client={client}
           initialState={initial}
           version={process.env.ALLOY_VERSION || "dev"}
+          cwd={process.env.ALLOY_RPC_CWD || process.cwd()}
           subscribe={subscribe}
           onExit={finish}
         />

@@ -1,7 +1,139 @@
 import { describe, expect, it } from "bun:test";
-import { createInitialState, isStreamingTranscriptMessage, reduceRpcMessage } from "../src/session-store";
+import { createInitialState, isStreamingTranscriptMessage, reduceRpcMessage, type SessionState } from "../src/session-store";
 
 describe("session store snapshots", () => {
+  it("hydrates and fully replaces the active session sidebar snapshot", () => {
+    let state = reduceRpcMessage(createInitialState(), {
+      type: "response",
+      command: "get_state",
+      success: true,
+      data: {
+        thinkingLevel: "off",
+        isStreaming: false,
+        isCompacting: false,
+        steeringMode: "one-at-a-time",
+        followUpMode: "one-at-a-time",
+        sessionId: "session-1",
+        autoCompactionEnabled: false,
+        messageCount: 0,
+        pendingMessageCount: 0,
+      },
+    });
+    state = reduceRpcMessage(state, {
+      type: "response",
+      command: "get_sidebar_state",
+      success: true,
+      data: {
+        sessionId: "session-1",
+        context: { tokens: 1200, contextWindow: 200000, percent: 0.6, cost: 0.01 },
+        mcp: [
+          { name: "open-brain", status: "connected", toolCount: 3, transport: "http" },
+          { name: "broken", status: "failed", error: "Authorization: Bearer secret-value" },
+        ],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      },
+    });
+
+    expect(state.sidebarSnapshot?.mcp.map((item) => item.name)).toEqual(["open-brain", "broken"]);
+    expect(state.sidebarSnapshot?.mcp[1]?.error).toContain("[REDACTED]");
+    expect(state.sidebarSnapshot?.mcp[1]?.error).not.toContain("secret-value");
+
+    state = reduceRpcMessage(state, {
+      type: "sidebar_state_updated",
+      data: {
+        sessionId: "session-1",
+        context: { tokens: 1500, contextWindow: 200000, percent: 0.75, cost: 0.02 },
+        mcp: [{ name: "open-brain", status: "disconnected", transport: "http" }],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      },
+    });
+    expect(state.sidebarSnapshot?.mcp).toEqual([
+      { name: "open-brain", status: "disconnected", transport: "http" },
+    ]);
+  });
+
+  it("rejects stale sidebar updates and clears the snapshot on session replacement", () => {
+    let state: SessionState = { ...createInitialState(), sessionId: "session-1" };
+    state = reduceRpcMessage(state, {
+      type: "sidebar_state_updated",
+      data: {
+        sessionId: "stale-session",
+        context: { tokens: null, contextWindow: null, percent: null, cost: 0 },
+        mcp: [],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      },
+    });
+    expect(state.sidebarSnapshot).toBeNull();
+
+    state = {
+      ...state,
+      sidebarSnapshot: {
+        sessionId: "session-1",
+        context: { tokens: 1, contextWindow: 10, percent: 10, cost: 0 },
+        mcp: [],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      },
+    };
+    state = reduceRpcMessage(state, {
+      type: "response",
+      command: "get_state",
+      success: true,
+      data: {
+        thinkingLevel: "off",
+        isStreaming: false,
+        isCompacting: false,
+        steeringMode: "one-at-a-time",
+        followUpMode: "one-at-a-time",
+        sessionId: "session-2",
+        autoCompactionEnabled: false,
+        messageCount: 0,
+        pendingMessageCount: 0,
+      },
+    });
+    expect(state.sidebarSnapshot).toBeNull();
+  });
+
+  it("bounds and redacts every sidebar string that can reach the display", () => {
+    const sessionId = "s".repeat(501);
+    let state: SessionState = { ...createInitialState(), sessionId };
+    state = reduceRpcMessage(state, {
+      type: "sidebar_state_updated",
+      data: {
+        sessionId,
+        context: { tokens: 1, contextWindow: 10, percent: 10, cost: 0 },
+        mcp: [],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      },
+    });
+    expect(state.sidebarSnapshot).toBeNull();
+
+    state = { ...state, sessionId: "session-1" };
+    state = reduceRpcMessage(state, {
+      type: "sidebar_state_updated",
+      data: {
+        sessionId: "session-1",
+        context: { tokens: 1, contextWindow: 10, percent: 10, cost: 0 },
+        mcp: [{ name: "api_key = server-secret", status: "failed", error: "credential: error-secret" }],
+        lsp: {
+          supported: true,
+          enabled: true,
+          items: [{ id: "password=id-secret", root: "token = root-secret", status: "error", error: "token = lsp-error-secret" }],
+        },
+        todos: [{ content: "credential = todo-secret", status: "pending", priority: "high" }],
+      },
+    });
+    const visible = JSON.stringify(state.sidebarSnapshot);
+    expect(visible).toContain("[REDACTED]");
+    for (const secret of ["server-secret", "error-secret", "id-secret", "root-secret", "lsp-error-secret", "todo-secret"]) {
+      expect(visible).not.toContain(secret);
+    }
+  });
+
   it("hydrates session metadata from get_state without mutating prior state", () => {
     const initial = createInitialState();
     const model = { id: "claude-sonnet", provider: "anthropic", name: "Sonnet" };

@@ -12,6 +12,7 @@ import {
   modelProviderOptions,
   modelsForProvider,
   reduceAppRpcMessage,
+  sidebarLayout,
 } from "../src/app";
 
 describe("integrated app state", () => {
@@ -149,5 +150,13 @@ describe("integrated app state", () => {
       composerMaxHeight: 6,
       modalWidth: 60,
     });
+  });
+
+  it("auto-shows a 42-column rail only above 120 columns and overlays narrow terminals", () => {
+    expect(sidebarLayout(120, null)).toEqual({ visible: false, overlay: false, width: 0, mainWidth: 120 });
+    expect(sidebarLayout(121, null)).toEqual({ visible: true, overlay: false, width: 42, mainWidth: 79 });
+    expect(sidebarLayout(80, true)).toEqual({ visible: true, overlay: true, width: 42, mainWidth: 80 });
+    expect(sidebarLayout(40, true)).toEqual({ visible: true, overlay: true, width: 40, mainWidth: 40 });
+    expect(sidebarLayout(160, false)).toEqual({ visible: false, overlay: false, width: 0, mainWidth: 160 });
   });
 });

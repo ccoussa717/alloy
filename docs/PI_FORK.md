@@ -17,12 +17,12 @@ RPC modes also invoke Pi directly, without the OpenTUI frontend.
 |---|---|
 | Package version | `0.82.1` |
 | Fork | https://github.com/ccoussa717/pi |
-| Source commit | `9afa8a78188b62720a5a8adffaa47c20df909116` |
-| Release | `alloy-tui-v0.82.1.3` |
+| Source commit | `b42956dcad823402644268724b630a3c2bea6df5` |
+| Release | `alloy-tui-v0.82.1.4` |
 
 | Package | Artifact | SHA-256 | npm integrity |
 |---|---|---|---|
-| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `5e728f09c6cf3e022ea53dea26a34b9629dd45c98e13fc90ad4fd104ccb705fb` | `sha512-iP5BE0WOf8IwZShuTnDsbcvtD6/iCeRQDuEXWu5cmwNGlZRgEGYgrXueka9/jY0vWL9IzhtO1GjBIsqTjZIWCw==` |
+| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `6e6f689d9863b52ac1e998960c49d96907a1b73a774b021724fee8537928fb52` | `sha512-LN6elyJO4LNL89R7NUH5/fb74QpNv6rjJpLGR4XpxdPL0fj/7R5mYh29ieVBBFy4GtQ3R/6Il8/coOCukMYnEw==` |
 | `@earendil-works/pi-tui` | `earendil-works-pi-tui-0.82.1.tgz` | `6c939c4515c6742895e4d4c6e5926a5c735a7789d20250284dbef510efa5959c` | `sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==` |
 
 `package.json` records the same values under `alloy.piFork`.

@@ -181,6 +181,18 @@ function handle(request: Record<string, unknown>): void {
         cost: 0,
       });
       return;
+    case "get_sidebar_state":
+      respond(request, {
+        sessionId: "pty-session",
+        context: { tokens: 150, contextWindow: 200000, percent: 0.075, cost: 0.01 },
+        mcp: [
+          { name: "fixture-mcp", status: "connected", toolCount: 3, transport: "stdio" },
+          { name: "offline-mcp", status: "failed", error: "fixture connection refused", transport: "http" },
+        ],
+        lsp: { supported: false, enabled: false, items: [] },
+        todos: [],
+      });
+      return;
     case "prompt":
     case "steer": {
       const text = typeof request.message === "string" ? request.message : "";

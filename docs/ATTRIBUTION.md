@@ -7,12 +7,12 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Field | Value |
 |---|---|
 | Package | `@earendil-works/pi-coding-agent` |
-| Version | `0.82.1` plus Alloy viewport patch |
+| Version | `0.82.1` plus Alloy viewport and structured sidebar RPC patches |
 | License | **MIT** |
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
 | Alloy fork | https://github.com/ccoussa717/pi |
-| Runtime artifact | `alloy-tui-v0.82.1.3`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
+| Runtime artifact | `alloy-tui-v0.82.1.4`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
 
 See [PI_FORK.md](./PI_FORK.md) for the source commit, artifact hashes,
 dependency-graph decision, upgrade procedure, and rollback procedure.
@@ -83,8 +83,9 @@ dependency.
 ## What Alloy owns (divergence from bare Pi)
 
 Alloy does **not** vendor or patch Pi sources in-tree. The public fork changes
-only interactive viewport behavior, transcript navigation, and standard user
-message presentation. The remaining divergence is additive:
+only interactive viewport behavior, transcript navigation, standard user
+message presentation, and the bounded structured sidebar RPC state seam. The
+remaining divergence is additive:
 
 | Alloy surface | Role |
 |---|---|

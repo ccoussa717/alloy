@@ -29,6 +29,7 @@ import parsers from "./parsers-config";
 import { activityAnimationInterval, activityFrame, activityLabel, splashDivider } from "./presentation";
 import { syntaxStyle } from "./syntax";
 import { theme } from "./theme";
+import { Sidebar } from "./sidebar";
 
 addDefaultParsers(parsers.parsers);
 
@@ -120,10 +121,23 @@ export function appLayout(width: number, height: number) {
   };
 }
 
+export function sidebarLayout(width: number, manual: boolean | null) {
+  const visible = manual ?? width > 120;
+  const overlay = visible && width <= 120;
+  const sidebarWidth = visible ? Math.min(42, width) : 0;
+  return {
+    visible,
+    overlay,
+    width: sidebarWidth,
+    mainWidth: overlay ? width : Math.max(0, width - sidebarWidth),
+  };
+}
+
 export interface AlloyAppProps {
   client: RpcClient;
   initialState: SessionState;
   version: string;
+  cwd: string;
   subscribe: (listener: (message: ClientRpcMessage) => void) => () => void;
   onExit: (code: number) => void;
 }
@@ -208,7 +222,9 @@ export function AlloyApp(props: AlloyAppProps) {
   const renderer = useRenderer();
   useSelectionHandler((selection) => copySelectionToClipboard(renderer, selection));
   const dimensions = useTerminalDimensions();
-  const layout = createMemo(() => appLayout(dimensions().width, dimensions().height));
+  const [manualSidebar, setManualSidebar] = createSignal<boolean | null>(null);
+  const sidebar = createMemo(() => sidebarLayout(dimensions().width, manualSidebar()));
+  const layout = createMemo(() => appLayout(sidebar().mainWidth, dimensions().height));
   const [sessionStore, setSessionStore] = createStore(props.initialState);
   const session = () => sessionStore;
   const [localDialog, setLocalDialog] = createSignal<LocalDialog | null>(null);
@@ -395,7 +411,7 @@ export function AlloyApp(props: AlloyAppProps) {
   function refresh(): Promise<void> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
-      for (const type of ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats"]) {
+      for (const type of ["get_state", "get_messages", "get_commands", "get_available_models", "get_session_stats", "get_sidebar_state"]) {
         const response = await request({ type });
         if (!response?.success) return;
       }
@@ -429,6 +445,10 @@ export function AlloyApp(props: AlloyAppProps) {
     }
     if (resolution.kind === "exit") {
       props.onExit(0);
+      return true;
+    }
+    if (resolution.kind === "toggle-sidebar") {
+      setManualSidebar(!sidebar().visible);
       return true;
     }
     if (resolution.kind === "dialog") {
@@ -718,6 +738,7 @@ export function AlloyApp(props: AlloyAppProps) {
   }[localDialog() ?? "help"]);
 
   return (
+    <box width={dimensions().width} height={dimensions().height} flexDirection="row" backgroundColor={theme.background}>
     <box width={layout().width} height={layout().height} flexDirection="column" backgroundColor={theme.background}>
       <Show when={layout().showIdentity}>
         <box height={1} flexShrink={0} paddingLeft={layout().horizontalPadding} paddingRight={layout().horizontalPadding} flexDirection="row" justifyContent="space-between">
@@ -971,6 +992,15 @@ export function AlloyApp(props: AlloyAppProps) {
           </box>
         </box>
       </Show>
+    </box>
+    <Show when={sidebar().visible && !sidebar().overlay}>
+      <Sidebar snapshot={session().sidebarSnapshot} cwd={props.cwd} version={props.version} width={sidebar().width} height={dimensions().height} />
+    </Show>
+    <Show when={sidebar().overlay}>
+      <box position="absolute" zIndex={2000} left={dimensions().width - sidebar().width} top={0} width={sidebar().width} height={dimensions().height}>
+        <Sidebar snapshot={session().sidebarSnapshot} cwd={props.cwd} version={props.version} width={sidebar().width} height={dimensions().height} />
+      </box>
+    </Show>
     </box>
   );
 }

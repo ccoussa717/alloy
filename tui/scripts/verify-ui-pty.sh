@@ -6,6 +6,7 @@ FIXTURE="$ROOT/test/fixtures/fake-alloy-rpc.ts"
 BUN_BIN="$(command -v bun)"
 BASE="alloy-ui-pty-$$"
 SESSION="$BASE-main"
+WIDE="$BASE-wide"
 NARROW="$BASE-narrow"
 RESTORE="$BASE-restore"
 LOSS="$BASE-loss"
@@ -22,7 +23,7 @@ REMOTE_ON_OUTPUT="$ROOT/test/fixtures/.$BASE-remote-on.raw"
 STREAM_OUTPUT="$ROOT/test/fixtures/.$BASE-stream.raw"
 
 cleanup() {
-  for session in "$SESSION" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
   rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$STREAM_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
@@ -210,6 +211,29 @@ wait_for_log '"type":"get_messages"'
 wait_for_log '"type":"get_commands"'
 wait_for_log '"type":"get_available_models"'
 wait_for_log '"type":"get_session_stats"'
+wait_for_log '"type":"get_sidebar_state"'
+assert_not_contains "$initial" "CONTEXT" "sidebar stays hidden by default at 80 columns"
+
+tmux send-keys -t "$SESSION" -l "/sidebar"
+tmux send-keys -t "$SESSION" Enter
+narrow_sidebar="$(wait_for_text "$SESSION" 'fixture-mcp')"
+assert_contains "$narrow_sidebar" "CONTEXT" "manual sidebar opens as a narrow overlay"
+assert_contains "$narrow_sidebar" "hydrated history item" "narrow overlay preserves the transcript"
+assert_contains "$narrow_sidebar" "Not available yet" "unsupported sidebar sections are truthful placeholders"
+sleep 0.1
+if grep -F '"message":"/sidebar"' "$LOG" >/dev/null; then
+  printf '/sidebar was forwarded to the backend\n' >&2
+  exit 1
+fi
+tmux send-keys -t "$SESSION" -l "/sidebar"
+tmux send-keys -t "$SESSION" Enter
+wait_for_absence "$SESSION" 'CONTEXT' >/dev/null
+
+tmux new-session -d -s "$WIDE" -x 140 -y 30 "$RUN"
+wide_sidebar="$(wait_for_text "$WIDE" 'fixture-mcp')"
+assert_contains "$wide_sidebar" "CONTEXT" "wide terminals show the sidebar automatically"
+assert_contains "$wide_sidebar" "hydrated history item" "wide rail leaves the transcript usable"
+tmux kill-session -t "$WIDE"
 
 tmux send-keys -t "$SESSION" -l "/pl"
 slash_hints="$(wait_for_text "$SESSION" 'Switch to Plan mode')"
