@@ -106,6 +106,28 @@ EOF
 }
 
 collect_pages() {
+  local session="$1" pages="$2" output="" page=0 previous="" current="" attempts=0 wheel_up=""
+  wheel_up="$(printf '\033[<64;10;4M')"
+  output="$(capture "$session")"
+  while [ "$page" -lt "$pages" ]; do
+    previous="$(capture "$session")"
+    tmux send-keys -t "$session" -l "$wheel_up"
+    attempts=0
+    current="$previous"
+    while [ "$attempts" -lt 20 ] && [ "$current" = "$previous" ]; do
+      sleep 0.05
+      current="$(capture "$session")"
+      attempts=$((attempts + 1))
+    done
+    [ "$current" = "$previous" ] && break
+    output="$output
+$current"
+    page=$((page + 1))
+  done
+  printf '%s' "$output"
+}
+
+collect_full_pages() {
   local session="$1" pages="$2" output="" page=0
   output="$(capture "$session")"
   while [ "$page" -lt "$pages" ]; do
@@ -573,7 +595,7 @@ tmux send-keys -t "$SPLASH" C-c
 
 tmux new-session -d -s "$FUSION_WIDE" -x 140 -y 30 "$FUSION_RUN"
 wait_for_text "$FUSION_WIDE" 'artifacts:' >/dev/null
-fusion_wide="$(collect_pages "$FUSION_WIDE" 4)"
+fusion_wide="$(collect_pages "$FUSION_WIDE" 40)"
 assert_contains "$fusion_wide" "FUSION // COMPLETE" "140x30 hydrated Fusion header"
 assert_line_contains_both "$fusion_wide" "ARCHITECT" "BUILDER" "140x30 Fusion keeps role cards side by side"
 assert_contains "$fusion_wide" "SYNTHESIZER" "140x30 Fusion synthesis remains full-width below proposals"
@@ -584,7 +606,7 @@ tmux kill-session -t "$FUSION_WIDE"
 
 tmux new-session -d -s "$FUSION_MEDIUM" -x 80 -y 24 "$FUSION_RUN"
 wait_for_text "$FUSION_MEDIUM" 'artifacts:' >/dev/null
-fusion_medium="$(collect_pages "$FUSION_MEDIUM" 4)"
+fusion_medium="$(collect_full_pages "$FUSION_MEDIUM" 4)"
 assert_contains "$fusion_medium" "ARCHITECT" "80x24 stacked Fusion preserves Architect"
 assert_contains "$fusion_medium" "BUILDER" "80x24 stacked Fusion preserves Builder"
 assert_contains "$fusion_medium" "SYNTHESIZER" "80x24 stacked Fusion preserves synthesis"
@@ -592,7 +614,7 @@ tmux kill-session -t "$FUSION_MEDIUM"
 
 tmux new-session -d -s "$FUSION_COMPACT" -x 40 -y 10 "$FUSION_RUN"
 wait_for_text "$FUSION_COMPACT" 'artifacts:' >/dev/null
-fusion_compact="$(collect_pages "$FUSION_COMPACT" 20)"
+fusion_compact="$(collect_full_pages "$FUSION_COMPACT" 20)"
 assert_contains "$fusion_compact" "ARCHITECT" "40x10 stacked Fusion preserves Architect"
 assert_contains "$fusion_compact" "BUILDER" "40x10 stacked Fusion preserves Builder"
 assert_contains "$fusion_compact" "SYNTHESIZER" "40x10 stacked Fusion preserves synthesis"
