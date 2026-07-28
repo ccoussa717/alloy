@@ -16,7 +16,7 @@ import type {
 } from "@earendil-works/pi-ai";
 type AuthRuntime = Pick<
   ModelRuntime,
-  "getProviders" | "getProvider" | "login" | "logout" | "listCredentials"
+  "getProviders" | "getProvider" | "getProviderAuthStatus" | "login" | "logout" | "listCredentials"
 >;
 type AuthUI = ExtensionCommandContext["ui"];
 type ActiveLogin = { controller: AbortController; provider: Provider; widgetKey: string };
@@ -148,7 +148,13 @@ export function registerAuthCommands(
             ctx.ui.notify(`No OAuth providers are available. ${API_KEY_GUIDANCE}`, "warning");
             return;
           }
-          provider = await selectProvider(ctx, "Login with OAuth", providers, controller.signal);
+          provider = await selectProvider(
+            ctx,
+            "Login with OAuth",
+            providers,
+            runtime,
+            controller.signal,
+          );
           if (!provider) {
             controller.abort();
             ctx.ui.notify("Login cancelled.", "info");
@@ -409,7 +415,7 @@ function getActiveRuntime(ctx: ExtensionCommandContext): AuthRuntime {
 function isAuthRuntime(runtime: unknown): runtime is AuthRuntime {
   if (!runtime || typeof runtime !== "object") return false;
   const candidate = runtime as Record<string, unknown>;
-  return ["getProviders", "getProvider", "login", "logout", "listCredentials"].every(
+  return ["getProviders", "getProvider", "getProviderAuthStatus", "login", "logout", "listCredentials"].every(
     (method) => typeof candidate[method] === "function",
   );
 }
@@ -432,9 +438,12 @@ async function selectProvider(
   ctx: ExtensionCommandContext,
   title: string,
   providers: readonly Provider[],
+  runtime: AuthRuntime,
   signal: AbortSignal,
 ): Promise<Provider | undefined> {
-  const options = providers.map((provider) => `${provider.name} (${provider.id})`);
+  const options = providers.map((provider) =>
+    `${provider.name} (${provider.id})\t${runtime.getProviderAuthStatus(provider.id).configured ? "configured" : "not configured"}`,
+  );
   const selected = await ctx.ui.select(title, options, { signal });
   return selected ? providers[options.indexOf(selected)] : undefined;
 }

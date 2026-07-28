@@ -43,6 +43,9 @@ and releases use semantic versioning during the 0.x development series.
   and made newest-output previews terminal-cell aware.
 - Restored the transient green copy confirmation after mouse-selection clipboard
   writes complete.
+- Fixed completed browser-based provider logins leaving an orphaned fallback
+  prompt or unfocused composer, and added green `configured` and gray
+  `not configured` status labels to every provider in `/login`.
 
 ## [0.8.2] - 2026-07-24
 

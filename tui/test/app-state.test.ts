@@ -6,6 +6,7 @@ import {
   copySelectionToClipboard,
   createAppState,
   extensionDialogOptions,
+  extensionDialogOptionPresentation,
   extensionDialogResponse,
   fusionResultLayout,
   fusionLiveCompact,
@@ -99,6 +100,44 @@ describe("integrated app state", () => {
       id: "confirm-1",
       confirmed: true,
     });
+  });
+
+  it("separates provider configuration status from the selectable value", () => {
+    expect(extensionDialogOptionPresentation("Anthropic (anthropic)\tconfigured")).toEqual({
+      label: "Anthropic (anthropic)",
+      status: "configured",
+    });
+    expect(extensionDialogOptionPresentation("OpenAI Codex (openai-codex)\tnot configured")).toEqual({
+      label: "OpenAI Codex (openai-codex)",
+      status: "not configured",
+    });
+    expect(extensionDialogOptionPresentation("ordinary option")).toEqual({ label: "ordinary option" });
+    expect(extensionDialogResponse({
+      id: "provider-select",
+      method: "select",
+      title: "Login with OAuth",
+      options: ["Anthropic (anthropic)\tconfigured"],
+    }, 0, "")).toEqual({
+      type: "extension_ui_response",
+      id: "provider-select",
+      value: "Anthropic (anthropic)\tconfigured",
+    });
+  });
+
+  it("closes a dialog when the RPC host resolves it without client input", () => {
+    let state = reduceAppRpcMessage(createAppState(), {
+      type: "extension_ui_request",
+      id: "oauth-fallback",
+      method: "input",
+      title: "Complete login",
+    });
+    state = reduceAppRpcMessage(state, {
+      type: "extension_ui_request",
+      id: "oauth-fallback",
+      method: "close",
+    });
+
+    expect(state.session.extensionDialogs).toEqual({ order: [], byId: {} });
   });
 
   it("keeps at least the latest eight notifications visible", () => {
