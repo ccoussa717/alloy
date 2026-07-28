@@ -1,5 +1,6 @@
 import type { ModelInfo, SlashCommand } from "./session-store";
 import type { RpcMessage } from "./rpc-client";
+import { OPENTUI_COMMANDS } from "../../lib/opentui-commands.mjs";
 
 export interface CommandContext {
   isStreaming: boolean;
@@ -14,7 +15,7 @@ export interface CommandSuggestion {
   source: "local" | NonNullable<SlashCommand["source"]>;
 }
 
-export type LocalDialog = "help" | "model-provider" | "model" | "thinking" | "session" | "export";
+export type LocalDialog = "model-provider" | "model" | "thinking" | "session" | "export";
 
 export type SubmissionResolution =
   | { kind: "none" }
@@ -32,18 +33,12 @@ export type SubmissionResolution =
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-const LOCAL_COMMANDS: CommandSuggestion[] = [
-  { name: "help", description: "Show Alloy help", aliases: [], source: "local" },
-  { name: "new", description: "Start a new session", aliases: [], source: "local" },
-  { name: "clone", description: "Clone the current session", aliases: [], source: "local" },
-  { name: "compact", description: "Compact session context", aliases: [], source: "local" },
-  { name: "session", description: "Show session statistics", aliases: [], source: "local" },
-  { name: "export", description: "Export the session to HTML", aliases: [], source: "local" },
-  { name: "model", description: "Select the active model", aliases: [], source: "local" },
-  { name: "thinking", description: "Select the thinking level", aliases: [], source: "local" },
-  { name: "sidebar", description: "Toggle workspace sidebar", aliases: [], source: "local" },
-  { name: "quit", description: "Exit Alloy", aliases: ["exit", "q"], source: "local" },
-];
+const LOCAL_COMMANDS: CommandSuggestion[] = OPENTUI_COMMANDS.map((command) => ({
+  name: command.name,
+  description: command.description,
+  aliases: [...command.aliases],
+  source: "local",
+}));
 
 function fuzzySubsequence(query: string, value: string): boolean {
   let index = 0;
@@ -112,7 +107,7 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
   const args = firstSpace === -1 ? "" : value.slice(firstSpace + 1).trim();
 
   if (name === "/quit" || name === "/exit" || name === "/q") return { kind: "exit", clearInput: true };
-  if (name === "/help" && !args) return { kind: "dialog", dialog: "help", clearInput: true };
+  if (name === "/help") return request({ type: "prompt", message: value }, { refresh: true });
   if (name === "/new") return request({ type: "new_session" }, { refresh: true });
   if (name === "/clone") return request({ type: "clone" }, { refresh: true });
   if (name === "/compact") {
@@ -147,9 +142,11 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
     const commandName = name.slice(1);
     const registered = context.commands.find((command) => command.name.replace(/^\//, "").toLowerCase() === commandName);
     if (!registered) return { kind: "error", message: `Unknown command: ${name}` };
-    if (registered.source === "extension") {
-      return request({ type: "prompt", message: value }, { refresh: true });
-    }
+    return request({
+      type: "prompt",
+      message: value,
+      ...(context.isStreaming ? { streamingBehavior: "steer" } : {}),
+    }, { refresh: true });
   }
 
   return request({ type: context.isStreaming ? "steer" : "prompt", message: value });

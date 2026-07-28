@@ -45,10 +45,11 @@ affiliated with or endorsed by OpenCode.
 
 ## Quick start
 
-**Requires:** macOS or Linux x64/arm64 with `curl`, `tar`, `unzip`, and
+**Requires:** macOS or glibc-based Linux x64/arm64 with `curl`, `tar`, `unzip`, and
 `sha256sum` or `shasum`. The installer reuses Node.js 22.19+ when available and
 otherwise installs a checksum-verified Node runtime. It always installs the
-checksum-verified Bun 1.3.14 artifact selected for the host.
+checksum-verified Bun 1.3.14 artifact selected for the host. Alpine and other
+musl-based Linux distributions are not supported.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
@@ -57,54 +58,60 @@ curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | 
 alloy
 ```
 
-The installer writes only to your user directories, needs no `sudo`, and
-installs Alloy, its bundled Pi runtime, pinned npm dependencies, Bun 1.3.14,
-and the TUI's frozen production dependencies under `~/.local`. Writable,
-regular Bash and Zsh startup files are updated
-automatically. For another shell or symlinked dotfiles, add `~/.local/bin` to
-`PATH` or run `~/.local/bin/alloy` directly. The convenience command resolves
-`main` once and installs that exact commit. To pin both the installer and source
-snapshot, use the same full commit SHA in both places:
+The installer writes only to your user directories, needs no `sudo`, and puts
+the complete managed installation under `~/.local`. Writable, regular Bash and
+Zsh startup files are updated automatically. For another shell or symlinked
+dotfiles, add `~/.local/bin` to `PATH` or run `~/.local/bin/alloy` directly.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/<full-commit-sha>/install.sh \
-  | ALLOY_REF=<full-commit-sha> bash
-```
-
-Contributors should install from a clone instead:
-
-```bash
-git clone https://github.com/ccoussa717/alloy.git
-cd alloy
-npm ci
-bun install --cwd tui --frozen-lockfile
-npm link
-```
+Launch Alloy from the project you want it to inspect:
 
 ```bash
 cd /path/to/your-project
 alloy
 ```
 
-On first run, connect only the providers you intend to use:
+On first run, connect one OAuth provider and select a model:
 
 ```text
-/login                 # OAuth/subscription routes in the OpenTUI shell
-/login xai             # Grok subscription route
-/doctor                # provider, model, and path checks; never secret values
+/login                 # choose and connect one OAuth/subscription provider
+/login xai             # direct shorthand for the Grok subscription route
 /model                 # choose the active model
 ```
 
-OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
-so Alloy does not accept API keys in an interactive prompt; use provider
-environment variables or Pi model configuration for API-key routes.
+Run `/login` again for each additional provider. The selector labels every route
+`configured` or `not configured`. Green `configured` means Alloy found valid
+local credential or configuration evidence; an actual prompt is the end-to-end
+authentication check. Use `/doctor` when setup or model discovery fails.
 
-Then work in native chat or choose a workflow:
+OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
+so Alloy does not accept API keys in an interactive prompt. Use provider
+environment variables or `~/.pi/agent/models.json` for API-key routes.
+
+Then ask a direct question or choose a workflow:
 
 ```text
+Explain the authentication flow in this repository
 /remember this project uses pnpm
 /fusion Plan a safe authentication refactor
 /auto Add the approved health-check endpoint
+```
+
+The convenience installer resolves `main` once and installs that exact commit.
+To pin both the installer and source snapshot, use the same full commit SHA:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/<full-commit-sha>/install.sh \
+  | ALLOY_REF=<full-commit-sha> bash
+```
+
+Contributors should install both dependency graphs from a clone:
+
+```bash
+git clone https://github.com/ccoussa717/alloy.git
+cd alloy
+npm ci
+npm run tui:install
+npm link
 ```
 
 See the [complete command and configuration reference](docs/REFERENCE.md) for
@@ -231,7 +238,8 @@ repository diagnostics are host processes. Read the
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
 | `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
 | `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
-| `/help commands` | Show the complete active Pi and Alloy command registry. |
+| `/help` | Browse topics; use `/help search <query>` or `/help commands` for discovery. |
+| `/help commands` | Show the complete active OpenTUI and Alloy backend command registry. |
 
 The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
 routes, permission profiles, configuration examples, filesystem layout, and

@@ -12,6 +12,8 @@ const context: CommandContext = {
   commands: [
     { name: "mode", source: "extension" },
     { name: "help", source: "extension" },
+    { name: "review-prompt", source: "prompt" },
+    { name: "skill:testing", source: "skill" },
   ],
   models: [
     { id: "claude-sonnet", provider: "anthropic", name: "Sonnet" },
@@ -78,16 +80,20 @@ describe("resolveSubmission", () => {
     });
   });
 
-  it("opens local evidence-backed selectors and help", () => {
+  it("opens local evidence-backed selectors", () => {
     expect(resolveSubmission("/model", context)).toEqual({ kind: "dialog", dialog: "model-provider", clearInput: true });
     expect(resolveSubmission("/thinking", context)).toEqual({ kind: "dialog", dialog: "thinking", clearInput: true });
-    expect(resolveSubmission("/help", context)).toEqual({ kind: "dialog", dialog: "help", clearInput: true });
     expect(resolveSubmission("/quit", context)).toEqual({ kind: "exit", clearInput: true });
     expect(resolveSubmission("/sidebar", context)).toEqual({ kind: "toggle-sidebar", clearInput: true });
   });
 
-  it("keeps bare help local but sends help arguments to the registered backend command", () => {
-    expect(resolveSubmission("/help", context)).toEqual({ kind: "dialog", dialog: "help", clearInput: true });
+  it("sends bare and topic help to the searchable backend command", () => {
+    expect(resolveSubmission("/help", context)).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/help" },
+      clearInput: true,
+      refresh: true,
+    });
     expect(resolveSubmission("/help auth", context)).toEqual({
       kind: "request",
       request: { type: "prompt", message: "/help auth" },
@@ -103,10 +109,22 @@ describe("resolveSubmission", () => {
     });
   });
 
-  it("runs registered extension commands as prompts even while streaming", () => {
+  it("runs every registered command through prompt expansion while streaming", () => {
     expect(resolveSubmission("/mode build", { ...context, isStreaming: true })).toEqual({
       kind: "request",
-      request: { type: "prompt", message: "/mode build" },
+      request: { type: "prompt", message: "/mode build", streamingBehavior: "steer" },
+      clearInput: true,
+      refresh: true,
+    });
+    expect(resolveSubmission("/review-prompt src", { ...context, isStreaming: true })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/review-prompt src", streamingBehavior: "steer" },
+      clearInput: true,
+      refresh: true,
+    });
+    expect(resolveSubmission("/skill:testing focused", { ...context, isStreaming: true })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/skill:testing focused", streamingBehavior: "steer" },
       clearInput: true,
       refresh: true,
     });
@@ -144,7 +162,7 @@ describe("commandSuggestions", () => {
   it("merges local and hydrated commands without duplicate names", () => {
     const suggestions = commandSuggestions("/", commands);
     expect(suggestions.filter((command) => command.name === "help")).toHaveLength(1);
-    expect(suggestions.find((command) => command.name === "help")?.description).toBe("Show Alloy help");
+    expect(suggestions.find((command) => command.name === "help")?.description).toBe("Browse and search Alloy help");
     expect(suggestions.some((command) => command.name === "plan")).toBe(true);
     expect(suggestions.filter((command) => command.name === "sidebar")).toHaveLength(1);
   });
