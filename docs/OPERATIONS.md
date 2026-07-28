@@ -18,17 +18,22 @@ curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | 
   or invoke it directly.
 - [ ] `alloy --version` prints Alloy, Pi, and Node versions.
 - [ ] `alloy --list-models` starts the bundled Pi runtime with Alloy resources.
+- [ ] The host is macOS or glibc-based Linux; Alpine and other musl-based Linux
+  distributions are unsupported.
 
 The pre-release command fetches a mutable installer from `main`, then resolves
 and installs one exact source commit. Pin both the raw installer URL and
 `ALLOY_REF` to the same full commit SHA when both must be immutable.
-Contributors should use `npm ci && npm link` from a clone. Do not use `npm
-install` because release dependencies are governed by `npm-shrinkwrap.json`.
+Contributors should use `npm ci && npm run tui:install && npm link` from a clone.
+Do not use `npm install` because release dependencies are governed by
+`npm-shrinkwrap.json` and `tui/bun.lock`.
 
 ## Provider setup
 
-- [ ] Run `/login` only for providers you intend to use.
+- [ ] Run `/login` once for each provider you intend to use.
 - [ ] Run `/doctor`; it must report credential shape without secret values.
+- [ ] Treat green `configured` as local evidence, then send a prompt to verify
+  end-to-end authentication.
 - [ ] Confirm `/whoami` reports harness facts rather than model guesses.
 
 Pi owns provider authentication and stores credentials under
@@ -69,6 +74,7 @@ host processes rather than Docker-sandboxed Bash.
 
 ```bash
 npm ci
+npm run tui:install
 npm run ci:local
 ```
 

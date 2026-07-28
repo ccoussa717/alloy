@@ -267,6 +267,8 @@ function handle(request: Record<string, unknown>): void {
       respond(request, {
         commands: [
           { name: "mode", description: "Select Alloy mode", source: "extension" },
+          { name: "help", description: "Browse and search Alloy help", source: "extension" },
+          { name: "skill:testing", description: "Run the testing skill", source: "skill" },
           { name: "plan", description: "Switch to Plan mode", source: "extension" },
           { name: "build", description: "Switch to Build mode", source: "extension" },
           { name: "approval", description: "Open approval", source: "extension" },
@@ -274,6 +276,8 @@ function handle(request: Record<string, unknown>): void {
           { name: "login-fixture", description: "Open authentication input", source: "extension" },
           { name: "login-status-fixture", description: "Show provider login status", source: "extension" },
           { name: "login-complete-fixture", description: "Complete authentication externally", source: "extension" },
+          { name: "panel-fixture", description: "Keep a panel below the editor", source: "extension" },
+          { name: "panel-clear-fixture", description: "Clear the retained panel", source: "extension" },
           { name: "editor-fixture", description: "Populate the composer", source: "extension" },
           { name: "backend-loss", description: "Terminate the fixture backend", source: "extension" },
         ],
@@ -323,6 +327,14 @@ function handle(request: Record<string, unknown>): void {
       send({ type: "message_end", message: message("user", text) });
       if (text === "/approval") {
         send({ type: "extension_ui_request", id: "approval-1", method: "confirm", title: "Allow fixture tool?", message: "Approve the PTY fixture." });
+      } else if (text === "/help") {
+        send({
+          type: "extension_ui_request",
+          id: "help-1",
+          method: "select",
+          title: "Alloy help - pick a topic",
+          options: ["search <query>  - search all help", "overview       What is Alloy?", "commands       All slash commands"],
+        });
       } else if (text === "/cancel") {
         send({ type: "extension_ui_request", id: "cancel-1", method: "input", title: "Cancel this request", placeholder: "Escape must cancel" });
       } else if (text === "/login-fixture") {
@@ -371,6 +383,22 @@ function handle(request: Record<string, unknown>): void {
             message: "OAuth login completed externally.",
           });
         }, 500);
+      } else if (text === "/panel-fixture") {
+        send({
+          type: "extension_ui_request",
+          id: "panel-fixture",
+          method: "setWidget",
+          widgetKey: "panel-fixture",
+          widgetLines: ["PANEL", "retained result", "use /panel to clear"],
+          widgetPlacement: "belowEditor",
+        });
+      } else if (text === "/panel-clear-fixture") {
+        send({
+          type: "extension_ui_request",
+          id: "panel-clear-fixture",
+          method: "setWidget",
+          widgetKey: "panel-fixture",
+        });
       } else if (text === "/editor-fixture") {
         send({ type: "extension_ui_request", id: "editor-1", method: "set_editor_text", text: "seed" });
       } else if (text === "hold") {
@@ -394,6 +422,7 @@ function handle(request: Record<string, unknown>): void {
       return;
     case "extension_ui_response":
       send({ type: "extension_ui_response", id: request.id });
+      if (request.id === "help-1") return;
       send({
         type: "extension_ui_request",
         id: `notice-${request.id}`,

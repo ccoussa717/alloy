@@ -216,6 +216,8 @@ describe("TUI release policy and SBOM", () => {
     assert.equal(pkg.alloy.tuiRelease.packageConsumerInteractiveInstall, "unsupported");
     assert.match(pkg.scripts["audit:release"], /cd tui && bun audit --production/);
     assert.match(pkg.scripts["audit:release"], /npm audit[\s\S]*bun audit/);
+    assert.match(pkg.scripts.setup, /npm run tui:install/);
+    assert.match(pkg.scripts.bootstrap, /npm run tui:install/);
 
     const publish = run(process.execPath, [join(root, "scripts", "verify-release.mjs"), "--publish"]);
     assert.notEqual(publish.status, 0);

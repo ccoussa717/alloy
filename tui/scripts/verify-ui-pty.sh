@@ -14,6 +14,7 @@ SPLASH="$BASE-splash"
 REMOTE_AUTO="$BASE-remote-auto"
 REMOTE_ON="$BASE-remote-on"
 STREAM="$BASE-stream"
+COMMAND_STREAM="$BASE-command-stream"
 FUSION_WIDE="$BASE-fusion-wide"
 FUSION_MEDIUM="$BASE-fusion-medium"
 FUSION_COMPACT="$BASE-fusion-compact"
@@ -29,7 +30,7 @@ STREAM_OUTPUT="$ROOT/test/fixtures/.$BASE-stream.raw"
 FAKE_ALLOY_HOME="$ROOT/test/fixtures/.$BASE-home"
 
 cleanup() {
-  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$FUSION_WIDE" "$FUSION_MEDIUM" "$FUSION_COMPACT" "$FUSION_WIDGET" "$FUSION_WIDGET_COMPACT" "$EARLY_TERM" "$EARLY_INT"; do
+  for session in "$SESSION" "$WIDE" "$NARROW" "$RESTORE" "$LOSS" "$SPLASH" "$REMOTE_AUTO" "$REMOTE_ON" "$STREAM" "$COMMAND_STREAM" "$FUSION_WIDE" "$FUSION_MEDIUM" "$FUSION_COMPACT" "$FUSION_WIDGET" "$FUSION_WIDGET_COMPACT" "$EARLY_TERM" "$EARLY_INT"; do
     tmux has-session -t "$session" 2>/dev/null && tmux kill-session -t "$session" || true
   done
   rm -f "$LOG" "$SELECTION_OUTPUT" "$REMOTE_AUTO_OUTPUT" "$REMOTE_ON_OUTPUT" "$STREAM_OUTPUT" "$ROOT/test/fixtures/.$BASE-early-"*.log "$ROOT/test/fixtures/.$BASE-early-"*.pid
@@ -269,6 +270,13 @@ wait_for_log '"type":"get_session_stats"'
 wait_for_log '"type":"get_sidebar_state"'
 assert_not_contains "$initial" "CONTEXT" "sidebar stays hidden by default at 80 columns"
 
+tmux send-keys -t "$SESSION" -l "/help"
+tmux send-keys -t "$SESSION" Enter
+help_picker="$(wait_for_text "$SESSION" 'Alloy help - pick a topic')"
+assert_contains "$help_picker" "All slash commands" "bare help opens the searchable topic picker"
+tmux send-keys -t "$SESSION" Escape
+wait_for_log '"id":"help-1","cancelled":true'
+
 tmux send-keys -t "$SESSION" -l "/sidebar"
 tmux send-keys -t "$SESSION" Enter
 narrow_sidebar="$(wait_for_text "$SESSION" 'fixture-mcp')"
@@ -328,6 +336,18 @@ wait_for_text "$SESSION" 'Select Alloy mode' >/dev/null
 tmux send-keys -t "$SESSION" Escape
 wait_for_absence "$SESSION" 'Select Alloy mode' >/dev/null
 tmux send-keys -t "$SESSION" BSpace BSpace
+
+tmux send-keys -t "$SESSION" -l "/panel-fixture"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'retained result' >/dev/null
+tmux send-keys -t "$SESSION" -l "/pl"
+panel_hints="$(wait_for_text "$SESSION" '> /plan')"
+assert_contains "$panel_hints" "retained result" "retained panel remains visible with slash hints"
+tmux send-keys -t "$SESSION" Escape
+tmux send-keys -t "$SESSION" BSpace BSpace BSpace
+tmux send-keys -t "$SESSION" -l "/panel-clear-fixture"
+tmux send-keys -t "$SESSION" Enter
+wait_for_absence "$SESSION" 'retained result' >/dev/null
 
 tmux pipe-pane -t "$SESSION" -o "$(pipe_capture_command "$SELECTION_OUTPUT")"
 selection_drag="$(printf '\033[<0;3;1M\033[<32;7;1M')"
@@ -563,10 +583,25 @@ if (p90 > viewport || largest > viewport * 2) {
 NODE
 tmux kill-session -t "$STREAM"
 
+tmux new-session -d -s "$COMMAND_STREAM" -x 80 -y 24 "$RUN"
+wait_for_text "$COMMAND_STREAM" 'hydrated history item 50' >/dev/null
+tmux send-keys -t "$COMMAND_STREAM" -l "hold"
+tmux send-keys -t "$COMMAND_STREAM" Enter
+wait_for_text "$COMMAND_STREAM" 'Working' >/dev/null
+tmux send-keys -t "$COMMAND_STREAM" -l "/skill:testing focused"
+tmux send-keys -t "$COMMAND_STREAM" Enter
+wait_for_log '"type":"prompt","message":"/skill:testing focused","streamingBehavior":"steer"'
+tmux kill-session -t "$COMMAND_STREAM"
+
 tmux new-session -d -s "$NARROW" -x 40 -y 10 "$RUN"
 narrow_launch="$(wait_for_text "$NARROW" 'hydrated history item 50')"
 assert_contains "$narrow_launch" "hydrated history item 50" "40x10 hydration"
 assert_contains "$narrow_launch" "Ask anything" "40x10 composer"
+tmux send-keys -t "$NARROW" -l "/login-"
+narrow_long_hint="$(wait_for_text "$NARROW" '/login-complete-fixture')"
+assert_contains "$narrow_long_hint" "/login-complete-fixture" "40x10 slash hints preserve long command names"
+tmux send-keys -t "$NARROW" Escape
+tmux send-keys -t "$NARROW" BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux send-keys -t "$NARROW" -l "/pl"
 narrow_hints="$(wait_for_text "$NARROW" '> /plan')"
 assert_contains "$narrow_hints" "/plan" "40x10 slash hints remain visible"
@@ -611,6 +646,7 @@ assert_contains "$lost" "LOSS_CHECK:RESTORED:1" "backend loss exits nonzero and 
 tmux new-session -d -s "$SPLASH" -x 80 -y 24 "$SPLASH_RUN"
 splash="$(wait_for_text "$SPLASH" 'MULTI-MODEL CODING HARNESS')"
 assert_contains "$splash" "──────────────────────────" "green splash divider"
+assert_contains "$splash" "Type / for commands | /help for guides" "empty state advertises command discovery"
 tmux send-keys -t "$SPLASH" C-c
 
 tmux new-session -d -s "$FUSION_WIDE" -x 140 -y 30 "$FUSION_RUN"
@@ -660,4 +696,4 @@ assert_contains "$fusion_widget_compact" "SYNTHESIZER" "40x10 live Fusion widget
 assert_contains "$fusion_widget_compact" "Ask anything" "40x10 live Fusion widget preserves composer"
 tmux kill-session -t "$FUSION_WIDGET_COMPACT"
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, provider login status, externally completed login dismissal, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, provider login status, externally completed login dismissal, searchable help, retained-panel autocomplete, streaming command expansion, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, first-run hint, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

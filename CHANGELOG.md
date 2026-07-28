@@ -32,6 +32,8 @@ and releases use semantic versioning during the 0.x development series.
 - Updated the forked terminal runtime with mouse-wheel transcript scrolling,
   sticky-tail restoration, image-safe navigation, and sanitized model activity
   labels. Both coding-agent and TUI artifacts are source- and integrity-pinned.
+- Unified OpenTUI slash-command metadata across autocomplete and searchable help,
+  and added a quiet first-run command-discovery hint.
 
 ### Fixed
 
@@ -46,6 +48,9 @@ and releases use semantic versioning during the 0.x development series.
 - Fixed completed browser-based provider logins leaving an orphaned fallback
   prompt or unfocused composer, and added green `configured` and gray
   `not configured` status labels to every provider in `/login`.
+- Kept slash autocomplete available beside retained workflow panels, preserved
+  long command names on compact terminals, and expanded recognized prompt and
+  skill commands correctly when submitted during streaming.
 
 ## [0.8.2] - 2026-07-24
 

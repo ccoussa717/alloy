@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
   appLayout,
+  autocompleteCapacityForLayout,
   cancelExtensionDialog,
   cancelExtensionDialogById,
+  commandSuggestionLayout,
   copySelectionToClipboard,
   createAppState,
   extensionDialogOptions,
@@ -201,6 +203,31 @@ describe("integrated app state", () => {
       showComposerMeta: true,
       composerMaxHeight: 6,
       modalWidth: 60,
+    });
+  });
+
+  it("budgets retained panel rows without suppressing slash autocomplete", () => {
+    expect(autocompleteCapacityForLayout(appLayout(80, 24), 4, 1, [{
+      placement: "belowEditor",
+      lines: ["PANEL", "retained result", "use /panel to clear"],
+    }])).toBe(5);
+  });
+
+  it("budgets wrapped retained panel rows on compact terminals", () => {
+    expect(autocompleteCapacityForLayout(appLayout(40, 10), 0, 0, [{
+      placement: "belowEditor",
+      lines: ["x".repeat(72)],
+    }])).toBe(5);
+  });
+
+  it("preserves long command names before descriptions on compact terminals", () => {
+    expect(commandSuggestionLayout(40, ["login-complete-fixture"])).toEqual({
+      nameWidth: 36,
+      showDescriptions: false,
+    });
+    expect(commandSuggestionLayout(80, ["plan", "login-complete-fixture"])).toEqual({
+      nameWidth: 25,
+      showDescriptions: true,
     });
   });
 

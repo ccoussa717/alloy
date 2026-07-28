@@ -63,17 +63,19 @@ Pi events into render state.
 ## Extension UI bridge
 
 Pi extensions continue to call the existing UI API. RPC events bridge
-`select`, `confirm`, `input`, `editor`, `notify`, `setStatus`, `setWidget`,
+`select`, `confirm`, `input`, `editor`, `close`, `notify`, `setStatus`, `setWidget`,
 `setTitle`, and editor text into Solid/OpenTUI. Dialog answers return as
 `extension_ui_response`; cancellation is explicit. This keeps permissions,
 Alloy commands, OAuth prompts, and workflow status below the frontend boundary.
 
 Commands that Pi previously implemented only inside its renderer are replaced
-with RPC-compatible extensions: `/resume`, `/tree`, `/fork`, `/reload`, `/name`,
-`/hotkeys`, `/login`, and `/logout`. `/new`, `/compact`, `/session`, `/export`,
-`/model`, and `/thinking` are frontend-local controls backed by typed Pi RPC
-requests. Other Alloy extension commands are submitted to Pi through the prompt
-command path.
+with RPC-compatible extensions: `/help`, `/resume`, `/tree`, `/fork`, `/reload`,
+`/name`, `/hotkeys`, `/login`, `/login-cancel`, and `/logout`. `/new`, `/clone`,
+`/compact`, `/session`, `/export`, `/model`, `/thinking`, and `/sidebar` are
+frontend-local controls backed by typed Pi RPC requests or local layout state.
+Other recognized Alloy extension commands execute through Pi's prompt command
+path. Prompt-template and skill commands expand in Pi before their resulting
+prompts are queued with steer behavior during streaming.
 
 OpenTUI `/login` permits OAuth only. Secret/API-key prompts are rejected because
 the RPC input bridge is intentionally not an unmasked secret-entry surface. API

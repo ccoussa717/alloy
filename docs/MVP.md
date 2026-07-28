@@ -18,13 +18,13 @@ not a backlog of unfinished ideas.
 11. **Sub-agents** — `/agent`, `/agents`, profiles, live agent panel.
 12. **Docker sandbox** — `/permissions sandbox` routes bash through a session container (`node:22-bookworm`, network none by default). Fail closed if Docker is missing.
 13. **Mode and permissions UX** — Shift+Tab cycles Build / Plan; `/permissions` controls approval profiles; `/effort` controls thinking levels.
-14. **Help** — `/help`, `/help <topic>`, `/help search <query>`, and `/help commands` for the complete active command registry.
+14. **Help** — `/help`, `/help <topic>`, `/help search <query>`, and `/help commands` for the complete active OpenTUI and backend command registry.
 15. **Honesty policy** — Mandatory no-fabrication policy; `/whoami` for harness identity.
 16. **Child isolation** — Scrubbed env, policy ceiling, credential boundary, process-group kill (see `docs/SECURITY.md`).
 17. **Interactive shell** — Node launcher to pinned Bun 1.3.14, Solid 1.9.12, and OpenTUI 0.4.5, with Pi as a strict local RPC child.
 18. **Extension UI bridge** — Pi extension select, confirm, input, editor, notifications, status, widgets, title, and editor text render in OpenTUI.
 19. **Pi backend** — Tools, credentials, policy, sessions, extension lifecycle, compaction, `@files`, AGENTS.md, and model registry remain Pi-owned. Print, JSON, and RPC modes run Pi directly.
-20. **Session command compatibility** — OpenTUI local commands cover new, compact, session stats, export, model, and thinking. RPC-compatible extensions cover resume, tree, fork, reload, name, hotkeys, login, and logout.
+20. **Session command compatibility** — OpenTUI local commands cover new, clone, compact, session stats, export, model, thinking, sidebar, and quit. RPC-compatible extensions cover help, resume, tree, fork, reload, name, hotkeys, login, login cancellation, and logout.
 
 ## Out (deferred)
 

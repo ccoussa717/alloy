@@ -19,7 +19,7 @@ Docker is optional locally and required by CI.
 
 ```bash
 npm ci
-bun install --cwd tui --frozen-lockfile
+npm run tui:install
 npm link
 alloy --version
 ```

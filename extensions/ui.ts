@@ -699,13 +699,13 @@ export function registerUi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("alloy", {
-    description: "Alloy help and version",
+    description: "Show Alloy version and runtime",
     handler: async (_args, ctx) => {
       await ctx.ui.select("Alloy", [
         `Alloy v${VERSION}`,
-        "OpenCode splash · letter-spaced terminal wordmark · green #1FE07A",
+        "Pi runtime with the Solid/OpenTUI shell",
         "",
-        "/agent  /agents  Ctrl+Shift+A  Shift+Tab  /effort  /help",
+        "Use /help for guides or /help commands for the active command list",
       ]);
     },
   });

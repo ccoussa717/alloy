@@ -6,12 +6,14 @@ the product overview and fastest setup path, start with the
 
 ## Requirements and installation
 
-- macOS or Linux x64/arm64 for the default interactive frontend
+- macOS or glibc-based Linux x64/arm64 for the default interactive frontend;
+  Alpine and other musl-based distributions are unsupported
 - Node.js 22.19+ and Bun 1.3.14
 - `curl`, `tar`, `unzip`, and `sha256sum` or `shasum`
 - Git for repository workflows
 - Docker only when using the sandbox permission profile or running the complete
   release verification suite
+- `tmux` only for contributor PTY and full local verification
 
 The npm package is not published. The one-command source installer reuses
 Node.js 22.19+ when available. Otherwise it downloads the official Node.js
@@ -42,14 +44,14 @@ Contributors should install from a clone:
 git clone https://github.com/ccoussa717/alloy.git
 cd alloy
 npm ci
-bun install --cwd tui --frozen-lockfile
+npm run tui:install
 npm link
 alloy --version
 ```
 
 Contributors must use `npm ci`, not `npm install`, for the Pi/backend tree and
-`bun install --cwd tui --frozen-lockfile` for the frontend tree. The two lock
-files govern separate dependency graphs.
+`npm run tui:install` for the Bun frontend tree. The two lock files govern
+separate dependency graphs.
 
 ## Launch and CLI options
 
@@ -82,7 +84,9 @@ Bash, C, C++, Go, Java, Python, and Rust parsers. These parser assets are
 available offline and verified against `tui/assets/parsers/manifest.json` during
 release checks.
 
-Print, JSON, and explicit RPC invocations bypass OpenTUI and run Pi directly.
+Print, JSON, explicit RPC, positional initial prompts, and `@file` arguments
+bypass OpenTUI and run Pi directly. Positional prompt and file handoff remain on
+the Pi renderer until OpenTUI owns an equivalent startup-input contract.
 Useful Pi CLI flags pass through the Alloy launcher:
 
 ```bash
@@ -106,7 +110,10 @@ The legacy Pi UI is not the default or a parallel product surface.
 ## Authentication and providers
 
 Pi owns provider authentication and stores credentials in
-`~/.pi/agent/auth.json`. In the OpenTUI shell, `/login` supports OAuth only.
+`~/.pi/agent/auth.json`. In the OpenTUI shell, `/login` supports OAuth only and
+connects one selected provider at a time. Run it again for each additional
+provider; `/login xai` selects the Grok route directly. Provider choices show
+green `configured` or gray `not configured` status.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting
@@ -115,8 +122,8 @@ failure in the TUI. Use `/login-cancel [provider]` to stop a pending device-code
 flow. `/model` refreshes the authenticated model catalog whenever the selector
 opens, then groups available models by provider before model selection.
 Alloy rejects secret prompts because RPC input is intentionally not masked;
-enter API keys through environment variables or supported Pi configuration,
-not the TUI.
+enter API keys through environment variables or `~/.pi/agent/models.json`, not
+the TUI.
 
 | Route | Setup | Notes |
 |---|---|---|
@@ -129,8 +136,11 @@ not the TUI.
 
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints
-secret values. `/whoami` reports model identity from harness state rather than
-asking the model to identify itself.
+secret values or makes a live model call. Green status means local credential or
+configuration evidence passed Alloy's checks. `/model` confirms model
+discoverability; an actual prompt confirms end-to-end authentication. `/whoami`
+reports model identity from harness state rather than asking the model to
+identify itself.
 
 ## Operating modes
 
@@ -224,9 +234,9 @@ is required because its diagnostics cannot satisfy that isolation boundary.
 | `/providers` | Show Anthropic, Codex, and Grok route status. |
 | `/whoami` | Show authoritative harness and model identity. |
 | `/honesty` | Show the active evidence and non-invention policy. |
-| `/help [topic]` | Browse Alloy documentation. |
+| `/help [topic]` | Open the topic picker or browse Alloy documentation directly. |
 | `/help search <query>` | Search all help topics. |
-| `/help commands` | Render the complete live Pi and Alloy command registry. |
+| `/help commands` | Render the complete active OpenTUI and Alloy backend command registry. |
 | `/effort [level]` | Show or set reasoning effort. |
 | `/thinking [level]` | Alias for `/effort`. |
 
@@ -335,12 +345,13 @@ Frontend-local controls issue typed Pi RPC requests:
 | Command | Purpose |
 |---|---|
 | `/new` | Start a new Pi session and refresh frontend state. |
+| `/clone` | Clone the current Pi session and refresh frontend state. |
 | `/compact [instructions]` | Compact the current Pi context. |
 | `/session` | Show Pi session statistics. |
 | `/export` | Export the current session to HTML and show the result. |
 | `/model [provider/model]` | Open the local model selector or set a validated model. |
 | `/thinking [level]` | Open the local selector or set Pi reasoning effort. |
-| `/help` | Show OpenTUI-local help. |
+| `/sidebar` | Toggle the responsive workspace sidebar. |
 | `/quit`, `/exit`, `/q` | Close the frontend and its Pi child. |
 
 Pi renderer commands needed by the new shell are supplied as RPC-compatible
@@ -354,17 +365,25 @@ extensions:
 | `/reload` | Reload extensions, skills, prompts, themes, and context. |
 | `/name [name]` | Set the current session name. |
 | `/hotkeys` | Show OpenTUI keyboard shortcuts. |
+| `/help [topic]` | Browse and search Alloy help, including the active command catalog. |
 | `/login [provider]` | Complete a Pi-backed OAuth login. API-key entry is unavailable in OpenTUI. |
 | `/login-cancel [provider]` | Cancel an active device-code OAuth login. |
 | `/logout [provider]` | Remove and verify removal of a stored Pi credential. |
 
-Alloy extension commands such as `/mode`, `/permissions`, `/remember`, `/mcp`,
-`/agent`, `/fusion`, and `/auto` are submitted through Pi's RPC prompt command
-path. Their use of `select`, `confirm`, `input`, `editor`, notifications,
-status, widgets, title, and editor text is bridged into OpenTUI. `/help commands`
-reports the command registry exposed by the Pi backend, but it is not a claim
-that unsupported OpenCode workspace, server, or plugin commands exist. Pi-native
-commands that depend on its legacy renderer are omitted from the OpenTUI catalog.
+Recognized Alloy extension commands execute through Pi's RPC prompt command path,
+including while a model is streaming. Recognized prompt-template and skill
+commands expand in Pi before their resulting prompts are queued with steer
+behavior during streaming. Their use of `select`, `confirm`, `input`, `editor`,
+notifications, status, widgets, title, and editor text is bridged into OpenTUI.
+`/help commands` combines the shared OpenTUI controls with the live Pi backend
+registry, but it is not a claim that unsupported OpenCode workspace, server, or
+plugin commands exist. Pi-native commands that depend on its legacy renderer
+are omitted from the OpenTUI catalog.
+
+The workspace sidebar appears automatically above 120 columns and can be
+toggled at any width with `/sidebar`. Retained workflow panels remain visible
+without disabling slash autocomplete. On an empty session, the shell points to
+`/` for command completion and `/help` for guides.
 
 Drag across rendered text with the mouse to select it. Releasing the mouse
 copies a non-empty selection to the terminal clipboard through OSC 52. Pasting
@@ -594,7 +613,7 @@ Use `/checkpoints` to identify the snapshot. Checkpoints are not remote backups.
 ### Alloy cannot find its bundled Pi CLI
 
 Rerun the one-command installer. For a contributor clone, run `npm ci`,
-`bun install --cwd tui --frozen-lockfile`, and relink with `npm link`. Alloy
+`npm run tui:install`, and relink with `npm link`. Alloy
 prefers the Pi dependency bundled with its own
 installation, then searches global npm roots, prefix locations, and `PATH` as
 recovery fallbacks. A global `pi update` does not change Alloy while its bundled
@@ -602,11 +621,14 @@ pinned runtime resolves, but it can affect a fallback installation.
 
 ### OpenTUI will not start
 
-Run `bun --version`; contributor installs require exactly `1.3.14`. The source
-installer writes `ALLOY_BUN_BIN` into the generated Alloy wrapper, so rerunning
-the installer repairs a missing managed runtime or frontend dependency tree.
-Use `--legacy-pi-ui` only as a temporary renderer rollback while diagnosing the
-OpenTUI failure.
+For a managed install, rerun the installer; it repairs the recorded Bun runtime
+and frozen frontend dependency tree. If `alloy` is not found after installation,
+restart Bash or Zsh, add `~/.local/bin` to `PATH`, or run
+`~/.local/bin/alloy` directly.
+
+For a contributor clone, run `bun --version` and require exactly `1.3.14`, then
+run `npm ci`, `npm run tui:install`, and `npm link`. Use `--legacy-pi-ui` only as
+a temporary renderer rollback while diagnosing the OpenTUI failure.
 
 ## Verification
 
@@ -616,7 +638,7 @@ Run the local verification bundle:
 npm run ci:local
 ```
 
-This runs unit and integration tests, frontend typechecking and Bun tests, the
+This requires `tmux` and runs unit and integration tests, frontend typechecking and Bun tests, the
 live OpenTUI PTY suite, version and package checks, release metadata
 verification, the security scan, and CycloneDX SBOM generation. It does not run
 the high-severity publication audit from `npm run ci:release`.

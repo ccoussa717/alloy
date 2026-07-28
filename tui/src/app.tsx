@@ -26,6 +26,7 @@ import {
   type RpcMessage,
   type SessionState,
   type ToolExecution,
+  type WidgetState,
 } from "./session-store";
 import parsers from "./parsers-config";
 import { activityAnimationInterval, activityFrame, activityLabel, splashDivider } from "./presentation";
@@ -209,17 +210,43 @@ export interface AlloyAppProps {
   onExit: (code: number) => void;
 }
 
-const HELP_LINES = [
-  "Enter       send prompt",
-  "Shift+Tab   Build / Plan mode",
-  "PageUp/Down scroll transcript",
-  "Ctrl+U/D    half-page scroll",
-  "Mouse drag  copy selection on release",
-  "Ctrl+C      abort, then exit when idle",
-  "",
-  "/new /compact /model /thinking",
-  "/session /export /help /quit",
-];
+export function autocompleteCapacityForLayout(
+  layout: ReturnType<typeof appLayout>,
+  notificationCount: number,
+  aboveRows: number,
+  belowWidgets: WidgetState[],
+): number {
+  const composerRows = layout.composerMaxHeight + (layout.showComposerMeta ? 2 : 0);
+  const fixedRows = 1 + (layout.showIdentity ? 1 : 0) + composerRows;
+  const notificationRows = notificationCount > 0
+    ? Math.min(4, Math.max(1, Math.floor(layout.height / 4)))
+    : 0;
+  const widgetWidth = Math.max(1, layout.width - layout.horizontalPadding * 2 - 1);
+  const belowRows = widgetDisplayRows(belowWidgets, widgetWidth);
+  return Math.max(0, layout.height - fixedRows - notificationRows - aboveRows - belowRows - 1);
+}
+
+export function widgetDisplayRows(widgets: WidgetState[], width: number): number {
+  const columns = Math.max(1, width);
+  return widgets.reduce((widgetTotal, widget) => widgetTotal + widget.lines.reduce((lineTotal, line) => {
+    const rows = line.split(/\r?\n/).reduce((total, segment) => {
+      const visible = segment.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      return total + Math.max(1, Math.ceil(Bun.stringWidth(visible) / columns));
+    }, 0);
+    return lineTotal + rows;
+  }, 0), 0);
+}
+
+export function commandSuggestionLayout(width: number, names: string[]) {
+  const showDescriptions = width > 40;
+  const longestName = Math.max(0, ...names.map((name) => name.length + 3));
+  return {
+    nameWidth: showDescriptions
+      ? Math.min(Math.max(12, longestName), Math.max(12, Math.floor(width * 0.45)))
+      : Math.max(1, width - 4),
+    showDescriptions,
+  };
+}
 
 function modeLabel(statuses: Record<string, string>): string {
   const raw = statuses["alloy-mode"] ?? statuses.mode ?? "mode:build";
@@ -613,15 +640,13 @@ export function AlloyApp(props: AlloyAppProps) {
     : Math.max(1, Math.min(6, Math.floor(layout().height / 3))));
   const notifications = createMemo(() => latestNotifications(session().notifications));
   const autocompleteCapacity = createMemo(() => {
-    const height = layout().height;
-    const composerRows = layout().composerMaxHeight + (layout().showComposerMeta ? 2 : 0);
-    const fixedRows = 1 + (layout().showIdentity ? 1 : 0) + composerRows;
-    const notificationRows = notifications().length > 0 ? Math.min(4, Math.max(1, Math.floor(height / 4))) : 0;
+    const widgetWidth = Math.max(1, layout().width - layout().horizontalPadding * 2 - 1);
     const aboveRows = aboveWidgets().length > 0
-      ? aboveWidgetMaxHeight()
+      ? aboveWidgets().some((widget) => widget.data)
+        ? aboveWidgetMaxHeight()
+        : Math.min(aboveWidgetMaxHeight(), widgetDisplayRows(aboveWidgets(), widgetWidth))
       : 0;
-    const belowRows = belowWidgets().length > 0 ? height : 0;
-    return Math.max(0, height - fixedRows - notificationRows - aboveRows - belowRows - 1);
+    return autocompleteCapacityForLayout(layout(), notifications().length, aboveRows, belowWidgets());
   });
   const showAutocompleteFooter = createMemo(() => layout().height > 10 && autocompleteCapacity() > 1);
   const autocompleteLimit = createMemo(() => {
@@ -629,6 +654,10 @@ export function AlloyApp(props: AlloyAppProps) {
     return Math.max(0, Math.min(desired, autocompleteCapacity() - (showAutocompleteFooter() ? 1 : 0)));
   });
   const autocompleteItems = createMemo(() => commandSuggestions(composerText(), session().commands, autocompleteLimit()));
+  const autocompletePresentation = createMemo(() => commandSuggestionLayout(
+    layout().width,
+    autocompleteItems().map((item) => item.name),
+  ));
   const autocompleteOpen = createMemo(() =>
     !extensionDialog() &&
     !localDialog() &&
@@ -995,14 +1024,18 @@ export function AlloyApp(props: AlloyAppProps) {
       .join(" | "),
   );
   const hasDialog = createMemo(() => Boolean(extensionDialog() || localDialog()));
-  const dialogTitle = createMemo(() => extensionDialog()?.title || {
-    help: "Alloy help",
-    "model-provider": "Select provider",
-    model: `Select ${modelProvider() ?? "provider"} model`,
-    thinking: "Thinking level",
-    session: "Session statistics",
-    export: "Export result",
-  }[localDialog() ?? "help"]);
+  const dialogTitle = createMemo(() => {
+    const dialog = extensionDialog();
+    if (dialog) return dialog.title;
+    const local = localDialog();
+    return local ? {
+      "model-provider": "Select provider",
+      model: `Select ${modelProvider() ?? "provider"} model`,
+      thinking: "Thinking level",
+      session: "Session statistics",
+      export: "Export result",
+    }[local] : "";
+  });
 
   return (
     <box width={dimensions().width} height={dimensions().height} flexDirection="row" backgroundColor={theme.background}>
@@ -1024,6 +1057,7 @@ export function AlloyApp(props: AlloyAppProps) {
                 <text fg={theme.accent}>{splashDivider(Math.max(0, layout().width - layout().horizontalPadding * 2))}</text>
                 <text fg={theme.dim}>MULTI-MODEL CODING HARNESS</text>
               </Show>
+              <text fg={theme.dim}>Type / for commands | /help for guides</text>
             </box>
           </Show>
           <For each={session().messages}>
@@ -1112,7 +1146,7 @@ export function AlloyApp(props: AlloyAppProps) {
             {(widget) => (
               <Show
                 when={widget.data}
-                fallback={<For each={widget.lines}>{(line, index) => <text height={1} wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
+                fallback={<For each={widget.lines}>{(line, index) => <text wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
               >
                 <FusionLiveDashboard panel={widget.data!} width={Math.max(1, layout().width - layout().horizontalPadding * 2 - 2)} height={layout().height} frame={activityFrameIndex()} />
               </Show>
@@ -1139,12 +1173,14 @@ export function AlloyApp(props: AlloyAppProps) {
                 flexDirection="row"
                 backgroundColor={index() === autocompleteSelected() ? theme.accent : theme.panelRaised}
               >
-                <text width={Math.min(20, Math.max(12, Math.floor(layout().width * 0.35)))} fg={index() === autocompleteSelected() ? theme.background : theme.textStrong}>
+                <text width={autocompletePresentation().nameWidth} fg={index() === autocompleteSelected() ? theme.background : theme.textStrong}>
                   {index() === autocompleteSelected() ? "> " : "  "}/{suggestion.name}
                 </text>
-                <text flexGrow={1} fg={index() === autocompleteSelected() ? theme.background : theme.muted}>
-                  {suggestion.description}
-                </text>
+                <Show when={autocompletePresentation().showDescriptions}>
+                  <text flexGrow={1} fg={index() === autocompleteSelected() ? theme.background : theme.muted}>
+                    {suggestion.description}
+                  </text>
+                </Show>
               </box>
             )}
           </For>
@@ -1283,9 +1319,6 @@ export function AlloyApp(props: AlloyAppProps) {
                   onSubmit={() => void acceptDialog()}
                 />
               </box>
-            </Show>
-            <Show when={localDialog() === "help"}>
-              <box paddingLeft={2} paddingRight={2}><For each={HELP_LINES}>{(line) => <text fg={line.startsWith("/") ? theme.accent : theme.muted}>{line}</text>}</For></box>
             </Show>
             <Show when={localDialog() === "session"}>
               <scrollbox maxHeight={Math.max(1, layout().height - 6)} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: false }}><text fg={theme.muted}>{displayText(session().sessionStats ?? dialogResult())}</text></scrollbox>

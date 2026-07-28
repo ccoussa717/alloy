@@ -85,8 +85,8 @@ case "$initial" in *"Ask anything"*) ;; *) printf 'packed composer not visible\n
 
 tmux send-keys -t "$SESSION" -l "/alloy"
 tmux send-keys -t "$SESSION" Enter
-dialog="$(wait_for_text 'OpenCode splash')"
-case "$dialog" in *"Alloy v"*) ;; *) printf 'packed extension dialog not visible\n%s\n' "$dialog" >&2; exit 1;; esac
+dialog="$(wait_for_text 'Pi runtime with the Solid/OpenTUI shell')"
+case "$dialog" in *"Alloy v"*"/help commands"*) ;; *) printf 'packed extension dialog not visible\n%s\n' "$dialog" >&2; exit 1;; esac
 
 tmux send-keys -t "$SESSION" Escape
 sleep 0.5

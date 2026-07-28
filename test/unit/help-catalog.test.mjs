@@ -63,7 +63,7 @@ test("searchHelp memory", () => {
 test("formatTopic", () => {
   const text = help.formatTopic(help.getTopic("commands"));
   assert.match(text, /\/help commands/);
-  assert.match(text, /live command registry/);
+  assert.match(text, /active command registry/);
 });
 
 test("fusion help documents the plan-only three-role workflow", () => {
@@ -125,10 +125,17 @@ test("formatCommandCatalog merges native and live commands without duplicates", 
 test("OpenTUI command catalog omits Pi commands its frontend cannot execute", () => {
   const text = help.formatCommandCatalog([], { frontend: "opentui" });
 
+  assert.match(text, /OpenTUI built-ins/);
   assert.match(text, /\/model <provider\/model>/);
-  assert.match(text, /\/resume/);
+  assert.match(text, /\/sidebar - Toggle workspace sidebar/);
+  assert.match(text, /\/clone - Clone the current session/);
+  assert.match(text, /\/help - Browse and search Alloy help/);
+  assert.match(text, /\/quit - Exit Alloy/);
   assert.match(text, /\/export - Export the current session to HTML/);
   assert.doesNotMatch(text, /\/export .*specify path/);
+  assert.doesNotMatch(text, /Quit pi/);
+  assert.doesNotMatch(text, /Pi native/);
+  assert.doesNotMatch(text, /\/resume/);
   assert.doesNotMatch(text, /\/trust\b/);
   assert.doesNotMatch(text, /\/settings\b/);
   assert.doesNotMatch(text, /\/share\b/);
