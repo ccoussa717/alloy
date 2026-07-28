@@ -119,6 +119,101 @@ describe("integration: isolated alloy/pi startup", () => {
     }
   });
 
+  it("pinned Pi RPC closes a dialog that resolves through abort", async () => {
+    const extensionPath = join(home, "rpc-close-extension.mjs");
+    writeFileSync(
+      extensionPath,
+      `export default function (pi) {
+  pi.registerCommand("abort-dialog", {
+    description: "Open and abort an RPC dialog",
+    handler: async (_args, ctx) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 25);
+      await ctx.ui.input("Complete login", "redirect URL", { signal: controller.signal });
+    },
+  });
+}
+`,
+    );
+    const piCli = findPiCli([root]);
+    assert.ok(piCli, "Pi CLI must be resolvable for the integration test");
+    const child = spawn(
+      process.execPath,
+      [
+        piCli,
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--offline",
+        "--no-extensions",
+        "--extension",
+        extensionPath,
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-context-files",
+      ],
+      { env, cwd: root },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const closedDialog = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`RPC dialog close timed out: ${stderr || stdout}`)),
+        10000,
+      );
+      let dialogId;
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        const lines = stdout.split("\n");
+        stdout = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const message = JSON.parse(line);
+          if (
+            message.type === "extension_ui_request" &&
+            message.method === "input"
+          ) {
+            dialogId = message.id;
+          }
+          if (
+            dialogId &&
+            message.type === "extension_ui_request" &&
+            message.method === "close" &&
+            message.id === dialogId
+          ) {
+            clearTimeout(timeout);
+            resolve({ dialogId, closeId: message.id });
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        if (code !== null && code !== 0) {
+          clearTimeout(timeout);
+          reject(new Error(`RPC exited ${code}: ${stderr || stdout}`));
+        }
+      });
+      child.stdin.write(
+        `${JSON.stringify({ id: "close-e2e", type: "prompt", message: "/abort-dialog" })}\n`,
+      );
+    }).finally(async () => {
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    });
+
+    assert.equal(closedDialog.closeId, closedDialog.dialogId);
+  });
+
   it("exposes Claude Opus 5 without replacing live Anthropic composition", async () => {
     writeFileSync(
       join(agentDir, "models.json"),

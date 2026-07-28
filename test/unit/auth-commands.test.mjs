@@ -105,6 +105,7 @@ test("login maps OAuth provider, method, prompts, and events through RPC-safe ex
   const runtime = {
     getProviders: () => providers,
     getProvider: (id) => providers.find((entry) => entry.id === id),
+    getProviderAuthStatus: () => ({ configured: false }),
     async login(providerId, type, interaction) {
       loginCalls.push({ providerId, type, signal: interaction.signal });
       interaction.notify({
@@ -196,6 +197,30 @@ test("login maps OAuth provider, method, prompts, and events through RPC-safe ex
   assert.doesNotMatch(visible, /ACCESS_TOKEN_MUST_NOT_LEAK|REFRESH_TOKEN_MUST_NOT_LEAK|manual-code/);
 });
 
+test("login labels every OAuth provider with its authoritative configuration state", async () => {
+  const providers = [
+    provider("anthropic", "Anthropic"),
+    provider("openai-codex", "OpenAI Codex"),
+  ];
+  const runtime = {
+    getProviders: () => providers,
+    getProvider: (id) => providers.find((entry) => entry.id === id),
+    getProviderAuthStatus: (id) => ({ configured: id === "anthropic" }),
+    async login() {},
+    async listCredentials() { return []; },
+    async logout() {},
+  };
+  const { pi } = register(runtime);
+  const ctx = fakeContext([undefined]);
+
+  await pi.commands.get("login").handler("", ctx);
+
+  assert.deepEqual(ctx.selections[0].options, [
+    "Anthropic (anthropic)\tconfigured",
+    "OpenAI Codex (openai-codex)\tnot configured",
+  ]);
+});
+
 test("commands use the exact active registry runtime from each command context", async () => {
   const providers = [provider("anthropic", "Anthropic")];
   const calls = [];
@@ -203,6 +228,7 @@ test("commands use the exact active registry runtime from each command context",
     credentials,
     getProviders: () => providers,
     getProvider: (id) => providers.find((entry) => entry.id === id),
+    getProviderAuthStatus: () => ({ configured: true }),
     async login(providerId, type) {
       calls.push({ operation: "login", name, runtime: this, providerId, type });
       this.credentials = [{ providerId, type }];

@@ -64,6 +64,17 @@ export function extensionDialogOptions(dialog: ExtensionDialog | null): string[]
   return [];
 }
 
+export function extensionDialogOptionPresentation(option: string): {
+  label: string;
+  status?: "configured" | "not configured";
+} {
+  const separator = option.lastIndexOf("\t");
+  if (separator < 0) return { label: option };
+  const status = option.slice(separator + 1);
+  if (status !== "configured" && status !== "not configured") return { label: option };
+  return { label: option.slice(0, separator), status };
+}
+
 export function extensionDialogResponse(
   dialog: ExtensionDialog,
   selected: number,
@@ -629,8 +640,9 @@ export function AlloyApp(props: AlloyAppProps) {
     setAutocompleteSelected((value) => length === 0 ? 0 : Math.min(value, length - 1));
   });
   const dialogKey = createMemo(() => extensionDialog()?.id ?? localDialog() ?? "");
+  let previousDialogKey = "";
   createEffect(() => {
-    dialogKey();
+    const key = dialogKey();
     const dialog = extensionDialog();
     const local = localDialog();
     const selection = !dialog && local === "model-provider"
@@ -638,6 +650,8 @@ export function AlloyApp(props: AlloyAppProps) {
       : 0;
     setSelected(selection);
     setDialogText(dialog?.method === "editor" ? dialog.prefill ?? "" : "");
+    if (previousDialogKey && !key) setTimeout(() => composer?.focus(), 0);
+    previousDialogKey = key;
   });
 
   const options = createMemo(() => {
@@ -1223,11 +1237,24 @@ export function AlloyApp(props: AlloyAppProps) {
             <Show when={options().length > 0}>
               <scrollbox maxHeight={Math.max(1, layout().height - 6)} scrollbarOptions={{ visible: false }}>
                 <For each={options()}>
-                  {(option, index) => (
-                    <box paddingLeft={2} paddingRight={2} backgroundColor={index() === selected() ? theme.accent : theme.panelRaised}>
-                      <text fg={index() === selected() ? theme.background : theme.text}>{index() === selected() ? "> " : "  "}{option}</text>
-                    </box>
-                  )}
+                  {(option, index) => {
+                    const presentation = extensionDialogOptionPresentation(option);
+                    const selectedOption = () => index() === selected();
+                    return (
+                      <box
+                        paddingLeft={2}
+                        paddingRight={2}
+                        backgroundColor={selectedOption() ? (presentation.status ? theme.selection : theme.accent) : theme.panelRaised}
+                      >
+                        <text fg={selectedOption() ? (presentation.status ? theme.textStrong : theme.background) : theme.text}>
+                          {selectedOption() ? "> " : "  "}{presentation.label}
+                          <Show when={presentation.status}>
+                            <span style={{ fg: presentation.status === "configured" ? theme.success : theme.mutedReadable }}> {presentation.status}</span>
+                          </Show>
+                        </text>
+                      </box>
+                    );
+                  }}
                 </For>
               </scrollbox>
             </Show>

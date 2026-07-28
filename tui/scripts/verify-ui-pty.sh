@@ -439,6 +439,23 @@ assert_contains "$login_dialog" "Paste the authorization response below" "login 
 tmux send-keys -t "$SESSION" Escape
 wait_for_log '"id":"login-1","cancelled":true'
 
+tmux send-keys -t "$SESSION" -l "/login-status-fixture"
+tmux send-keys -t "$SESSION" Enter
+login_status="$(wait_for_text "$SESSION" 'not configured')"
+assert_line_contains_both "$login_status" "Anthropic (anthropic)" "configured" "login selector marks stored OAuth providers configured"
+assert_line_contains_both "$login_status" "OpenAI Codex (openai-codex)" "not configured" "login selector marks missing OAuth providers not configured"
+tmux send-keys -t "$SESSION" Escape
+wait_for_log '"id":"login-status-1","cancelled":true'
+
+tmux send-keys -t "$SESSION" -l "/login-complete-fixture"
+tmux send-keys -t "$SESSION" Enter
+wait_for_text "$SESSION" 'Complete login in your browser' >/dev/null
+login_completed="$(wait_for_text "$SESSION" 'OAuth login completed externally.')"
+assert_not_contains "$login_completed" "Complete login in your browser" "externally completed OAuth closes its fallback prompt"
+tmux send-keys -t "$SESSION" -l "after external login"
+tmux send-keys -t "$SESSION" Enter
+wait_for_log '"message":"after external login"'
+
 tmux new-session -d -s "$REMOTE_ON" -x 80 -y 24 "$REMOTE_ON_RUN"
 tmux pipe-pane -t "$REMOTE_ON" -o "$(pipe_capture_command "$REMOTE_ON_OUTPUT")"
 wait_for_text "$REMOTE_ON" 'hydrated history item 50' >/dev/null
@@ -643,4 +660,4 @@ assert_contains "$fusion_widget_compact" "SYNTHESIZER" "40x10 live Fusion widget
 assert_contains "$fusion_widget_compact" "Ask anything" "40x10 live Fusion widget preserves composer"
 tmux kill-session -t "$FUSION_WIDGET_COMPACT"
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, provider login status, externally completed login dismissal, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'

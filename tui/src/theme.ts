@@ -8,6 +8,7 @@ export const theme = {
   text: "#f0f0f0",
   textStrong: "#f5f6f7",
   muted: "#8a8a8a",
+  mutedReadable: "#969696",
   dim: "#5a5a5a",
   border: "#3a3a3a",
   warning: "#e8c547",

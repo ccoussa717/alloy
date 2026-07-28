@@ -736,6 +736,10 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
     case "extension_ui_request": {
       const id = asString(message.id);
       switch (message.method) {
+        case "close":
+          return id
+            ? { ...state, extensionDialogs: removeExtensionDialog(state.extensionDialogs, id) }
+            : state;
         case "select":
           return {
             ...state,

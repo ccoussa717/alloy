@@ -272,6 +272,8 @@ function handle(request: Record<string, unknown>): void {
           { name: "approval", description: "Open approval", source: "extension" },
           { name: "cancel", description: "Open cancellable input", source: "extension" },
           { name: "login-fixture", description: "Open authentication input", source: "extension" },
+          { name: "login-status-fixture", description: "Show provider login status", source: "extension" },
+          { name: "login-complete-fixture", description: "Complete authentication externally", source: "extension" },
           { name: "editor-fixture", description: "Populate the composer", source: "extension" },
           { name: "backend-loss", description: "Terminate the fixture backend", source: "extension" },
         ],
@@ -340,6 +342,35 @@ function handle(request: Record<string, unknown>): void {
           ].join("\n"),
           placeholder: "authorization code",
         });
+      } else if (text === "/login-status-fixture") {
+        send({
+          type: "extension_ui_request",
+          id: "login-status-1",
+          method: "select",
+          title: "Login with OAuth",
+          options: [
+            "Anthropic (anthropic)\tconfigured",
+            "OpenAI Codex (openai-codex)\tnot configured",
+          ],
+        });
+      } else if (text === "/login-complete-fixture") {
+        send({
+          type: "extension_ui_request",
+          id: "login-complete-1",
+          method: "input",
+          title: "Complete login in your browser",
+          placeholder: "redirect URL",
+        });
+        setTimeout(() => {
+          send({ type: "extension_ui_request", id: "login-complete-1", method: "close" });
+          send({
+            type: "extension_ui_request",
+            id: "login-complete-notice",
+            method: "notify",
+            notifyType: "info",
+            message: "OAuth login completed externally.",
+          });
+        }, 500);
       } else if (text === "/editor-fixture") {
         send({ type: "extension_ui_request", id: "editor-1", method: "set_editor_text", text: "seed" });
       } else if (text === "hold") {
