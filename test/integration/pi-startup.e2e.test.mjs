@@ -320,6 +320,88 @@ describe("integration: isolated alloy/pi startup", () => {
     assert.equal(s.quietStartup, true);
   });
 
+  it("preserves malformed Pi settings and reports the parse failure", () => {
+    const invalidHome = mkdtempSync(join(tmpdir(), "alloy-invalid-settings-e2e-"));
+    const invalidAgentDir = join(invalidHome, "custom-pi-agent");
+    const settingsPath = join(invalidAgentDir, "settings.json");
+    const fakePi = join(invalidHome, "fake-pi.mjs");
+    const malformed = '{\n\t"theme": "dark",\n\tBROKEN\n}\n';
+    mkdirSync(invalidAgentDir, { recursive: true });
+    writeFileSync(settingsPath, malformed);
+    writeFileSync(fakePi, "");
+
+    try {
+      const run = spawnSync(
+        process.execPath,
+        [join(root, "bin", "alloy.mjs"), "-p", "x"],
+        {
+          encoding: "utf8",
+          env: {
+            ...env,
+            HOME: invalidHome,
+            PI_CODING_AGENT_DIR: invalidAgentDir,
+            ALLOY_HOME: join(invalidHome, ".pi", "alloy"),
+            ALLOY_PI_BIN: fakePi,
+          },
+          cwd: root,
+        },
+      );
+
+      assert.equal(run.status, 0, run.stderr || run.stdout);
+      assert.equal(readFileSync(settingsPath, "utf8"), malformed);
+      assert.match(run.stderr, /Alloy left Pi settings unchanged/);
+      assert.ok(run.stderr.includes(settingsPath));
+      assert.match(run.stderr, /JSON/);
+    } finally {
+      rmSync(invalidHome, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves Pi settings whose JSON root is not an object", () => {
+    const invalidHome = mkdtempSync(join(tmpdir(), "alloy-invalid-root-e2e-"));
+    const invalidAgentDir = join(invalidHome, "custom-pi-agent");
+    const settingsPath = join(invalidAgentDir, "settings.json");
+    const fakePi = join(invalidHome, "fake-pi.mjs");
+    mkdirSync(invalidAgentDir, { recursive: true });
+    writeFileSync(fakePi, "");
+
+    try {
+      for (const contents of [
+        "null\n",
+        "[]\n",
+        "false\n",
+        "0\n",
+        "42\n",
+        '"settings"\n',
+      ]) {
+        writeFileSync(settingsPath, contents);
+        const run = spawnSync(
+          process.execPath,
+          [join(root, "bin", "alloy.mjs"), "-p", "x"],
+          {
+            encoding: "utf8",
+            env: {
+              ...env,
+              HOME: invalidHome,
+              PI_CODING_AGENT_DIR: invalidAgentDir,
+              ALLOY_HOME: join(invalidHome, ".pi", "alloy"),
+              ALLOY_PI_BIN: fakePi,
+            },
+            cwd: root,
+          },
+        );
+
+        assert.equal(run.status, 0, run.stderr || run.stdout);
+        assert.equal(readFileSync(settingsPath, "utf8"), contents);
+        assert.match(run.stderr, /Alloy left Pi settings unchanged/);
+        assert.ok(run.stderr.includes(settingsPath));
+        assert.match(run.stderr, /JSON object/);
+      }
+    } finally {
+      rmSync(invalidHome, { recursive: true, force: true });
+    }
+  });
+
   it("suppresses Pi's stale Anthropic billing warning without replacing user settings", () => {
     const warningHome = mkdtempSync(join(tmpdir(), "alloy-warning-e2e-"));
     const warningAgentDir = join(warningHome, "custom-pi-agent");
