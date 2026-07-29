@@ -135,17 +135,26 @@ if (
  *   into the chat buffer (Pi never clears that dump when you send a message)
  */
 function ensureQuietStartup() {
+  const dir =
+    process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+  const path = join(dir, "settings.json");
   try {
-    const dir =
-      process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-    const path = join(dir, "settings.json");
     mkdirSync(dir, { recursive: true });
     let settings = {};
     if (exists(path)) {
+      const contents = readFileSync(path, "utf8");
       try {
-        settings = JSON.parse(readFileSync(path, "utf8") || "{}") || {};
-      } catch {
-        settings = {};
+        settings = contents === "" ? {} : JSON.parse(contents);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid JSON: ${message}`);
+      }
+      if (
+        !settings ||
+        typeof settings !== "object" ||
+        Array.isArray(settings)
+      ) {
+        throw new Error("settings JSON root must be a JSON object");
       }
     }
     let changed = false;
@@ -186,8 +195,11 @@ function ensureQuietStartup() {
     if (changed) {
       writeFileSync(path, JSON.stringify(settings, null, "\t") + "\n", "utf8");
     }
-  } catch {
-    // non-fatal — chrome still works, just noisier
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `warning: Alloy left Pi settings unchanged at ${path}: ${message}`,
+    );
   }
 }
 

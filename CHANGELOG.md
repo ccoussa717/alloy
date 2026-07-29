@@ -37,6 +37,8 @@ and releases use semantic versioning during the 0.x development series.
 
 ### Fixed
 
+- Preserved malformed or non-object Pi settings instead of replacing them with
+  Alloy startup defaults, with a path-specific warning before startup continues.
 - Prevented Fusion child output from growing quadratically by using compact JSON
   deltas, bounded newest-event retention, byte-accurate UTF-8 stream handling,
   and preserved partial output when a child exceeds its stream safety limit.
