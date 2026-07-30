@@ -35,7 +35,7 @@ const { ensureDefaultConfig } = require(join(root, "lib", "config.mjs"));
 const { ensureMcpConfig } = require(join(root, "lib", "mcp-config.mjs"));
 const { getAlloyHome } = require(join(root, "lib", "paths.mjs"));
 
-export default function alloyExtension(pi: ExtensionAPI) {
+export default async function alloyExtension(pi: ExtensionAPI) {
   try {
     getAlloyHome();
     ensureDefaultConfig();
@@ -50,7 +50,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerNativeCommands(pi);
   registerAuthCommands(pi);
   registerProviders(pi);
-  registerLocalEngines(pi);
+  await registerLocalEngines(pi);
   registerModes(pi); // Shift+Tab = Build/Plan
   registerPolicy(pi); // approval profiles remain an independent axis
   registerEffort(pi); // /effort = thinking

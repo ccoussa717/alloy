@@ -65,6 +65,24 @@ test("ensureOpenAiV1BaseUrl appends /v1 once", () => {
   assert.equal(mod.ensureOpenAiV1BaseUrl("http://127.0.0.1:11434"), "http://127.0.0.1:11434/v1");
   assert.equal(mod.ensureOpenAiV1BaseUrl("http://127.0.0.1:11434/v1"), "http://127.0.0.1:11434/v1");
   assert.equal(mod.ensureOpenAiV1BaseUrl("http://127.0.0.1:1234/v1/"), "http://127.0.0.1:1234/v1");
+  assert.equal(
+    mod.ensureOpenAiV1BaseUrl("https://user:secret@host.example/api?token=hidden#frag"),
+    "https://host.example/api/v1",
+  );
+});
+
+test("fetchJsonWithTimeout bounds stalled response bodies", async () => {
+  const started = Date.now();
+  await assert.rejects(
+    mod.fetchJsonWithTimeout(
+      "http://127.0.0.1:11434/api/tags",
+      {},
+      25,
+      async () => ({ ok: true, json: () => new Promise(() => {}) }),
+    ),
+    /timed out/i,
+  );
+  assert.ok(Date.now() - started < 250);
 });
 
 function mockFetch(handler) {
@@ -105,6 +123,46 @@ test("discoverOllamaModels maps tags and show metadata", async () => {
   assert.equal(m.contextWindow, 4096); // num_ctx wins over model_info
   assert.equal(m.cost.input, 0);
   assert.equal(m.compat.supportsDeveloperRole, false);
+  assert.equal(m.compat.maxTokensField, "max_tokens");
+});
+
+test("discoverOllamaModels uses optional auth without exposing it in results", async () => {
+  const seen = [];
+  const fetchImpl = mockFetch(async (url, init) => {
+    seen.push(init.headers?.Authorization);
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "m1" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
+  const result = await mod.discoverOllamaModels({
+    fetchImpl,
+    env: { OLLAMA_API_KEY: "top-secret" },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(seen, ["Bearer top-secret", "Bearer top-secret"]);
+  assert.equal(JSON.stringify(result).includes("top-secret"), false);
+});
+
+test("discoverOllamaModels rejects malformed catalogs and model ids", async () => {
+  const malformed = await mod.discoverOllamaModels({
+    fetchImpl: async () => new Response(JSON.stringify({}), { status: 200 }),
+  });
+  assert.equal(malformed.ok, false);
+
+  const mixed = await mod.discoverOllamaModels({
+    fetchImpl: mockFetch(async (url) =>
+      new Response(
+        JSON.stringify(
+          url.endsWith("/api/tags")
+            ? { models: [{ model: { invalid: true } }, { name: "valid" }, { name: "valid" }] }
+            : {},
+        ),
+        { status: 200 },
+      ),
+    ),
+  });
+  assert.deepEqual(mixed.models.map((model) => model.id), ["valid"]);
 });
 
 test("discoverOllamaModels returns ok:false when unreachable", async () => {
@@ -130,6 +188,26 @@ test("discoverOllamaModels empty tags yields ok with zero models", async () => {
   assert.equal(result.models.length, 0);
 });
 
+test("discoverOllamaModels enforces one aggregate enrichment deadline", async () => {
+  const started = Date.now();
+  const result = await mod.discoverOllamaModels({
+    fetchImpl: mockFetch(async (url) => {
+      if (url.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: Array.from({ length: 24 }, (_, index) => ({ name: `model-${index}` })),
+          }),
+          { status: 200 },
+        );
+      }
+      return { ok: true, json: () => new Promise(() => {}) };
+    }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.models.length, 24);
+  assert.ok(Date.now() - started < 750);
+});
+
 test("discoverLlamaCppModels keeps only loaded models when status present", async () => {
   const fetchImpl = mockFetch(async (url) => {
     if (url.includes("/props")) {
@@ -147,6 +225,7 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
           data: [
             { id: "loaded-a", status: { value: "loaded" }, meta: { n_ctx: 4096 } },
             { id: "idle-b", status: { value: "unloaded" } },
+            { id: "idle-string", status: "unloaded" },
             { id: "no-status" },
           ],
         }),
@@ -164,7 +243,7 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
   // loaded + entries without status (assume available); exclude explicit unloaded
   assert.deepEqual(ids, ["loaded-a", "no-status"]);
   const loaded = result.models.find((m) => m.id === "loaded-a");
-  assert.equal(loaded.provider, "llama.cpp");
+  assert.equal(loaded.provider, "llama.cpp-local");
   assert.equal(loaded.contextWindow, 4096);
   assert.ok(loaded.baseUrl.endsWith("/v1"));
 });
@@ -187,6 +266,14 @@ test("discoverLmStudioModels maps OpenAI model list", async () => {
   assert.equal(result.models[0].cost.output, 0);
 });
 
+test("discoverLmStudioModels rejects a malformed model catalog", async () => {
+  const result = await mod.discoverLmStudioModels({
+    fetchImpl: async () => new Response(JSON.stringify({}), { status: 200 }),
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.models, []);
+});
+
 test("discoverLocalEngines respects local.enabled false", async () => {
   let calls = 0;
   const fetchImpl = async () => {
@@ -200,6 +287,29 @@ test("discoverLocalEngines respects local.enabled false", async () => {
   assert.equal(calls, 0);
   assert.equal(out.ollama.ok, false);
   assert.equal(out.ollama.skipped, true);
+});
+
+test("discoverLocalEngines enforces providers.allow for selection", async () => {
+  let calls = 0;
+  const out = await mod.discoverLocalEngines({
+    config: {
+      providers: {
+        allow: ["ollama"],
+        local: { enabled: true },
+      },
+    },
+    fetchImpl: mockFetch(async (url) => {
+      calls += 1;
+      if (url.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }),
+  });
+  assert.equal(calls, 1);
+  assert.equal(out.ollama.ok, true);
+  assert.equal(out.llamaCpp.skipped, true);
+  assert.equal(out.lmStudio.skipped, true);
 });
 
 test("discoverLocalEngines runs probes in parallel when enabled", async () => {
@@ -235,15 +345,16 @@ test("formatLocalEnginesDoctorSection never embeds secret-like keys", () => {
   const secret = "Bearer-SECRET_MUST_NOT_APPEAR_zzz";
   const text = mod.formatLocalEnginesDoctorSection({
     ollama: {
-      ok: true,
+      ok: false,
       provider: "ollama",
-      baseUrl: "http://127.0.0.1:11434",
-      models: [{ id: "x" }],
+      baseUrl: `http://user:${secret}@127.0.0.1:11434/path?token=${secret}`,
+      models: [],
+      error: `request failed for http://user:${secret}@127.0.0.1:11434`,
       latencyMs: 12,
     },
     llamaCpp: {
       ok: false,
-      provider: "llama.cpp",
+      provider: "llama.cpp-local",
       baseUrl: "http://127.0.0.1:8080",
       models: [],
       error: "ECONNREFUSED",
@@ -259,7 +370,7 @@ test("formatLocalEnginesDoctorSection never embeds secret-like keys", () => {
   });
   assert.ok(text.includes("Local engines"));
   assert.ok(text.includes("Ollama"));
-  assert.ok(text.includes("reachable") || text.includes("OK"));
+  assert.ok(text.includes("127.0.0.1:11434/path"));
   assert.ok(!text.includes(secret));
   assert.ok(!text.includes("apiKey"));
 });
@@ -268,7 +379,7 @@ test("default config allowlists local engines and enables discovery", async () =
   const { DEFAULT_CONFIG } = await import(
     pathToFileURL(join(new URL("../..", import.meta.url).pathname, "lib", "config.mjs")).href
   );
-  for (const id of ["ollama", "llama.cpp", "lm-studio"]) {
+  for (const id of ["ollama", "llama.cpp-local", "lm-studio"]) {
     assert.ok(DEFAULT_CONFIG.providers.allow.includes(id), id);
   }
   assert.equal(DEFAULT_CONFIG.providers.local.enabled, true);

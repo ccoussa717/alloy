@@ -87,9 +87,10 @@ OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
 so Alloy does not accept API keys in an interactive prompt. Use provider
 environment variables or `~/.pi/agent/models.json` for API-key routes.
 Local engines (Ollama, llama.cpp, LM Studio) are auto-detected when they are
-already running on their default ports at session start. Start engines before
-launching Alloy, or restart the Alloy session after starting them; `/doctor`
-re-probes for status. See the reference for env overrides.
+already running before Alloy starts. Discovered llama.cpp models use the
+`llama.cpp-local` provider id so Pi's native `llama.cpp` provider and `/llama`
+command remain intact. Restart Alloy after starting an engine or changing its
+catalog; `/doctor` re-probes live status. See the reference for env overrides.
 
 Then ask a direct question or choose a workflow:
 

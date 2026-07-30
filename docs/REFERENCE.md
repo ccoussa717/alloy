@@ -136,17 +136,37 @@ the TUI.
 
 ### Local engines (auto-discovery)
 
-Alloy probes these engines at session start when `providers.local.enabled` is true (default). **Keyless loopback is the supported default** — no API keys are required for local engines on `127.0.0.1` / `localhost`.
+Alloy probes these engines during extension load, before Pi resolves the initial
+model, when `providers.local.enabled` is true (default). **Keyless loopback is
+the supported default** - no API keys are required for local engines on
+`127.0.0.1` / `localhost`.
 
 | Provider | Default URL | Env |
 |---|---|---|
-| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_CONTEXT_LENGTH` |
-| `llama.cpp` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_API_KEY` / `LLAMA_CPP_API_KEY` (Bearer on discovery probes when set) |
-| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` (Bearer on discovery probes when set) |
+| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_API_KEY` and `OLLAMA_CONTEXT_LENGTH` |
+| `llama.cpp-local` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_CPP_API_KEY`, then `LLAMA_API_KEY` |
+| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
 
-No OAuth. Models appear under `/model` when the engine was reachable and had usable models at session start (llama.cpp: loaded models when status is advertised). Start engines before Alloy, or **restart the Alloy session** after `ollama pull` / load if the catalog was empty at start. Pi’s `/llama` still manages llama.cpp load/unload/download. `/doctor` re-probes reachability and model counts without secrets (it does not refresh the session `/model` catalog by itself).
+No OAuth. Optional keys apply to discovery and inference without being printed.
+Models appear under `/model` and `--list-models` when the engine was reachable
+and had usable models at startup (llama.cpp: loaded models when status is
+advertised). Start engines before Alloy, or restart Alloy after `ollama pull` or
+a llama model load. Pi's native `llama.cpp` id and `/llama` command remain
+separate; Alloy uses `llama.cpp-local` to avoid replacing Pi's provider runtime.
+`/doctor` re-probes reachability and model counts but does not mutate the active
+session catalog.
 
-Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp`, and `lm-studio` for orchestration routing; `/model` discovery still registers when probes succeed at session start.
+Disable all probes with `"providers": { "local": { "enabled": false } }`.
+Removing a local provider id from `providers.allow` disables its probe and hides
+it from model selection. Existing configs that pin the old four hosted ids must
+add `ollama`, `llama.cpp-local`, and `lm-studio` (or remove the explicit array)
+to enable discovery. Local models are not eligible for Alloy child orchestration;
+that trust boundary remains restricted to pinned built-in cloud transports.
+
+Base URL normalization accepts HTTP(S) path prefixes, removes a terminal `/v1`
+before native Ollama/llama probes, and strips URL userinfo, query strings, and
+fragments. Put credentials in the API-key environment variables above, never in
+endpoint URLs.
 
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints
@@ -245,7 +265,7 @@ is required because its diagnostics cannot satisfy that isolation boundary.
 |---|---|
 | `/alloy` | Show harness summary and current state. |
 | `/doctor` | Diagnose versions, providers, model defaults, Docker, and paths. |
-| `/providers` | Show Anthropic, Codex, and Grok route status. |
+| `/providers` | Show hosted routes and local engine reachability, URLs, and model counts. |
 | `/whoami` | Show authoritative harness and model identity. |
 | `/honesty` | Show the active evidence and non-invention policy. |
 | `/help [topic]` | Open the topic picker or browse Alloy documentation directly. |

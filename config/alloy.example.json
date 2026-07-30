@@ -9,7 +9,7 @@
       "openai-codex",
       "xai",
       "ollama",
-      "llama.cpp",
+      "llama.cpp-local",
       "lm-studio"
     ],
     "favorites": [

@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical execution record:** implementation is complete. Independent landing review superseded the embedded code snippets in four places: discovery now runs during async extension load, llama.cpp uses the non-colliding `llama.cpp-local` id, probes share an aggregate body-safe deadline, and `providers.allow` gates discovery/selection while child orchestration remains cloud-only. See `docs/REFERENCE.md` and current source for the authoritative behavior.
+
 **Goal:** Auto-discover Ollama, llama.cpp, and LM Studio models and surface them in Alloy `/model`, `/providers`, and `/doctor` without OAuth or hand-written `models.json`.
 
-**Architecture:** A pure `lib/local-engines.mjs` module resolves base URLs, probes engines with short timeouts (mocked in tests), and maps HTTP payloads to Pi model specs. An `extensions/local-engines.ts` extension registers those providers via `pi.registerProvider` on `session_start` (and re-probes for doctor). MVP cloud providers stay unchanged; local engines are keyless with placeholder API keys so Pi treats them as configured.
+**Architecture:** A pure `lib/local-engines.mjs` module resolves base URLs, probes engines with short timeouts (mocked in tests), and maps HTTP payloads to Pi model specs. An async `extensions/local-engines.ts` extension registers those providers via `pi.registerProvider` during extension load (and re-probes for doctor). MVP cloud providers stay unchanged; local engines are keyless with placeholder API keys so Pi treats them as configured.
 
 **Tech Stack:** Node 22+, Alloy ESM (`*.mjs` + extension `*.ts`), `node:test` / `node:assert/strict`, Pi `@earendil-works/pi-coding-agent` ExtensionAPI `registerProvider`, undici/global `fetch`.
 
@@ -15,7 +17,7 @@
 - No Oh My Pi package dependency; no Pi fork/bump required for v1.
 - Never print API keys, placeholders, or auth tokens in doctor/providers output.
 - Loopback probe timeout 250–500 ms; non-loopback 10_000 ms; use `Promise.allSettled`.
-- Provider ids exactly: `ollama`, `llama.cpp`, `lm-studio`.
+- Provider ids exactly: `ollama`, `llama.cpp-local`, `lm-studio`.
 - Default fusion/orchestration role models stay cloud (do not switch primaries to local).
 - Placeholder keys only: `"ollama"`, `"local"` (never log them).
 - Existing Anthropic / openai-codex / xAI doctor and login behavior must not regress.
@@ -1088,7 +1090,7 @@ providers: {
 
 Mirror the same `allow` + `local` in `config/alloy.example.json`.
 
-**Note for CHANGELOG (Task 7):** Existing `~/.pi/alloy/config.json` files that already set `providers.allow` to the old four-id list will **not** auto-gain local ids (array merge replaces). Users must add the three ids (or delete allow to re-default). Discovery still registers models for `/model`; allow mainly gates orchestration routing.
+**Note for CHANGELOG (Task 7):** Existing `~/.pi/alloy/config.json` files that already set `providers.allow` to the old four-id list will **not** auto-gain local ids (array merge replaces). Users must add `ollama`, `llama.cpp-local`, and `lm-studio` (or delete allow to re-default). The allowlist gates discovery and direct selection; child orchestration remains limited to pinned built-in transports.
 
 - [ ] **Step 3: PASS + commit**
 
@@ -1372,7 +1374,7 @@ Alloy probes these engines at session start when `providers.local.enabled` is tr
 
 No OAuth. Models appear under `/model` when the engine is reachable and has usable models (llama.cpp: loaded models when status is advertised). Pi’s `/llama` still manages llama.cpp load/unload/download. `/doctor` reports reachability and model counts without secrets.
 
-Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp`, and `lm-studio` for orchestration routing; `/model` discovery still registers when probes succeed.
+Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp-local`, and `lm-studio` to enable discovery and direct selection. Child orchestration remains limited to pinned built-in transports.
 ```
 
 - [ ] **Step 2: README — one sentence under first-run auth**

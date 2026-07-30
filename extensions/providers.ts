@@ -121,7 +121,7 @@ export function registerProviders(pi: ExtensionAPI) {
           items.push("Local engines");
           for (const row of localRows) {
             items.push(
-              `${row.ok ? "✓" : "✗"} ${row.label} — ${row.status}`,
+              `${row.ok ? "✓" : "✗"} ${row.label} — ${row.detail}`,
             );
           }
         }

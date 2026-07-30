@@ -1,8 +1,8 @@
 # Alloy local engines design (Ollama, llama.cpp, LM Studio)
 
-**Date:** 2026-07-30  
-**Status:** draft — pending user review before implementation plan  
-**Repo:** [ccoussa717/alloy](https://github.com/ccoussa717/alloy)  
+**Date:** 2026-07-30
+**Status:** implemented with landing-review amendments
+**Repo:** [ccoussa717/alloy](https://github.com/ccoussa717/alloy)
 **Inspiration:** [Oh My Pi](https://github.com/can1357/oh-my-pi) implicit local discovery (not a dependency)
 
 ## Summary
@@ -12,7 +12,7 @@ Add **zero-config auto-discovery** for three local model engines so Alloy lists 
 | Provider ID | Default base URL |
 |-------------|------------------|
 | `ollama` | `http://127.0.0.1:11434` |
-| `llama.cpp` | `http://127.0.0.1:8080` |
+| `llama.cpp-local` | `http://127.0.0.1:8080` |
 | `lm-studio` | `http://127.0.0.1:1234/v1` |
 
 Alloy remains on the existing Pi stack (`@earendil-works/pi-*`). Discovery is an Alloy extension that probes engines and registers providers via `pi.registerProvider`. Hosted MVP auth (Anthropic, Codex, xAI) is unchanged.
@@ -50,7 +50,7 @@ OMP treats local engines as **first-class, keyless, auto-discovered**:
 1. Zero-config local pickup when an engine is running on default or env-overridden URL.
 2. OMP-like flow: probe → discover → enrich metadata → selectable without OAuth.
 3. Honest `/doctor` and `/providers` for local engines (reachable, count, base URL; never secrets).
-4. First-class allowlist: `ollama`, `llama.cpp`, `lm-studio` usable in routing/favorites when discovered.
+4. First-class selection allowlist: `ollama`, `llama.cpp-local`, `lm-studio`.
 5. Stay on current Pi; no Oh My Pi dependency; no Pi fork for v1.
 
 ## Non-goals (v1)
@@ -67,7 +67,7 @@ OMP treats local engines as **first-class, keyless, auto-discovered**:
 | Check | Pass |
 |-------|------|
 | Ollama up with ≥1 model | `ollama/<id>` in `/model` after start or refresh |
-| llama.cpp router up with loaded models | `llama.cpp/<id>` selectable |
+| llama.cpp router up with loaded models | `llama.cpp-local/<id>` selectable |
 | LM Studio (or OpenAI-compat on its URL) with models | `lm-studio/<id>` selectable |
 | Engine down | Provider absent or doctor “unreachable”; no hang beyond probe budget |
 | No credentials | Default local needs no env keys |
@@ -142,12 +142,13 @@ Optional (v1 nice-to-have if cheap): `OLLAMA_CONTEXT_LENGTH` positive int overri
 1. Probe OpenAI-compatible model list: `GET {base}/v1/models` or `GET {base}/models`.
 2. Prefer **loaded-only** entries when status metadata is available (same product rule as Pi: only loaded models in `/model`).
 3. Optional enrich from `GET {native}/props` (`n_ctx`, vision modalities).
-4. Register as provider id `llama.cpp` with `openai-completions`, inference base ending in `/v1`, zero cost, local compat flags (match Pi’s llama model shape: e.g. `supportsStore: false`, `supportsDeveloperRole: false`, `supportsReasoningEffort: false`, `supportsUsageInStreaming: false`, `supportsStrictMode: false`).
+4. Register as provider id `llama.cpp-local` with `openai-completions`, inference base ending in `/v1`, zero cost, and local compat flags including `maxTokensField: "max_tokens"`.
 
 **Coexistence with Pi’s built-in `/llama`:**
 
-- Keep Pi extension for load/unload/download from Hugging Face.
-- Alloy fills the **selectable** catalog when the server is up so default local router use does not require `/login` first.
+- Keep Pi's `llama.cpp` provider and extension for load/unload/download from Hugging Face.
+- Use the separate `llama.cpp-local` id because a same-id extension overlay replaces Pi's native provider runtime and disconnects `/llama` from the selectable catalog.
+- Alloy fills the **selectable** alias catalog when the server is up so default local router use does not require `/login` first.
 - Do not reimplement `/llama` UI in Alloy.
 
 ### LM Studio (OpenAI-compat on configured URL)
@@ -198,7 +199,7 @@ Hosted `/login` paths remain OAuth-only in OpenTUI (existing Alloy rule).
     "openai-codex",
     "xai",
     "ollama",
-    "llama.cpp",
+    "llama.cpp-local",
     "lm-studio"
   ],
   "local": {
@@ -212,7 +213,7 @@ Hosted `/login` paths remain OAuth-only in OpenTUI (existing Alloy rule).
 
 | Knob | Default | Behavior |
 |------|---------|----------|
-| `providers.allow` | includes three local ids | Remove id to hide from routing/selection policy |
+| `providers.allow` | includes three local ids | Remove id to disable its probe and hide it from selection |
 | `providers.local.enabled` | `true` | Master switch; skip all probes when `false` |
 | `providers.local.ollama` / `llamaCpp` / `lmStudio` | `true` | Per-engine disable |
 | Env URLs | unset | Defaults above |
@@ -220,7 +221,7 @@ Hosted `/login` paths remain OAuth-only in OpenTUI (existing Alloy rule).
 
 - No required new config file for discovery to work.
 - Default **fusion** role models stay cloud (do not switch primaries to local).
-- Orchestration continues to enforce `providers.allow` and availability/auth as today.
+- Child orchestration remains restricted to pinned built-in cloud transports; local aliases are manual-session models in v1.
 
 ### Disable examples
 
@@ -231,7 +232,7 @@ Hosted `/login` paths remain OAuth-only in OpenTUI (existing Alloy rule).
 
 ### `/model`
 
-- Local models under `ollama`, `llama.cpp`, `lm-studio`.
+- Local models under `ollama`, `llama.cpp-local`, `lm-studio`.
 - Only reachable engines with ≥1 usable model contribute (llama.cpp: loaded only when status exists).
 - Selection uses normal OpenAI-compat streaming path.
 
@@ -272,7 +273,7 @@ Optional v1 polish (non-blocking): e.g. `local:ollama(4)` beside existing auth s
 - Probes are read-only GETs plus Ollama `/api/show` with model name only.
 - Default assumption is loopback; remote URLs are opt-in via env (operator responsibility).
 - Placeholder keys are not real credentials; never log them.
-- Child/orchestration: local providers only if in `providers.allow` (same mechanical gate as cloud).
+- Child/orchestration: local providers remain ineligible because the credential broker accepts only pinned built-in transports.
 
 ## Testing
 
@@ -288,12 +289,12 @@ CI uses mocked `fetch` only.
 
 ## Rollout order
 
-1. `lib/local-engines.mjs` + unit tests  
-2. `extensions/local-engines.ts` + wire into extension index  
-3. Doctor / providers surface  
-4. Config defaults + `alloy.example.json`  
-5. Docs + CHANGELOG  
-6. Manual smoke when a local engine is available  
+1. `lib/local-engines.mjs` + unit tests
+2. `extensions/local-engines.ts` + wire into extension index
+3. Doctor / providers surface
+4. Config defaults + `alloy.example.json`
+5. Docs + CHANGELOG
+6. Manual smoke when a local engine is available
 
 No installer change. No Pi package bump required for v1 if `registerProvider` + OpenAI completions is sufficient (true on Pi 0.82.1 used by Alloy).
 
@@ -301,7 +302,7 @@ No installer change. No Pi package bump required for v1 if `registerProvider` + 
 
 | Risk | Mitigation |
 |------|------------|
-| Clash with Pi `llama.cpp` provider | Same provider id and OpenAI-compat shape; Alloy publishes loaded catalog; keep `/llama` for lifecycle |
+| Clash with Pi `llama.cpp` provider | Publish discovery as `llama.cpp-local`; keep Pi's native `llama.cpp` and `/llama` untouched |
 | Slow remote host | Timeouts; parallel probes; doctor unreachable |
 | Dummy apiKey confusion | Docs: local placeholder; never print as secret |
 | Weak tool-calling on some GGUFs | Document; no false full-parity claims |
@@ -310,8 +311,8 @@ No installer change. No Pi package bump required for v1 if `registerProvider` + 
 
 ## Alternatives considered
 
-1. **Static `models.json` writer only** — simpler but stale; still dummy-key friction; weaker than OMP live discovery. Rejected as primary approach.  
-2. **Hosted OSS allowlist only** (Groq, OpenRouter, …) — useful later; does not deliver Ollama auto-pickup. Deferred.  
+1. **Static `models.json` writer only** — simpler but stale; still dummy-key friction; weaker than OMP live discovery. Rejected as primary approach.
+2. **Hosted OSS allowlist only** (Groq, OpenRouter, …) — useful later; does not deliver Ollama auto-pickup. Deferred.
 3. **Ollama-only first** — smaller; user chose full trio for v1.
 
 ## Open questions (resolved for v1)
@@ -325,9 +326,9 @@ No installer change. No Pi package bump required for v1 if `registerProvider` + 
 
 ## Approval
 
-- Section 1 goals/non-goals: approved  
-- Section 2 architecture/discovery: approved  
-- Section 3 UX/config/testing/rollout: approved  
-- Written spec: **pending user review**
+- Section 1 goals/non-goals: approved
+- Section 2 architecture/discovery: approved
+- Section 3 UX/config/testing/rollout: approved
+- Written spec: approved for implementation, then amended during independent landing review
 
 After approval of this file, create an implementation plan via the writing-plans skill, then implement.

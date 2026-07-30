@@ -12,4 +12,3 @@ coverage/
 *.cdx.json
 pack-list.txt
 spikes/
-.worktrees/
