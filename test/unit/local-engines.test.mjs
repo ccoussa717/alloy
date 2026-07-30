@@ -221,7 +221,11 @@ test("discoverLocalEngines runs probes in parallel when enabled", async () => {
     }
     return new Response("{}", { status: 404 });
   });
-  const out = await mod.discoverLocalEngines({ fetchImpl, config: {} });
+  const out = await mod.discoverLocalEngines({
+    fetchImpl,
+    config: {},
+    env: {},
+  });
   assert.equal(out.ollama.ok, true);
   assert.equal(out.llamaCpp.ok, true);
   assert.equal(out.lmStudio.ok, true);

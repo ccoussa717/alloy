@@ -51,10 +51,17 @@ export function registerProviders(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const results = diagnoseProviders();
       const docker = diagnoseDocker(process.cwd());
-      const localBundle = await discoverLocalEngines({
-        config: loadGlobalConfig(),
-      });
-      const localEnginesText = formatLocalEnginesDoctorSection(localBundle);
+      let localEnginesText: string | null = null;
+      try {
+        const localBundle = await discoverLocalEngines({
+          config: loadGlobalConfig(),
+        });
+        localEnginesText = formatLocalEnginesDoctorSection(localBundle);
+      } catch {
+        // discovery failures must not break hosted /doctor
+        localEnginesText =
+          "Local engines\n-------------\nDiscovery failed (non-fatal; hosted doctor continues).";
+      }
       const full = formatFullDoctorReport({
         results,
         dockerText: formatDockerDoctor(docker),

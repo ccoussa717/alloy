@@ -136,17 +136,17 @@ the TUI.
 
 ### Local engines (auto-discovery)
 
-Alloy probes these engines at session start when `providers.local.enabled` is true (default):
+Alloy probes these engines at session start when `providers.local.enabled` is true (default). **Keyless loopback is the supported default** — no API keys are required for local engines on `127.0.0.1` / `localhost`.
 
 | Provider | Default URL | Env |
 |---|---|---|
-| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_API_KEY`, `OLLAMA_CONTEXT_LENGTH` |
-| `llama.cpp` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_API_KEY` / `LLAMA_CPP_API_KEY` |
-| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
+| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_CONTEXT_LENGTH` |
+| `llama.cpp` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_API_KEY` / `LLAMA_CPP_API_KEY` (Bearer on discovery probes when set) |
+| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` (Bearer on discovery probes when set) |
 
-No OAuth. Models appear under `/model` when the engine is reachable and has usable models (llama.cpp: loaded models when status is advertised). Pi’s `/llama` still manages llama.cpp load/unload/download. `/doctor` reports reachability and model counts without secrets.
+No OAuth. Models appear under `/model` when the engine was reachable and had usable models at session start (llama.cpp: loaded models when status is advertised). Start engines before Alloy, or **restart the Alloy session** after `ollama pull` / load if the catalog was empty at start. Pi’s `/llama` still manages llama.cpp load/unload/download. `/doctor` re-probes reachability and model counts without secrets (it does not refresh the session `/model` catalog by itself).
 
-Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp`, and `lm-studio` for orchestration routing; `/model` discovery still registers when probes succeed.
+Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp`, and `lm-studio` for orchestration routing; `/model` discovery still registers when probes succeed at session start.
 
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints
