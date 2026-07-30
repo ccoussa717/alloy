@@ -483,6 +483,25 @@ Use `~/.pi/alloy/mcp.json` for operator configuration or
 `.pi/alloy-mcp.json` in a trusted project. See the complete
 [`config/mcp.example.json`](../config/mcp.example.json).
 
+The global operator controls subsystem startup in `~/.pi/alloy/config.json`:
+
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "connectOnStart": false
+  }
+}
+```
+
+`mcp.enabled: false` blocks both automatic and explicit connections. A trusted
+project may tighten this setting to `false`, but an untrusted project is
+ignored and no project may enable `connectOnStart`. When the global operator
+enables `connectOnStart`, Alloy connects only enabled global server entries;
+project entries still require `/mcp connect` and cannot shadow a same-name
+global startup server. Auto-connected tools are registered before the first
+prompt in OpenTUI/RPC and print/headless sessions.
+
 ```json
 {
   "version": 1,
@@ -616,8 +635,9 @@ workflow profiles and preferences are not restricted to tighten-only changes.
 ### MCP tools do not appear
 
 Check `/mcp status`, confirm the server is enabled, then run `/mcp connect`.
-Use `/mcp tools` to inspect registered names. Keep `connectOnStart` disabled
-until every configured server is trusted.
+Use `/mcp tools` to inspect registered names. Confirm `mcp.enabled` is true in
+the effective configuration. Keep `connectOnStart` disabled until every global
+server is trusted; project servers never auto-connect.
 
 ### A checkpoint cannot restore
 

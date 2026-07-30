@@ -85,6 +85,8 @@ test("fetchWithoutRedirect overrides caller redirect behavior", async () => {
 
 test("isMcpSpecConnectable", () => {
   assert.equal(mod.isMcpSpecConnectable({ enabled: false, command: "x" }), false);
+  assert.equal(mod.isMcpSpecConnectable({ enabled: "false", command: "x" }), false);
+  assert.equal(mod.isMcpSpecConnectable({ enabled: null, command: "x" }), false);
   assert.equal(mod.isMcpSpecConnectable({ command: "npx" }), true);
   assert.equal(mod.isMcpSpecConnectable({ url: "https://x/mcp" }), true);
   assert.equal(mod.isMcpSpecConnectable({ transport: "http" }), false);

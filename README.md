@@ -212,7 +212,7 @@ Alloy treats safety as state enforced by code, not a sentence in a prompt.
 
 | Control | Enforcement |
 |---|---|
-| **Plan and Review** | Model tool calls are hard read-only: no bash, edits, writes, or mutating MCP calls. Operator-invoked slash commands remain an explicit control plane. |
+| **Plan and Review** | Model tool calls are hard read-only: no bash, edits, writes, or MCP calls. Operator-invoked slash commands remain an explicit control plane. |
 | **Default approvals** | `ask-dangerous` prompts for known dangerous shell patterns, destructive Git, MCP, and tools classified as network or external actions. |
 | **Child policy ceiling** | Child manifests constrain approval profile, sandbox requirement, tools, budget, and concurrency. Model child-tool calls are denied in read-only modes; operator-invoked Auto explicitly launches Build roles and confirms first when interactive. |
 | **Credential boundary** | Child environments are allowlisted; Fusion leases only the selected provider credential into an ephemeral home. |
