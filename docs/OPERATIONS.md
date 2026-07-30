@@ -30,7 +30,9 @@ Do not use `npm install` because release dependencies are governed by
 
 ## Provider setup
 
-- [ ] Run `/login` once for each provider you intend to use.
+- [ ] Run `/login` once for each hosted subscription provider you intend to use.
+- [ ] For local models, start Ollama, llama.cpp, or LM Studio before Alloy; no
+  login is required for keyless loopback servers.
 - [ ] Run `/doctor`; it must report credential shape without secret values.
 - [ ] Treat green `configured` as local evidence, then send a prompt to verify
   end-to-end authentication.

@@ -9,6 +9,13 @@ and releases use semantic versioning during the 0.x development series.
 
 ### Added
 
+- Auto-discovery for local engines: Ollama, llama.cpp, and LM Studio (zero-config
+  `/model` and `--list-models` when servers are up). Auto-discovered llama.cpp
+  models use `llama.cpp-local` to preserve Pi's native provider and `/llama`.
+- `/doctor` and `/providers` report local engine reachability and model counts
+  (never secrets).
+- Config: `providers.local.{enabled,ollama,llamaCpp,lmStudio}` and default
+  allowlist entries for the three providers.
 - Added a native responsive Fusion dashboard that streams bounded Architect,
   Builder, and Synthesizer model output and read-tool activity while preserving
   the final attributed transcript and generic RPC widget fallback.
@@ -36,6 +43,14 @@ and releases use semantic versioning during the 0.x development series.
   and added a quiet first-run command-discovery hint.
 
 ### Fixed
+
+- Bounded local-engine response bodies and aggregate probes, redacted endpoint
+  credentials, rejected malformed catalogs, preserved optional inference keys,
+  and removed stale auto-discovered catalogs when an engine is disabled or
+  unavailable without overriding manual `models.json` providers. Keyless
+  inference no longer sends placeholder bearer credentials.
+- Existing configs with an explicit hosted-only `providers.allow` array must add
+  `ollama`, `llama.cpp-local`, and `lm-studio` to enable local discovery.
 
 - Preserved malformed or non-object Pi settings instead of replacing them with
   Alloy startup defaults, with a path-specific warning before startup continues.

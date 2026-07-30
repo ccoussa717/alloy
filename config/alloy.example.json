@@ -3,12 +3,26 @@
   "defaultMode": "build",
   "permissionProfile": "ask-dangerous",
   "providers": {
-    "allow": ["anthropic", "openai", "openai-codex", "xai"],
+    "allow": [
+      "anthropic",
+      "openai",
+      "openai-codex",
+      "xai",
+      "ollama",
+      "llama.cpp-local",
+      "lm-studio"
+    ],
     "favorites": [
       "anthropic/claude-sonnet-4-6",
       "openai-codex/gpt-5.4",
       "xai/grok-4.5"
-    ]
+    ],
+    "local": {
+      "enabled": true,
+      "ollama": true,
+      "llamaCpp": true,
+      "lmStudio": true
+    }
   },
   "memory": {
     "enabled": true,

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { registerHonesty } from "./honesty.ts";
 import { registerMemory } from "./memory.ts";
 import { registerProviders } from "./providers.ts";
+import { registerLocalEngines } from "./local-engines.ts";
 import { registerSkillsImprove } from "./skills-improve.ts";
 import { registerMcp } from "./mcp.ts";
 import { registerPolicy } from "./policy.ts";
@@ -34,7 +35,7 @@ const { ensureDefaultConfig } = require(join(root, "lib", "config.mjs"));
 const { ensureMcpConfig } = require(join(root, "lib", "mcp-config.mjs"));
 const { getAlloyHome } = require(join(root, "lib", "paths.mjs"));
 
-export default function alloyExtension(pi: ExtensionAPI) {
+export default async function alloyExtension(pi: ExtensionAPI) {
   try {
     getAlloyHome();
     ensureDefaultConfig();
@@ -49,6 +50,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerNativeCommands(pi);
   registerAuthCommands(pi);
   registerProviders(pi);
+  await registerLocalEngines(pi);
   registerModes(pi); // Shift+Tab = Build/Plan
   registerPolicy(pi); // approval profiles remain an independent axis
   registerEffort(pi); // /effort = thinking

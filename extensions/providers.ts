@@ -1,6 +1,7 @@
 /**
  * Three-provider MVP surface: Anthropic, Codex/ChatGPT, xAI Grok.
  * /doctor and /providers — never print secrets.
+ * Local engines are surfaced in doctor/providers via discovery (see local-engines).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -19,6 +20,12 @@ const {
 const { diagnoseDocker, formatDockerDoctor } = require(
   join(root, "lib", "docker-sandbox.mjs"),
 );
+const {
+  discoverLocalEngines,
+  formatLocalEnginesDoctorSection,
+  localEngineDoctorRows,
+} = require(join(root, "lib", "local-engines.mjs"));
+const { loadGlobalConfig } = require(join(root, "lib", "config.mjs"));
 const { getAlloyVersion } = require(join(root, "lib", "version.mjs"));
 const { ALLOY_CLAUDE_OPUS_5_MODEL } = require(
   join(root, "lib", "alloy-models.mjs"),
@@ -44,9 +51,21 @@ export function registerProviders(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const results = diagnoseProviders();
       const docker = diagnoseDocker(process.cwd());
+      let localEnginesText: string | null = null;
+      try {
+        const localBundle = await discoverLocalEngines({
+          config: loadGlobalConfig(),
+        });
+        localEnginesText = formatLocalEnginesDoctorSection(localBundle);
+      } catch {
+        // discovery failures must not break hosted /doctor
+        localEnginesText =
+          "Local engines\n-------------\nDiscovery failed (non-fatal; hosted doctor continues).";
+      }
       const full = formatFullDoctorReport({
         results,
         dockerText: formatDockerDoctor(docker),
+        localEnginesText,
         includeEconomics: true,
         includeModels: true,
       });
@@ -74,26 +93,44 @@ export function registerProviders(pi: ExtensionAPI) {
       const missing = results.filter((r: { ok: boolean }) => !r.ok);
       if (missing.length) {
         ctx.ui.notify(
-          `${missing.length} provider(s) not configured or expired. Use /login.`,
+          `${missing.length} hosted provider(s) not configured or expired. Use /login.`,
           "warning",
         );
       } else {
-        ctx.ui.notify("All three MVP providers look configured.", "info");
+        ctx.ui.notify("Hosted MVP providers look configured.", "info");
       }
     },
   });
 
   pi.registerCommand("providers", {
-    description: "Show MVP provider status (Anthropic, Codex, Grok)",
+    description:
+      "Show hosted MVP + local engine status (Anthropic, Codex, Grok, Ollama, …)",
     handler: async (_args, ctx) => {
       const results = diagnoseProviders();
       const items = results.map(
         (r: { ok: boolean; label: string; status: string }) =>
           `${r.ok ? "✓" : "✗"} ${r.label} — ${r.status}`,
       );
+      try {
+        const localBundle = await discoverLocalEngines({
+          config: loadGlobalConfig(),
+        });
+        const localRows = localEngineDoctorRows(localBundle);
+        if (localRows.length) {
+          items.push("---");
+          items.push("Local engines");
+          for (const row of localRows) {
+            items.push(
+              `${row.ok ? "✓" : "✗"} ${row.label} — ${row.detail}`,
+            );
+          }
+        }
+      } catch {
+        // discovery failures must not break /providers
+      }
       items.push("---");
       items.push("Run /login to connect a subscription");
-      items.push("Run /doctor for full detail (economics + catalog)");
+      items.push("Run /doctor for full detail (economics + catalog + local)");
       await ctx.ui.select("Alloy providers", items);
     },
   });

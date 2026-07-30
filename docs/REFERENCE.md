@@ -134,6 +134,51 @@ the TUI.
 | OpenAI API | `OPENAI_API_KEY` | Models use the `openai/...` prefix, not `openai-codex/...`. |
 | xAI API | `XAI_API_KEY` | API provider route. |
 
+### Local engines (auto-discovery)
+
+Alloy probes these engines during extension load, before Pi resolves the initial
+model, when `providers.local.enabled` is true (default). **Keyless loopback is
+the supported default** - no API keys are required for local engines on
+`127.0.0.1` / `localhost`.
+
+| Provider | Default URL | Env |
+|---|---|---|
+| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_API_KEY` and `OLLAMA_CONTEXT_LENGTH` |
+| `llama.cpp-local` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_CPP_API_KEY`, then `LLAMA_API_KEY` |
+| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
+
+No OAuth. Optional keys apply to discovery and inference without being printed.
+For keyless engines, Alloy's internal configuration marker is never sent as an
+`Authorization` header. When an API-key environment variable is set, inference
+sends that exact value as a bearer token.
+Models appear under `/model` and `--list-models` when the engine was reachable
+and had usable models at startup (llama.cpp: loaded models when status is
+advertised). Start engines before Alloy, or restart Alloy after `ollama pull` or
+a llama model load. Pi's native `llama.cpp` id and `/llama` command remain
+separate; Alloy uses `llama.cpp-local` to avoid replacing Pi's provider runtime.
+`/doctor` re-probes reachability and model counts but does not mutate the active
+session catalog.
+
+Disable all probes with `"providers": { "local": { "enabled": false } }`.
+Removing a local provider id from `providers.allow` disables its probe and hides
+its auto-discovered catalog. Existing configs that pin the old four hosted ids
+must add `ollama`, `llama.cpp-local`, and `lm-studio` (or remove the explicit
+array) to enable discovery. Local models are not eligible for Alloy child
+orchestration; that trust boundary remains restricted to pinned built-in cloud
+transports.
+Disabling discovery restores any provider and models defined manually in
+`~/.pi/agent/models.json`; Alloy does not erase operator-managed catalogs.
+
+Base URL normalization accepts HTTP(S) path prefixes, removes a terminal `/v1`
+before native Ollama/llama probes, and strips URL userinfo, query strings, and
+fragments. Put credentials in the API-key environment variables above, never in
+endpoint URLs.
+
+Each engine receives one aggregate probe deadline. Discovery reads at most 4 MiB
+per response and publishes at most 512 models per engine. Ollama metadata
+enrichment stops issuing requests when the engine deadline expires; remaining
+catalog entries retain conservative defaults.
+
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints
 secret values or makes a live model call. Green status means local credential or
@@ -231,7 +276,7 @@ is required because its diagnostics cannot satisfy that isolation boundary.
 |---|---|
 | `/alloy` | Show harness summary and current state. |
 | `/doctor` | Diagnose versions, providers, model defaults, Docker, and paths. |
-| `/providers` | Show Anthropic, Codex, and Grok route status. |
+| `/providers` | Show hosted routes and local engine reachability, URLs, and model counts. |
 | `/whoami` | Show authoritative harness and model identity. |
 | `/honesty` | Show the active evidence and non-invention policy. |
 | `/help [topic]` | Open the topic picker or browse Alloy documentation directly. |
