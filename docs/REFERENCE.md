@@ -158,15 +158,23 @@ session catalog.
 
 Disable all probes with `"providers": { "local": { "enabled": false } }`.
 Removing a local provider id from `providers.allow` disables its probe and hides
-it from model selection. Existing configs that pin the old four hosted ids must
-add `ollama`, `llama.cpp-local`, and `lm-studio` (or remove the explicit array)
-to enable discovery. Local models are not eligible for Alloy child orchestration;
-that trust boundary remains restricted to pinned built-in cloud transports.
+its auto-discovered catalog. Existing configs that pin the old four hosted ids
+must add `ollama`, `llama.cpp-local`, and `lm-studio` (or remove the explicit
+array) to enable discovery. Local models are not eligible for Alloy child
+orchestration; that trust boundary remains restricted to pinned built-in cloud
+transports.
+Disabling discovery restores any provider and models defined manually in
+`~/.pi/agent/models.json`; Alloy does not erase operator-managed catalogs.
 
 Base URL normalization accepts HTTP(S) path prefixes, removes a terminal `/v1`
 before native Ollama/llama probes, and strips URL userinfo, query strings, and
 fragments. Put credentials in the API-key environment variables above, never in
 endpoint URLs.
+
+Each engine receives one aggregate probe deadline. Discovery reads at most 4 MiB
+per response and publishes at most 512 models per engine. Ollama metadata
+enrichment stops issuing requests when the engine deadline expires; remaining
+catalog entries retain conservative defaults.
 
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints

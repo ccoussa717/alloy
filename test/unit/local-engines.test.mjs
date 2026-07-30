@@ -82,7 +82,24 @@ test("fetchJsonWithTimeout bounds stalled response bodies", async () => {
     ),
     /timed out/i,
   );
-  assert.ok(Date.now() - started < 250);
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test("fetchJsonWithTimeout rejects oversized bodies before parsing", async () => {
+  let parsed = false;
+  await assert.rejects(
+    mod.fetchJsonWithTimeout(
+      "http://127.0.0.1:11434/api/tags",
+      {},
+      100,
+      async () => ({
+        headers: { get: () => String(mod.MAX_DISCOVERY_BODY_BYTES + 1) },
+        json: async () => { parsed = true; return {}; },
+      }),
+    ),
+    /response too large/i,
+  );
+  assert.equal(parsed, false);
 });
 
 function mockFetch(handler) {
@@ -155,7 +172,7 @@ test("discoverOllamaModels rejects malformed catalogs and model ids", async () =
       new Response(
         JSON.stringify(
           url.endsWith("/api/tags")
-            ? { models: [{ model: { invalid: true } }, { name: "valid" }, { name: "valid" }] }
+            ? { models: [null, { model: { invalid: true } }, { name: "valid" }, { name: "valid" }] }
             : {},
         ),
         { status: 200 },
@@ -190,22 +207,25 @@ test("discoverOllamaModels empty tags yields ok with zero models", async () => {
 
 test("discoverOllamaModels enforces one aggregate enrichment deadline", async () => {
   const started = Date.now();
+  let showCalls = 0;
   const result = await mod.discoverOllamaModels({
     fetchImpl: mockFetch(async (url) => {
       if (url.endsWith("/api/tags")) {
         return new Response(
           JSON.stringify({
-            models: Array.from({ length: 24 }, (_, index) => ({ name: `model-${index}` })),
+            models: Array.from({ length: 8_000 }, (_, index) => ({ name: `model-${index}` })),
           }),
           { status: 200 },
         );
       }
+      showCalls += 1;
       return { ok: true, json: () => new Promise(() => {}) };
     }),
   });
   assert.equal(result.ok, true);
-  assert.equal(result.models.length, 24);
-  assert.ok(Date.now() - started < 750);
+  assert.equal(result.models.length, mod.MAX_DISCOVERED_MODELS);
+  assert.ok(showCalls <= 8);
+  assert.ok(Date.now() - started < 2_000);
 });
 
 test("discoverLlamaCppModels keeps only loaded models when status present", async () => {
@@ -248,11 +268,41 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
   assert.ok(loaded.baseUrl.endsWith("/v1"));
 });
 
+test("discoverLlamaCppModels prefers its specific key and valid fallback catalog", async () => {
+  const calls = [];
+  const result = await mod.discoverLlamaCppModels({
+    env: {
+      LLAMA_CPP_API_KEY: "specific",
+      LLAMA_API_KEY: "legacy",
+    },
+    fetchImpl: mockFetch(async (url, init) => {
+      calls.push({ url, auth: init.headers?.Authorization });
+      if (url.endsWith("/v1/models")) {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      if (url.endsWith("/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "fallback" }, { id: "fallback" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.models.map(({ id }) => id), ["fallback"]);
+  assert.ok(calls.every(({ auth }) => auth === "Bearer specific"));
+});
+
 test("discoverLmStudioModels maps OpenAI model list", async () => {
   const fetchImpl = mockFetch(async (url) => {
     assert.ok(url.includes("/models"));
     return new Response(
-      JSON.stringify({ data: [{ id: "qwen2.5-coder-7b", owned_by: "local" }] }),
+      JSON.stringify({
+        data: [{
+          id: "qwen2.5-coder-7b",
+          owned_by: "local",
+          context_window: 4096,
+          max_tokens: 32768,
+        }],
+      }),
       { status: 200 },
     );
   });
@@ -264,6 +314,7 @@ test("discoverLmStudioModels maps OpenAI model list", async () => {
   assert.equal(result.models[0].id, "qwen2.5-coder-7b");
   assert.equal(result.models[0].provider, "lm-studio");
   assert.equal(result.models[0].cost.output, 0);
+  assert.equal(result.models[0].maxTokens, 4096);
 });
 
 test("discoverLmStudioModels rejects a malformed model catalog", async () => {

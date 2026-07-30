@@ -98,11 +98,16 @@ export async function registerLocalEngines(
     { key: "lmStudio", id: "lm-studio" },
   ];
   let registered = 0;
+  const unavailable: string[] = [];
   for (const { key, id } of entries) {
     const result = bundle[key];
     const models = result?.ok && Array.isArray(result.models)
       ? toRegisterModels(result.models)
       : [];
+    if (!models.length) {
+      unavailable.push(id);
+      continue;
+    }
     const firstBase =
       result?.models?.[0]?.baseUrl ||
       localEngines.ensureOpenAiV1BaseUrl(result?.baseUrl);
@@ -121,6 +126,13 @@ export async function registerLocalEngines(
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    for (const id of unavailable) {
+      try {
+        pi.unregisterProvider(id);
+      } catch {
+        // A missing stale overlay is already the desired state.
+      }
+    }
     try {
       ctx.ui.setStatus("alloy-local", `local:${registered}`);
     } catch {

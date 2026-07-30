@@ -25,6 +25,7 @@ not a backlog of unfinished ideas.
 18. **Extension UI bridge** — Pi extension select, confirm, input, editor, notifications, status, widgets, title, and editor text render in OpenTUI.
 19. **Pi backend** — Tools, credentials, policy, sessions, extension lifecycle, compaction, `@files`, AGENTS.md, and model registry remain Pi-owned. Print, JSON, and RPC modes run Pi directly.
 20. **Session command compatibility** — OpenTUI local commands cover new, clone, compact, session stats, export, model, thinking, sidebar, and quit. RPC-compatible extensions cover help, resume, tree, fork, reload, name, hotkeys, login, login cancellation, and logout.
+21. **Local models** — Ollama, llama.cpp, and LM Studio catalogs are discovered before initial model resolution. Keyless loopback servers require no login; optional endpoint keys stay in environment variables. Pi's native `llama.cpp` provider remains separate from Alloy's `llama.cpp-local` discovery alias.
 
 ## Out (deferred)
 
@@ -54,6 +55,7 @@ Operator adoption: see **[OPERATIONS.md](./OPERATIONS.md)** and
 - [ ] `/fusion` records two valid proposals, one attributed synthesis, usage, and truthful status without leaking credentials
 - [ ] OpenTUI hydrates Pi history, streams output, renders extension dialogs, restores the terminal, and exits nonzero on backend loss
 - [ ] `alloy -p`, JSON mode, and RPC mode bypass OpenTUI; `--legacy-pi-ui` selects the rollback renderer
+- [ ] `alloy --list-models` includes models from available Ollama, llama.cpp, and LM Studio test servers before session start
 - [ ] No secrets in memory files, drafts, doctor output, or child env (see credential audit)
 
 ## Verification (CI / local)

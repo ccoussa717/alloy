@@ -167,6 +167,8 @@ Optional (v1 nice-to-have if cheap): `OLLAMA_CONTEXT_LENGTH` positive int overri
 | Partial `/api/show` | per-model ignore | Keep tag with safe defaults |
 
 Never block session start beyond the probe budget (~10s worst-case remote; typically sub-second on loopback).
+Responses are capped at 4 MiB and catalogs at 512 models per engine. Ollama
+enrichment stops issuing requests when the aggregate engine deadline expires.
 
 ### When discovery runs
 

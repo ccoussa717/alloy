@@ -5,9 +5,11 @@ import { registerLocalEngines } from "../../extensions/local-engines.ts";
 
 test("extension load registers catalogs before session_start", async () => {
   const registrations = [];
+  const unregistrations = [];
   const handlers = new Map();
   const pi = {
     registerProvider: (id, cfg) => registrations.push({ id, cfg }),
+    unregisterProvider: (id) => unregistrations.push(id),
     registerCommand() {},
     on: (event, handler) => handlers.set(event, handler),
   };
@@ -44,7 +46,7 @@ test("extension load registers catalogs before session_start", async () => {
     },
   });
   assert.equal(result.ollama.ok, true);
-  assert.equal(registrations.length, 3);
+  assert.equal(registrations.length, 1);
   assert.equal(registrations[0].id, "ollama");
   assert.equal(registrations[0].cfg.apiKey, "$OLLAMA_API_KEY");
   assert.equal(registrations[0].cfg.models[0].id, "m1");
@@ -52,28 +54,23 @@ test("extension load registers catalogs before session_start", async () => {
   assert.equal(registrations[0].cfg.models[0].provider, undefined);
   assert.equal(registrations[0].cfg.models[0].api, undefined);
   assert.equal(registrations[0].cfg.models[0].baseUrl, undefined);
-  assert.equal(registrations[1].id, "llama.cpp-local");
-  assert.equal(registrations[1].cfg.apiKey, "$LLAMA_CPP_API_KEY");
-  assert.deepEqual(registrations[1].cfg.models, []);
-  assert.equal(registrations[2].id, "lm-studio");
-  assert.equal(registrations[2].cfg.apiKey, "$LM_STUDIO_API_KEY");
-  assert.deepEqual(registrations[2].cfg.models, []);
-
   assert.equal(typeof handlers.get("session_start"), "function");
   let status;
   await handlers.get("session_start")({}, {
     ui: { setStatus(_key, value) { status = value; } },
   });
   assert.equal(status, "local:1");
+  assert.deepEqual(unregistrations, ["llama.cpp-local", "lm-studio"]);
 });
 
 test("registration failures are isolated per provider", async () => {
   const attempted = [];
   const pi = {
-    registerProvider(id) {
-      attempted.push(id);
+    registerProvider(id, config) {
+      attempted.push({ id, config });
       if (id === "ollama") throw new Error("conflict");
     },
+    unregisterProvider() {},
     on() {},
   };
   await registerLocalEngines(pi, {
@@ -83,17 +80,26 @@ test("registration failures are isolated per provider", async () => {
       lmStudio: { ok: true, provider: "lm-studio", baseUrl: "http://127.0.0.1:1234/v1", models: [{ id: "c" }] },
     }),
     loadConfig: () => ({}),
-    env: {},
+    env: {
+      LLAMA_CPP_API_KEY: "specific",
+      LLAMA_API_KEY: "legacy",
+      LM_STUDIO_API_KEY: "studio",
+    },
   });
-  assert.deepEqual(attempted, ["ollama", "llama.cpp-local", "lm-studio"]);
+  assert.deepEqual(attempted.map(({ id }) => id), ["ollama", "llama.cpp-local", "lm-studio"]);
+  assert.equal(attempted[1].config.apiKey, "$LLAMA_CPP_API_KEY");
+  assert.equal(attempted[2].config.apiKey, "$LM_STUDIO_API_KEY");
 });
 
 test("discovery failure leaves hosted extension startup intact", async () => {
   const registrations = [];
+  const unregistrations = [];
+  let sessionStart;
   await registerLocalEngines(
     {
       registerProvider(id, config) { registrations.push({ id, config }); },
-      on() {},
+      unregisterProvider(id) { unregistrations.push(id); },
+      on(event, handler) { if (event === "session_start") sessionStart = handler; },
     },
     {
       discover: async () => { throw new Error("unexpected failure"); },
@@ -101,9 +107,7 @@ test("discovery failure leaves hosted extension startup intact", async () => {
       env: {},
     },
   );
-  assert.deepEqual(
-    registrations.map(({ id }) => id),
-    ["ollama", "llama.cpp-local", "lm-studio"],
-  );
-  assert.ok(registrations.every(({ config }) => config.models.length === 0));
+  assert.deepEqual(registrations, []);
+  await sessionStart({}, { ui: { setStatus() {} } });
+  assert.deepEqual(unregistrations, ["ollama", "llama.cpp-local", "lm-studio"]);
 });
