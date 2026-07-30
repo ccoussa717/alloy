@@ -66,3 +66,66 @@ test("ensureOpenAiV1BaseUrl appends /v1 once", () => {
   assert.equal(mod.ensureOpenAiV1BaseUrl("http://127.0.0.1:11434/v1"), "http://127.0.0.1:11434/v1");
   assert.equal(mod.ensureOpenAiV1BaseUrl("http://127.0.0.1:1234/v1/"), "http://127.0.0.1:1234/v1");
 });
+
+function mockFetch(handler) {
+  return async (url, init = {}) => handler(String(url), init);
+}
+
+test("discoverOllamaModels maps tags and show metadata", async () => {
+  const fetchImpl = mockFetch(async (url, init) => {
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "llama3.2:3b", model: "llama3.2:3b" }] }), {
+        status: 200,
+      });
+    }
+    if (url.endsWith("/api/show") && init.method === "POST") {
+      return new Response(
+        JSON.stringify({
+          capabilities: ["completion", "thinking"],
+          model_info: { "llama.context_length": 8192 },
+          parameters: "num_ctx 4096\n",
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("nope", { status: 404 });
+  });
+  const result = await mod.discoverOllamaModels({
+    baseUrl: "http://127.0.0.1:11434",
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.models.length, 1);
+  const m = result.models[0];
+  assert.equal(m.id, "llama3.2:3b");
+  assert.equal(m.provider, "ollama");
+  assert.equal(m.baseUrl, "http://127.0.0.1:11434/v1");
+  assert.equal(m.api, "openai-completions");
+  assert.equal(m.reasoning, true);
+  assert.equal(m.contextWindow, 4096); // num_ctx wins over model_info
+  assert.equal(m.cost.input, 0);
+  assert.equal(m.compat.supportsDeveloperRole, false);
+});
+
+test("discoverOllamaModels returns ok:false when unreachable", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const result = await mod.discoverOllamaModels({
+    baseUrl: "http://127.0.0.1:11434",
+    fetchImpl,
+  });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.models, []);
+  assert.ok(result.error);
+});
+
+test("discoverOllamaModels empty tags yields ok with zero models", async () => {
+  const fetchImpl = mockFetch(async () => new Response(JSON.stringify({ models: [] }), { status: 200 }));
+  const result = await mod.discoverOllamaModels({
+    baseUrl: "http://127.0.0.1:11434",
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.models.length, 0);
+});
