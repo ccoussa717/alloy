@@ -91,7 +91,7 @@ keys still work through supported environment and Pi configuration routes.
 
 All tool calls (native + MCP) pass through `lib/capabilities.mjs`:
 
-- **plan / review** — hard read-only (no bash, write, edit, or mutating MCP).
+- **plan / review** — hard read-only (no bash, write, edit, or MCP calls).
 - **chat / build** — gated by permission profile (ask-all → ask-none) and optional sandbox.
 - MCP tools are not allowed by name-heuristic bypass; they use the same policy.
 

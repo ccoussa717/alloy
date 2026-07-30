@@ -42,6 +42,12 @@ test("getTopic by id", () => {
   assert.match(t.body, /Docker|network none|node:22-bookworm/i);
 });
 
+test("MCP help states startup and read-only boundaries", () => {
+  assert.match(help.getTopic("mcp").body, /mcp\.enabled must be true/i);
+  assert.match(help.getTopic("mcp").body, /enabled global servers only/i);
+  assert.match(help.getTopic("modes").body, /no write\/edit\/bash\/MCP/i);
+});
+
 test("diagnostics help discloses host execution and sandbox limits", () => {
   const topic = help.getTopic("diagnostics");
   assert.match(topic.body, /repository-defined host commands/i);
