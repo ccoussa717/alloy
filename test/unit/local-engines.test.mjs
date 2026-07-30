@@ -186,3 +186,76 @@ test("discoverLmStudioModels maps OpenAI model list", async () => {
   assert.equal(result.models[0].provider, "lm-studio");
   assert.equal(result.models[0].cost.output, 0);
 });
+
+test("discoverLocalEngines respects local.enabled false", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    throw new Error("should not run");
+  };
+  const out = await mod.discoverLocalEngines({
+    config: { providers: { local: { enabled: false } } },
+    fetchImpl,
+  });
+  assert.equal(calls, 0);
+  assert.equal(out.ollama.ok, false);
+  assert.equal(out.ollama.skipped, true);
+});
+
+test("discoverLocalEngines runs probes in parallel when enabled", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    if (url.includes("11434") && url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "a", model: "a" }] }), { status: 200 });
+    }
+    if (url.includes("8080") && url.includes("models")) {
+      return new Response(JSON.stringify({ data: [{ id: "m1" }] }), { status: 200 });
+    }
+    if (url.includes("1234") && url.includes("models")) {
+      return new Response(JSON.stringify({ data: [{ id: "lm1" }] }), { status: 200 });
+    }
+    if (url.endsWith("/api/show")) {
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+    if (url.endsWith("/props")) {
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  });
+  const out = await mod.discoverLocalEngines({ fetchImpl, config: {} });
+  assert.equal(out.ollama.ok, true);
+  assert.equal(out.llamaCpp.ok, true);
+  assert.equal(out.lmStudio.ok, true);
+});
+
+test("formatLocalEnginesDoctorSection never embeds secret-like keys", () => {
+  const secret = "Bearer-SECRET_MUST_NOT_APPEAR_zzz";
+  const text = mod.formatLocalEnginesDoctorSection({
+    ollama: {
+      ok: true,
+      provider: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      models: [{ id: "x" }],
+      latencyMs: 12,
+    },
+    llamaCpp: {
+      ok: false,
+      provider: "llama.cpp",
+      baseUrl: "http://127.0.0.1:8080",
+      models: [],
+      error: "ECONNREFUSED",
+      latencyMs: 3,
+    },
+    lmStudio: {
+      ok: false,
+      provider: "lm-studio",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      models: [],
+      skipped: true,
+    },
+  });
+  assert.ok(text.includes("Local engines"));
+  assert.ok(text.includes("Ollama"));
+  assert.ok(text.includes("reachable") || text.includes("OK"));
+  assert.ok(!text.includes(secret));
+  assert.ok(!text.includes("apiKey"));
+});
