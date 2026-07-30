@@ -58,6 +58,12 @@ curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | 
 alloy
 ```
 
+For an install version-pinned to this release instead of moving `main`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v0.8.3/install.sh | ALLOY_REF=v0.8.3 bash
+```
+
 The installer writes only to your user directories, needs no `sudo`, and puts
 the complete managed installation under `~/.local`. Writable, regular Bash and
 Zsh startup files are updated automatically. For another shell or symlinked

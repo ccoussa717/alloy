@@ -7,6 +7,8 @@ and releases use semantic versioning during the 0.x development series.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-07-30
+
 ### Added
 
 - Auto-discovery for local engines: Ollama, llama.cpp, and LM Studio (zero-config
