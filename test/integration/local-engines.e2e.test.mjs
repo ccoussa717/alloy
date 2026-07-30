@@ -32,6 +32,7 @@ function runAlloy(args, env) {
     const child = spawn(process.execPath, [join(root, "bin", "alloy.mjs"), ...args], {
       cwd: root,
       env,
+      detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -40,9 +41,18 @@ function runAlloy(args, env) {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
+    let timedOut = false;
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`Alloy subprocess timed out\n${stderr}`));
+      timedOut = true;
+      try {
+        if (process.platform === "win32" || typeof child.pid !== "number") {
+          child.kill("SIGKILL");
+        } else {
+          process.kill(-child.pid, "SIGKILL");
+        }
+      } catch {
+        child.kill("SIGKILL");
+      }
     }, 15_000);
     child.once("error", (error) => {
       clearTimeout(timer);
@@ -50,6 +60,10 @@ function runAlloy(args, env) {
     });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`Alloy subprocess timed out\n${stderr}`));
+        return;
+      }
       resolveRun({ code, signal, stdout, stderr });
     });
   });

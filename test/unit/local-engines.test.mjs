@@ -102,6 +102,26 @@ test("fetchJsonWithTimeout rejects oversized bodies before parsing", async () =>
   assert.equal(parsed, false);
 });
 
+test("fetchJsonWithTimeout cancels oversized streaming bodies", async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(mod.MAX_DISCOVERY_BODY_BYTES + 1));
+    },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(
+    mod.fetchJsonWithTimeout(
+      "http://127.0.0.1:11434/api/tags",
+      {},
+      100,
+      async () => new Response(body),
+    ),
+    /response too large/i,
+  );
+  assert.equal(cancelled, true);
+});
+
 function mockFetch(handler) {
   return async (url, init = {}) => handler(String(url), init);
 }
@@ -159,6 +179,23 @@ test("discoverOllamaModels uses optional auth without exposing it in results", a
   assert.equal(result.ok, true);
   assert.deepEqual(seen, ["Bearer top-secret", "Bearer top-secret"]);
   assert.equal(JSON.stringify(result).includes("top-secret"), false);
+});
+
+test("OLLAMA_CONTEXT_LENGTH fills missing metadata but does not replace reported context", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "reported" }] }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({ model_info: { "model.context_length": 128000 } }),
+      { status: 200 },
+    );
+  });
+  const result = await mod.discoverOllamaModels({
+    fetchImpl,
+    env: { OLLAMA_CONTEXT_LENGTH: "4096" },
+  });
+  assert.equal(result.models[0].contextWindow, 128000);
 });
 
 test("discoverOllamaModels rejects malformed catalogs and model ids", async () => {
@@ -244,7 +281,8 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
         JSON.stringify({
           data: [
             { id: "loaded-a", status: { value: "loaded" }, meta: { n_ctx: 4096 } },
-            { id: "idle-b", status: { value: "unloaded" } },
+            { id: "duplicate", status: { value: "unloaded" } },
+            { id: "duplicate", status: { value: "loaded" } },
             { id: "idle-string", status: "unloaded" },
             { id: "no-status" },
           ],
@@ -261,7 +299,7 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
   assert.equal(result.ok, true);
   const ids = result.models.map((m) => m.id).sort();
   // loaded + entries without status (assume available); exclude explicit unloaded
-  assert.deepEqual(ids, ["loaded-a", "no-status"]);
+  assert.deepEqual(ids, ["duplicate", "loaded-a", "no-status"]);
   const loaded = result.models.find((m) => m.id === "loaded-a");
   assert.equal(loaded.provider, "llama.cpp-local");
   assert.equal(loaded.contextWindow, 4096);
@@ -272,7 +310,7 @@ test("discoverLlamaCppModels prefers its specific key and valid fallback catalog
   const calls = [];
   const result = await mod.discoverLlamaCppModels({
     env: {
-      LLAMA_CPP_API_KEY: "specific",
+      LLAMA_CPP_API_KEY: " specific ",
       LLAMA_API_KEY: "legacy",
     },
     fetchImpl: mockFetch(async (url, init) => {
@@ -289,6 +327,19 @@ test("discoverLlamaCppModels prefers its specific key and valid fallback catalog
   assert.equal(result.ok, true);
   assert.deepEqual(result.models.map(({ id }) => id), ["fallback"]);
   assert.ok(calls.every(({ auth }) => auth === "Bearer specific"));
+});
+
+test("discoverLlamaCppModels does not probe fallbacks after its deadline", async () => {
+  let calls = 0;
+  const result = await mod.discoverLlamaCppModels({
+    fetchImpl: async () => {
+      calls += 1;
+      return { ok: true, json: () => new Promise(() => {}) };
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "request timed out");
+  assert.equal(calls, 1);
 });
 
 test("discoverLmStudioModels maps OpenAI model list", async () => {

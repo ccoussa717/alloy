@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const localEngines = require(join(root, "lib", "local-engines.mjs"));
 const { loadGlobalConfig } = require(join(root, "lib", "config.mjs"));
+const { getPiAgentDir } = require(join(root, "lib", "paths.mjs"));
 
 type DiscoverFn = typeof localEngines.discoverLocalEngines;
 
@@ -19,6 +21,7 @@ export type LocalEnginesDependencies = {
   discover?: DiscoverFn;
   loadConfig?: () => unknown;
   env?: NodeJS.ProcessEnv;
+  manualProviderIds?: () => Set<string>;
 };
 
 function toRegisterModels(models: Array<Record<string, unknown>>) {
@@ -47,13 +50,27 @@ const DISPLAY: Record<string, string> = {
 };
 
 function providerApiKey(id: string, env: NodeJS.ProcessEnv) {
-  if (id === "ollama" && env.OLLAMA_API_KEY) return "$OLLAMA_API_KEY";
+  if (id === "ollama" && env.OLLAMA_API_KEY?.trim()) return "$OLLAMA_API_KEY";
   if (id === "llama.cpp-local") {
-    if (env.LLAMA_CPP_API_KEY) return "$LLAMA_CPP_API_KEY";
-    if (env.LLAMA_API_KEY) return "$LLAMA_API_KEY";
+    if (env.LLAMA_CPP_API_KEY?.trim()) return "$LLAMA_CPP_API_KEY";
+    if (env.LLAMA_API_KEY?.trim()) return "$LLAMA_API_KEY";
   }
-  if (id === "lm-studio" && env.LM_STUDIO_API_KEY) return "$LM_STUDIO_API_KEY";
+  if (id === "lm-studio" && env.LM_STUDIO_API_KEY?.trim()) return "$LM_STUDIO_API_KEY";
   return PLACEHOLDER[id] || "local";
+}
+
+function loadManualProviderIds() {
+  try {
+    const parsed = JSON.parse(readFileSync(join(getPiAgentDir(), "models.json"), "utf8"));
+    const providers = parsed?.providers;
+    return new Set(
+      providers && typeof providers === "object" && !Array.isArray(providers)
+        ? Object.keys(providers)
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
 }
 
 export async function registerLocalEngines(
@@ -63,6 +80,7 @@ export async function registerLocalEngines(
   const discover = dependencies.discover ?? localEngines.discoverLocalEngines;
   const loadConfig = dependencies.loadConfig ?? loadGlobalConfig;
   const env = dependencies.env ?? process.env;
+  const manualProviderIds = (dependencies.manualProviderIds ?? loadManualProviderIds)();
   let bundle;
   try {
     const config = loadConfig();
@@ -100,6 +118,7 @@ export async function registerLocalEngines(
   let registered = 0;
   const unavailable: string[] = [];
   for (const { key, id } of entries) {
+    if (manualProviderIds.has(id)) continue;
     const result = bundle[key];
     const models = result?.ok && Array.isArray(result.models)
       ? toRegisterModels(result.models)
@@ -131,6 +150,30 @@ export async function registerLocalEngines(
         pi.unregisterProvider(id);
       } catch {
         // A missing stale overlay is already the desired state.
+      }
+    }
+    if (
+      ctx.model &&
+      unavailable.includes(ctx.model.provider) &&
+      !ctx.modelRegistry.find(ctx.model.provider, ctx.model.id)
+    ) {
+      const fallback = ctx.modelRegistry.getAvailable().find(
+        (model) => !unavailable.includes(model.provider),
+      );
+      if (fallback) {
+        try {
+          await pi.setModel(fallback);
+        } catch {
+          ctx.ui.notify(
+            "The active local model is unavailable. Choose /model before prompting.",
+            "warning",
+          );
+        }
+      } else {
+        ctx.ui.notify(
+          "The active local model is unavailable. Start its engine or choose /model.",
+          "warning",
+        );
       }
     }
     try {

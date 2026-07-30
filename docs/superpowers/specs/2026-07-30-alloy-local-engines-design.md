@@ -31,9 +31,9 @@ OMP treats local engines as **first-class, keyless, auto-discovered**:
 
 ### Pi (what Alloy runs today)
 
-- Custom locals work via `~/.pi/agent/models.json` (static model lists; often need a dummy `apiKey`).
+- Custom locals work via `~/.pi/agent/models.json` (static model lists; often need a dummy `apiKey`). Alloy treats provider ids present there as operator-owned and skips auto-registration for those ids.
 - Built-in **llama.cpp** extension: `/login llama.cpp`, `/llama` (load/unload/download), env `LLAMA_BASE_URL` / `LLAMA_API_KEY`.
-- Extensions may `pi.registerProvider(...)` with static or dynamically fetched models; `models.json` composes above registered providers.
+- Extensions may `pi.registerProvider(...)` with static or dynamically fetched models. Extension values take precedence during Pi composition, so Alloy skips provider ids already owned by `models.json`.
 - Many hosted open providers already exist in `pi-ai`; Alloy’s product surface is intentionally MVP-narrow.
 
 ### Alloy today
@@ -308,8 +308,8 @@ No installer change. No Pi package bump required for v1 if `registerProvider` + 
 | Slow remote host | Timeouts; parallel probes; doctor unreachable |
 | Dummy apiKey confusion | Docs: local placeholder; never print as secret |
 | Weak tool-calling on some GGUFs | Document; no false full-parity claims |
-| User `models.json` overrides | Pi composes `models.json` above registered providers — user static config still wins where Pi defines precedence |
-| Stale catalog after pull/load | Re-probe on `/model` when possible; else document session restart / doctor |
+| User `models.json` overrides | Detect operator-owned provider ids before registration and leave their catalog, URL, and authentication untouched |
+| Stale catalog after pull/load | Document session restart; `/doctor` re-probes status without mutating the active catalog |
 
 ## Alternatives considered
 
