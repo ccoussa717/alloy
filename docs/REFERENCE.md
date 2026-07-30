@@ -148,6 +148,9 @@ the supported default** - no API keys are required for local engines on
 | `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
 
 No OAuth. Optional keys apply to discovery and inference without being printed.
+For keyless engines, Alloy's internal configuration marker is never sent as an
+`Authorization` header. When an API-key environment variable is set, inference
+sends that exact value as a bearer token.
 Models appear under `/model` and `--list-models` when the engine was reachable
 and had usable models at startup (llama.cpp: loaded models when status is
 advertised). Start engines before Alloy, or restart Alloy after `ollama pull` or

@@ -184,6 +184,7 @@ Pi treats many providers as needing configured auth before models appear. V1 mir
 
 - Resolve a **non-secret placeholder** key (`"local"` / `"ollama"`) so models are considered configured.
 - If optional env keys are set, send Bearer: `OLLAMA_API_KEY`, `LLAMA_API_KEY` / `LLAMA_CPP_API_KEY`, `LM_STUDIO_API_KEY`.
+- For keyless engines, the streaming adapter removes the placeholder-generated `Authorization` header before transport.
 - No new Alloy secret store; no `/login` required for default local.
 - Doctor **never** prints key values or placeholders as secrets.
 

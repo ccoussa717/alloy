@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { streamSimple as streamOpenAiCompatible } from "@earendil-works/pi-ai/compat";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -57,6 +58,15 @@ function providerApiKey(id: string, env: NodeJS.ProcessEnv) {
   }
   if (id === "lm-studio" && env.LM_STUDIO_API_KEY?.trim()) return "$LM_STUDIO_API_KEY";
   return PLACEHOLDER[id] || "local";
+}
+
+function providerHasApiKey(id: string, env: NodeJS.ProcessEnv) {
+  if (id === "ollama") return Boolean(env.OLLAMA_API_KEY?.trim());
+  if (id === "llama.cpp-local") {
+    return Boolean(env.LLAMA_CPP_API_KEY?.trim() || env.LLAMA_API_KEY?.trim());
+  }
+  if (id === "lm-studio") return Boolean(env.LM_STUDIO_API_KEY?.trim());
+  return false;
 }
 
 function loadManualProviderIds() {
@@ -131,12 +141,23 @@ export async function registerLocalEngines(
       result?.models?.[0]?.baseUrl ||
       localEngines.ensureOpenAiV1BaseUrl(result?.baseUrl);
     try {
+      const hasApiKey = providerHasApiKey(id, env);
       pi.registerProvider(id, {
         name: DISPLAY[id] || id,
         baseUrl: firstBase,
         apiKey: providerApiKey(id, env),
         api: "openai-completions",
         models,
+        streamSimple: (model, context, options) =>
+          streamOpenAiCompatible(model, context, hasApiKey
+            ? options
+            : {
+                ...options,
+                headers: {
+                  ...options?.headers,
+                  Authorization: null,
+                } as unknown as Record<string, string>,
+              }),
       });
       if (models.length) registered += 1;
     } catch {

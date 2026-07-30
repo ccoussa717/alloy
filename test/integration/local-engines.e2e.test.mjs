@@ -70,6 +70,7 @@ function runAlloy(args, env) {
 }
 
 test("real Pi --list-models includes all discovered local engines before session_start", async (t) => {
+  const inferenceHeaders = [];
   const ollama = await listen((request, response) => {
     if (request.url === "/api/tags") {
       json(response, { models: [{ name: "ollama-test" }] });
@@ -77,6 +78,15 @@ test("real Pi --list-models includes all discovered local engines before session
     }
     if (request.url === "/api/show") {
       json(response, { parameters: "num_ctx 4096\n" });
+      return;
+    }
+    if (request.url === "/v1/chat/completions") {
+      inferenceHeaders.push(request.headers.authorization);
+      request.resume();
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[{"index":0,"delta":{"role":"assistant","content":"local-ok"},"finish_reason":null}]}\n\n');
+      response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+      response.end("data: [DONE]\n\n");
       return;
     }
     response.writeHead(404).end();
@@ -136,6 +146,22 @@ test("real Pi --list-models includes all discovered local engines before session
   assert.match(result.stdout, /llama\.cpp-local\s+llama-test/);
   assert.match(result.stdout, /lm-studio\s+lm-test/);
   assert.doesNotMatch(result.stderr, /Failed to load extension|Provider .* error/i);
+
+  const keyless = await runAlloy(
+    ["--model", "ollama/ollama-test", "--no-session", "-p", "hello"],
+    childEnv,
+  );
+  assert.equal(keyless.code, 0, keyless.stderr);
+  assert.match(keyless.stdout, /local-ok/);
+  assert.equal(inferenceHeaders.at(-1), undefined);
+
+  const keyed = await runAlloy(
+    ["--model", "ollama/ollama-test", "--no-session", "-p", "hello"],
+    { ...childEnv, OLLAMA_API_KEY: "inference-secret" },
+  );
+  assert.equal(keyed.code, 0, keyed.stderr);
+  assert.match(keyed.stdout, /local-ok/);
+  assert.equal(inferenceHeaders.at(-1), "Bearer inference-secret");
 });
 
 test("disabled discovery preserves a manual models.json provider", async (t) => {

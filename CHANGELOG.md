@@ -47,7 +47,8 @@ and releases use semantic versioning during the 0.x development series.
 - Bounded local-engine response bodies and aggregate probes, redacted endpoint
   credentials, rejected malformed catalogs, preserved optional inference keys,
   and removed stale auto-discovered catalogs when an engine is disabled or
-  unavailable without overriding manual `models.json` providers.
+  unavailable without overriding manual `models.json` providers. Keyless
+  inference no longer sends placeholder bearer credentials.
 - Existing configs with an explicit hosted-only `providers.allow` array must add
   `ollama`, `llama.cpp-local`, and `lm-studio` to enable local discovery.
 
