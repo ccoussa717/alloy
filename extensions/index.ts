@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { registerHonesty } from "./honesty.ts";
 import { registerMemory } from "./memory.ts";
 import { registerProviders } from "./providers.ts";
+import { registerLocalEngines } from "./local-engines.ts";
 import { registerSkillsImprove } from "./skills-improve.ts";
 import { registerMcp } from "./mcp.ts";
 import { registerPolicy } from "./policy.ts";
@@ -49,6 +50,7 @@ export default function alloyExtension(pi: ExtensionAPI) {
   registerNativeCommands(pi);
   registerAuthCommands(pi);
   registerProviders(pi);
+  registerLocalEngines(pi);
   registerModes(pi); // Shift+Tab = Build/Plan
   registerPolicy(pi); // approval profiles remain an independent axis
   registerEffort(pi); // /effort = thinking
