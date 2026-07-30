@@ -61,7 +61,8 @@ host processes rather than Docker-sandboxed Bash.
   `npx -y <package>` commands.
 - [ ] Use HTTPS for every non-loopback remote MCP transport.
 - [ ] Store expanded header secrets in `~/.pi/alloy/env` with mode `0600`.
-- [ ] Leave `connectOnStart` disabled unless every configured server is trusted.
+- [ ] Leave `connectOnStart` disabled unless every enabled global server is
+  trusted. Project servers never auto-connect.
 
 ## Recovery
 

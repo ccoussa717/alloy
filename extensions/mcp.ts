@@ -1,7 +1,8 @@
 /**
  * Live MCP adapter: connect stdio + HTTP (streamable) + SSE servers,
  * register tools on the agent.
- * Policy: MCP tools go through the same tool_call gate (readonly blocks mutating MCP names).
+ * Policy: every MCP tool goes through the central tool_call gate as an
+ * external side effect; Plan and Review deny it mechanically.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,6 +19,7 @@ const {
   loadMcpConfig,
   ensureMcpConfig,
   listAutoConnectServers,
+  isMcpServerEnabled,
 } = require(join(root, "lib", "mcp-config.mjs"));
 const { getAlloyMcpPath, getProjectMcpPath } = require(
   join(root, "lib", "paths.mjs"),
@@ -45,6 +47,11 @@ type ServerRow = {
   transport: string;
 };
 
+type McpServerSpec = Record<string, unknown> & {
+  cwd?: unknown;
+  enabled?: unknown;
+};
+
 /**
  * Process-wide manager. Pi may re-evaluate extension modules; keep one
  * McpManager so /mcp connect and /mcp list share connection state.
@@ -52,13 +59,18 @@ type ServerRow = {
 const g = globalThis as typeof globalThis & {
   __alloyMcpManager?: InstanceType<typeof McpManager>;
   __alloyMcpRegisteredTools?: Map<string, string>;
+  __alloyMcpDeactivatedTools?: Set<string>;
 };
 if (!g.__alloyMcpManager) g.__alloyMcpManager = new McpManager();
 if (!(g.__alloyMcpRegisteredTools instanceof Map)) {
   g.__alloyMcpRegisteredTools = new Map();
 }
+if (!(g.__alloyMcpDeactivatedTools instanceof Set)) {
+  g.__alloyMcpDeactivatedTools = new Set();
+}
 const manager = g.__alloyMcpManager;
 const registeredNames = g.__alloyMcpRegisteredTools;
+const deactivatedNames = g.__alloyMcpDeactivatedTools;
 
 function sidebarMcpRows(cwd: string) {
   const servers: ServerRow[] = listMcpServers(cwd);
@@ -133,17 +145,32 @@ function jsonSchemaToTypeBox(schema: Record<string, unknown> | undefined) {
   return Type.Object(shape, { additionalProperties: true });
 }
 
+function deactivateRegisteredMcpTools(pi: ExtensionAPI) {
+  const active = pi.getActiveTools();
+  for (const name of active) {
+    if (registeredNames.has(name)) deactivatedNames.add(name);
+  }
+  pi.setActiveTools(active.filter((name) => !registeredNames.has(name)));
+}
+
+function reactivateConnectedMcpTools(pi: ExtensionAPI, connectedNames: Set<string>) {
+  const restore = [...deactivatedNames].filter((name) => connectedNames.has(name));
+  if (!restore.length) return;
+  pi.setActiveTools([...new Set([...pi.getActiveTools(), ...restore])]);
+  for (const name of restore) deactivatedNames.delete(name);
+}
+
 function registerToolsFromManager(pi: ExtensionAPI) {
   const tools = manager.getRegisteredTools();
+  const connectedNames = new Set<string>();
   let added = 0;
   for (const t of tools) {
+    connectedNames.add(t.registerName);
     const identity = `${t.server}\0${t.tool}`;
     const registeredIdentity = registeredNames.get(t.registerName);
     if (registeredIdentity && registeredIdentity !== identity) {
       throw new Error(`MCP tool registration identity changed: ${t.registerName}`);
     }
-    if (registeredIdentity) continue;
-    registeredNames.set(t.registerName, identity);
     const server = t.server;
     const tool = t.tool;
     const desc =
@@ -179,8 +206,10 @@ function registerToolsFromManager(pi: ExtensionAPI) {
         }
       },
     });
+    registeredNames.set(t.registerName, identity);
     added++;
   }
+  reactivateConnectedMcpTools(pi, connectedNames);
   setMcpStats({
     connected: manager.listConnections().some((c: { status: string }) => c.status === "connected"),
     toolCount: manager.getRegisteredTools().length,
@@ -191,15 +220,36 @@ function registerToolsFromManager(pi: ExtensionAPI) {
 async function connectAll(
   pi: ExtensionAPI,
   ctx?: { cwd?: string; ui?: { notify?: Function; setStatus?: Function } },
-  selected?: Array<{ name: string; spec: object }>,
+  selected?: Array<{ name: string; spec: McpServerSpec }>,
 ) {
-  // Ensure MCP ${ENV} secrets are present even if launcher did not load them
-  loadAlloyEnvFile({ force: true });
   ensureMcpConfig();
   const cwd = ctx?.cwd || process.cwd();
+  if (loadConfig(cwd).mcp?.enabled !== true) {
+    await manager.disconnectAll();
+    deactivateRegisteredMcpTools(pi);
+    publishMcpRuntime(cwd, ctx);
+    return {
+      results: [] as Array<{
+        name: string;
+        ok: boolean;
+        tools?: number;
+        error?: string;
+        transport?: string;
+      }>,
+      reg: { added: 0, total: manager.getRegisteredTools().length },
+      ok: 0,
+      fail: [] as Array<{ name: string; ok: boolean; error?: string }>,
+      message: "MCP is disabled by effective Alloy configuration.",
+    };
+  }
+
+  // Ensure MCP ${ENV} secrets are present even if launcher did not load them
+  loadAlloyEnvFile({ force: true });
   const enabled = selected
     ? selected.map(({ name, spec }) => [name, spec] as const)
-    : Object.entries(loadMcpConfig(cwd).servers).filter(([, spec]) => spec?.enabled !== false);
+    : Object.entries(loadMcpConfig(cwd).servers).filter(([, spec]) => isMcpServerEnabled(spec));
+  await manager.disconnectAll();
+  deactivateRegisteredMcpTools(pi);
   if (!enabled.length) {
     publishMcpRuntime(cwd, ctx);
     return {
@@ -219,7 +269,19 @@ async function connectAll(
   }
 
   // Quiet by default — no per-server progress toasts
-  const results = await manager.connectEnabled(Object.fromEntries(enabled), {
+  const servers = Object.fromEntries(
+    enabled.map(([name, rawSpec]) => {
+      const spec = rawSpec as McpServerSpec;
+      return [
+        name,
+        {
+          ...spec,
+          cwd: typeof spec.cwd === "string" && spec.cwd ? spec.cwd : cwd,
+        },
+      ];
+    }),
+  );
+  const results = await manager.connectEnabled(servers, {
     onStateChange: () => publishMcpRuntime(cwd, ctx),
   });
   const reg = registerToolsFromManager(pi);
@@ -238,11 +300,12 @@ export function registerMcp(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parts = (args || "list").trim().split(/\s+/);
       const cmd = parts[0] || "list";
-      const servers: ServerRow[] = listMcpServers(process.cwd());
+      const cwd = ctx.cwd || process.cwd();
+      const servers: ServerRow[] = listMcpServers(cwd);
 
       if (cmd === "path") {
         ctx.ui.notify(
-          `Global: ${getAlloyMcpPath()}\nProject: ${getProjectMcpPath(process.cwd())}`,
+          `Global: ${getAlloyMcpPath()}\nProject: ${getProjectMcpPath(cwd)}`,
           "info",
         );
         return;
@@ -250,7 +313,8 @@ export function registerMcp(pi: ExtensionAPI) {
 
       if (cmd === "disconnect") {
         await manager.disconnectAll();
-        publishMcpRuntime(ctx.cwd || process.cwd(), ctx);
+        deactivateRegisteredMcpTools(pi);
+        publishMcpRuntime(cwd, ctx);
         ctx.ui.notify("MCP disconnected", "info");
         return;
       }
@@ -359,8 +423,8 @@ export function registerMcp(pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_id, params: { includeTools?: boolean }) {
-      const servers: ServerRow[] = listMcpServers(process.cwd());
+    async execute(_id, params: { includeTools?: boolean }, _signal, _onUpdate, ctx) {
+      const servers: ServerRow[] = listMcpServers(ctx?.cwd || process.cwd());
       const live = manager.listConnections();
       const tools = manager.getRegisteredTools();
       const lines: string[] = ["## MCP servers"];
@@ -429,7 +493,7 @@ export function registerMcp(pi: ExtensionAPI) {
         // fail closed remains default
       }
 
-      const cwd = process.cwd();
+      const cwd = ctx.cwd || process.cwd();
       const servers: ServerRow[] = listMcpServers(cwd);
       const enabled = servers.filter((s) => s.enabled).length;
       if (servers.length) {
@@ -440,7 +504,7 @@ export function registerMcp(pi: ExtensionAPI) {
 
       // connectOnStart: GLOBAL servers only. One quiet status line on success.
       const globalCfg = loadGlobalConfig();
-      if (globalCfg.mcp?.connectOnStart) {
+      if (globalCfg.mcp?.connectOnStart === true) {
         const auto = listAutoConnectServers(cwd);
         if (auto.length > 0) {
           const { results, reg, ok, fail } = await connectAll(pi, ctx, auto);
@@ -486,6 +550,9 @@ export function registerMcp(pi: ExtensionAPI) {
       await manager.disconnectAll();
     } catch {
       // ignore
+    } finally {
+      registeredNames.clear();
+      deactivatedNames.clear();
     }
   });
 }
