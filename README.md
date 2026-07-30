@@ -86,6 +86,9 @@ authentication check. Use `/doctor` when setup or model discovery fails.
 OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
 so Alloy does not accept API keys in an interactive prompt. Use provider
 environment variables or `~/.pi/agent/models.json` for API-key routes.
+Local engines (Ollama, llama.cpp, LM Studio) are auto-detected when running on
+their default ports; use `/model` after they start. See the reference for env
+overrides.
 
 Then ask a direct question or choose a workflow:
 

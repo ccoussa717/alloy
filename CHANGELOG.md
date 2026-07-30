@@ -9,6 +9,12 @@ and releases use semantic versioning during the 0.x development series.
 
 ### Added
 
+- Auto-discovery for local engines: Ollama, llama.cpp, and LM Studio (zero-config
+  `/model` when servers are up).
+- `/doctor` and `/providers` report local engine reachability and model counts
+  (never secrets).
+- Config: `providers.local.{enabled,ollama,llamaCpp,lmStudio}` and default
+  allowlist entries for the three providers.
 - Added a native responsive Fusion dashboard that streams bounded Architect,
   Builder, and Synthesizer model output and read-tool activity while preserving
   the final attributed transcript and generic RPC widget fallback.

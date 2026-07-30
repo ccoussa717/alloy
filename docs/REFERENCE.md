@@ -134,6 +134,20 @@ the TUI.
 | OpenAI API | `OPENAI_API_KEY` | Models use the `openai/...` prefix, not `openai-codex/...`. |
 | xAI API | `XAI_API_KEY` | API provider route. |
 
+### Local engines (auto-discovery)
+
+Alloy probes these engines at session start when `providers.local.enabled` is true (default):
+
+| Provider | Default URL | Env |
+|---|---|---|
+| `ollama` | `http://127.0.0.1:11434` | `OLLAMA_BASE_URL`, then `OLLAMA_HOST`; optional `OLLAMA_API_KEY`, `OLLAMA_CONTEXT_LENGTH` |
+| `llama.cpp` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_API_KEY` / `LLAMA_CPP_API_KEY` |
+| `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
+
+No OAuth. Models appear under `/model` when the engine is reachable and has usable models (llama.cpp: loaded models when status is advertised). Pi’s `/llama` still manages llama.cpp load/unload/download. `/doctor` reports reachability and model counts without secrets.
+
+Disable all probes with `"providers": { "local": { "enabled": false } }`. Existing configs that pin `providers.allow` to the old four hosted ids should add `ollama`, `llama.cpp`, and `lm-studio` for orchestration routing; `/model` discovery still registers when probes succeed.
+
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints
 secret values or makes a live model call. Green status means local credential or
