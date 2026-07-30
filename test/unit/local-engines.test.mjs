@@ -129,3 +129,60 @@ test("discoverOllamaModels empty tags yields ok with zero models", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.models.length, 0);
 });
+
+test("discoverLlamaCppModels keeps only loaded models when status present", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    if (url.includes("/props")) {
+      return new Response(
+        JSON.stringify({
+          default_generation_settings: { n_ctx: 8192 },
+          modalities: { vision: false },
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.endsWith("/models") || url.endsWith("/v1/models")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: "loaded-a", status: { value: "loaded" }, meta: { n_ctx: 4096 } },
+            { id: "idle-b", status: { value: "unloaded" } },
+            { id: "no-status" },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("no", { status: 404 });
+  });
+  const result = await mod.discoverLlamaCppModels({
+    baseUrl: "http://127.0.0.1:8080",
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  const ids = result.models.map((m) => m.id).sort();
+  // loaded + entries without status (assume available); exclude explicit unloaded
+  assert.deepEqual(ids, ["loaded-a", "no-status"]);
+  const loaded = result.models.find((m) => m.id === "loaded-a");
+  assert.equal(loaded.provider, "llama.cpp");
+  assert.equal(loaded.contextWindow, 4096);
+  assert.ok(loaded.baseUrl.endsWith("/v1"));
+});
+
+test("discoverLmStudioModels maps OpenAI model list", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    assert.ok(url.includes("/models"));
+    return new Response(
+      JSON.stringify({ data: [{ id: "qwen2.5-coder-7b", owned_by: "local" }] }),
+      { status: 200 },
+    );
+  });
+  const result = await mod.discoverLmStudioModels({
+    baseUrl: "http://127.0.0.1:1234/v1",
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.models[0].id, "qwen2.5-coder-7b");
+  assert.equal(result.models[0].provider, "lm-studio");
+  assert.equal(result.models[0].cost.output, 0);
+});
