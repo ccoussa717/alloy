@@ -259,3 +259,16 @@ test("formatLocalEnginesDoctorSection never embeds secret-like keys", () => {
   assert.ok(!text.includes(secret));
   assert.ok(!text.includes("apiKey"));
 });
+
+test("default config allowlists local engines and enables discovery", async () => {
+  const { DEFAULT_CONFIG } = await import(
+    pathToFileURL(join(new URL("../..", import.meta.url).pathname, "lib", "config.mjs")).href
+  );
+  for (const id of ["ollama", "llama.cpp", "lm-studio"]) {
+    assert.ok(DEFAULT_CONFIG.providers.allow.includes(id), id);
+  }
+  assert.equal(DEFAULT_CONFIG.providers.local.enabled, true);
+  assert.equal(DEFAULT_CONFIG.providers.local.ollama, true);
+  assert.equal(DEFAULT_CONFIG.providers.local.llamaCpp, true);
+  assert.equal(DEFAULT_CONFIG.providers.local.lmStudio, true);
+});
