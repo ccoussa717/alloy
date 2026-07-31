@@ -283,6 +283,21 @@ test("manifest validation rejects unknown keys, IDs, counts, and invalid locatio
   for (const value of invalid) assert.throws(() => validateDogfoodManifest(value, fixtureRoot));
 });
 
+test("normalized packet paths require canonical nonempty POSIX segments", () => {
+  const withPath = (path) => {
+    const manifest = readManifest();
+    manifest.cases[0].expectedFindings[0].affectedPath = path;
+    return manifest;
+  };
+  for (const path of ["a", "a/b", "unstaged.diff"]) {
+    assert.doesNotThrow(() => validateDogfoodManifest(withPath(path)), path);
+  }
+  for (const path of [
+    "", ".", "..", "/absolute", "a\\b", "a\0b", "a//b", "a/./b",
+    "a/../unstaged.diff", "../unstaged.diff",
+  ]) assert.throws(() => validateDogfoodManifest(withPath(path)), undefined, path);
+});
+
 test("materializer creates nine committed dirty repositories without mutating fixtures", () => {
   const outputRoot = join(mkdtempSync(join(tmpdir(), "alloy-fission-dogfood-test-")), "runs");
   const before = treeDigest(fixtureRoot);
@@ -339,55 +354,77 @@ test("evaluator passes only complete exact-route results with every seed matched
   });
 });
 
-test("evaluator matches exact paths and inclusive line overlap without consulting claim text", () => {
+test("evaluator rejects normalized fields altered independently of raw findings and judge clusters", () => {
   const manifest = readManifest();
   const entry = manifest.cases.find(({ id }) => id === "correctness-stale-cache");
-  const pass = validResults(manifest);
-  const result = pass[entry.id];
-  result.validatedFindings[0].claim = "This says nothing about a cache.";
-  result.validatedFindings[0].location = {
-    ...result.validatedFindings[0].location,
-    lineStart: entry.expectedFindings[0].lineEnd,
-    lineEnd: entry.expectedFindings[0].lineEnd + 3,
-  };
-  const secondRawFinding = {
-    severity: "medium",
-    claim: "A separate nonblocking observation.",
-    affectedPath: entry.expectedFindings[0].affectedPath,
-    location: normalizedFinding(entry).location,
-    evidence: "The accepted patch contains the observation.",
-    reproduction: "Inspect the changed tree.",
-    suggestedFix: "Consider a follow-up cleanup.",
-    confidence: 0.8,
-  };
-  const secondId = findingId("R02", 0, secondRawFinding);
-  const second = normalizedFinding(entry, {
-    clusterId: "C0002",
-    canonicalFindingId: secondId,
-    memberFindingIds: [secondId],
-    adjudicatedSeverity: "medium",
-  });
-  result.reviewers[1].output.findings.push(secondRawFinding);
-  result.validatedFindings.push(second);
-  const secondJudgeCluster = {
-    canonicalFindingId: second.canonicalFindingId,
-    findingIds: second.memberFindingIds,
-    disposition: "validated",
-    adjudicatedSeverity: second.adjudicatedSeverity,
-    rationale: second.rationale,
-    evidenceRefs: second.evidenceRefs,
-  };
-  result.judge.output.clusters.push(secondJudgeCluster);
-  result.clusters.push({ clusterId: second.clusterId, ...secondJudgeCluster });
-  assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, pass)).status, "PASSED");
+  const mutations = [
+    (finding) => { finding.claim = "Independently altered claim."; },
+    (finding) => { finding.affectedPath = "other.mjs"; },
+    (finding) => { finding.location = { ...finding.location, lineStart: 20, lineEnd: 21 }; },
+    (finding) => { finding.rationale = "Independently altered rationale."; },
+    (finding) => { finding.evidenceRefs = finding.evidenceRefs.map((ref) => ({ ...ref, lineStart: 2, lineEnd: 2 })); },
+    (finding) => { finding.memberFindingIds = [`F${"d".repeat(24)}`]; },
+    (finding) => { finding.canonicalFindingId = `F${"e".repeat(24)}`; },
+  ];
+  for (const mutate of mutations) {
+    const results = validResults(manifest);
+    mutate(results[entry.id].validatedFindings[0]);
+    assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, results)).status, "FAILED");
+  }
+});
 
-  const wrongPath = structuredClone(pass);
-  wrongPath[entry.id].validatedFindings[0].affectedPath = `other/${entry.expectedFindings[0].affectedPath}`;
-  assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, wrongPath)).status, "FAILED");
-  const wrongLines = structuredClone(pass);
-  wrongLines[entry.id].validatedFindings[0].location.lineStart = entry.expectedFindings[0].lineEnd + 1;
-  wrongLines[entry.id].validatedFindings[0].location.lineEnd = entry.expectedFindings[0].lineEnd + 2;
-  assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, wrongLines)).status, "FAILED");
+test("evaluator accepts only the host-derived canonical and duplicate projections", () => {
+  const manifest = readManifest();
+  const entry = manifest.cases.find(({ id }) => id === "correctness-stale-cache");
+  const results = validResults(manifest);
+  const result = results[entry.id];
+  const canonical = result.validatedFindings[0];
+  const duplicateRaw = {
+    severity: "high",
+    claim: "A duplicate report of the same seeded blocker.",
+    affectedPath: "subject.mjs",
+    location: { ...canonical.location },
+    evidence: "The same accepted patch demonstrates the defect.",
+    reproduction: "Exercise the same contract.",
+    suggestedFix: "Restore the safe base behavior.",
+    confidence: 0.9,
+  };
+  const duplicateId = findingId("R02", 0, duplicateRaw);
+  result.reviewers[1].output.findings.push(duplicateRaw);
+  result.judge.output.clusters[0].findingIds = [duplicateId, canonical.canonicalFindingId];
+  const members = [canonical.canonicalFindingId, duplicateId];
+  result.clusters[0].findingIds = members;
+  canonical.memberFindingIds = members;
+  result.rejectedFindings.push({
+    clusterId: "C0001",
+    canonicalFindingId: canonical.canonicalFindingId,
+    memberFindingIds: members,
+    affectedPath: duplicateRaw.affectedPath,
+    location: duplicateRaw.location,
+    claim: duplicateRaw.claim,
+    adjudicatedSeverity: null,
+    rationale: `Duplicate of ${canonical.canonicalFindingId}: ${result.clusters[0].rationale}`,
+    evidenceRefs: result.clusters[0].evidenceRefs,
+    disposition: "duplicate",
+  });
+  assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, results)).status, "PASSED");
+
+  const duplicateMutations = [
+    (finding) => { finding.claim = "Altered duplicate claim."; },
+    (finding) => { finding.affectedPath = "other.mjs"; },
+    (finding) => { finding.location = { ...finding.location, lineStart: 30, lineEnd: 31 }; },
+    (finding) => { finding.canonicalFindingId = `F${"e".repeat(24)}`; },
+    (finding) => { finding.memberFindingIds = [finding.canonicalFindingId]; },
+    (finding) => { finding.adjudicatedSeverity = "low"; },
+    (finding) => { finding.disposition = "rejected"; },
+    (finding) => { finding.rationale = "Altered duplicate rationale."; },
+    (finding) => { finding.evidenceRefs = finding.evidenceRefs.map((ref) => ({ ...ref, lineStart: 2, lineEnd: 2 })); },
+  ];
+  for (const mutate of duplicateMutations) {
+    const altered = structuredClone(results);
+    mutate(altered[entry.id].rejectedFindings[0]);
+    assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, altered)).status, "FAILED");
+  }
 });
 
 test("evaluator fails closed for malformed, incomplete, nonterminal, route, verdict, and control errors", () => {

@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
@@ -65,9 +65,11 @@ function positiveInteger(value) {
 }
 
 function validRelativePath(value) {
-  if (typeof value !== "string" || !value || isAbsolute(value) || value.includes("\\")) return false;
-  const normalized = relative(".", value);
-  return normalized !== ".." && !normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`);
+  if (
+    typeof value !== "string" || !value || value === "." || posix.isAbsolute(value) ||
+    value.includes("\\") || value.includes("\0") || posix.normalize(value) !== value
+  ) return false;
+  return !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
 }
 
 function requireFixtureTree(fixtureRoot, id) {
@@ -401,6 +403,65 @@ function validateModelDiversity(diversity, result, entry) {
   ) throw new Error(label);
 }
 
+function deriveNormalizedProjection(judgeOutput, submittedById) {
+  const projection = {
+    clusters: [],
+    validatedFindings: [],
+    rejectedFindings: [],
+    unresolvedFindings: [],
+  };
+  for (const [index, cluster] of judgeOutput.clusters.entries()) {
+    const clusterId = `C${String(index + 1).padStart(4, "0")}`;
+    const members = [
+      cluster.canonicalFindingId,
+      ...cluster.findingIds
+        .filter((id) => id !== cluster.canonicalFindingId)
+        .sort(),
+    ];
+    const canonicalFinding = submittedById.get(cluster.canonicalFindingId);
+    if (!canonicalFinding) throw new Error("normalized_canonical_missing");
+    projection.clusters.push({ clusterId, ...cluster, findingIds: members });
+    const common = {
+      clusterId,
+      canonicalFindingId: cluster.canonicalFindingId,
+      memberFindingIds: members,
+      affectedPath: canonicalFinding.affectedPath,
+      location: canonicalFinding.location,
+      claim: canonicalFinding.claim,
+      adjudicatedSeverity: cluster.adjudicatedSeverity,
+      rationale: cluster.rationale,
+      evidenceRefs: cluster.evidenceRefs,
+    };
+    if (cluster.disposition === "validated") projection.validatedFindings.push(common);
+    else if (cluster.disposition === "rejected") {
+      projection.rejectedFindings.push({ ...common, adjudicatedSeverity: null, disposition: "rejected" });
+    } else {
+      projection.unresolvedFindings.push({
+        ...common,
+        adjudicatedSeverity: null,
+        disposition: cluster.disposition,
+      });
+    }
+    for (const id of members.slice(1)) {
+      const memberFinding = submittedById.get(id);
+      if (!memberFinding) throw new Error("normalized_member_missing");
+      projection.rejectedFindings.push({
+        clusterId,
+        canonicalFindingId: cluster.canonicalFindingId,
+        memberFindingIds: members,
+        affectedPath: memberFinding.affectedPath,
+        location: memberFinding.location,
+        claim: memberFinding.claim,
+        adjudicatedSeverity: null,
+        rationale: `Duplicate of ${cluster.canonicalFindingId}: ${cluster.rationale}`,
+        evidenceRefs: cluster.evidenceRefs,
+        disposition: "duplicate",
+      });
+    }
+  }
+  return projection;
+}
+
 function validateResult(entry, result) {
   exactKeys(result, RESULT_KEYS, `${entry.id}: result`);
   if (
@@ -433,9 +494,13 @@ function validateResult(entry, result) {
     throw new Error(`${entry.id}: reviewer_diversity`);
   }
   validateJudge(result.judge, entry);
-  const submittedIds = result.reviewers.flatMap((reviewer) =>
-    reviewer.output.findings.map((finding, index) => resultFindingId(reviewer.alias, index, finding))
-  ).sort();
+  const submitted = result.reviewers.flatMap((reviewer) =>
+    reviewer.output.findings.map((finding, index) => ({
+      id: resultFindingId(reviewer.alias, index, finding),
+      finding,
+    }))
+  );
+  const submittedIds = submitted.map(({ id }) => id).sort();
   const judgedIds = result.judge.output.clusters.flatMap((cluster) => cluster.findingIds).sort();
   if (!isDeepStrictEqual(submittedIds, judgedIds)) throw new Error(`${entry.id}: judge_coverage`);
   if (
@@ -446,30 +511,16 @@ function validateResult(entry, result) {
     result.unresolvedFindings.length !== 0
   ) throw new Error(`${entry.id}: normalized_findings`);
   result.clusters.forEach((cluster, index) => validateCluster(cluster, true, `${entry.id}: cluster_${index}`));
-  const judgeClusters = result.clusters.map(({ clusterId: _clusterId, ...cluster }) => cluster);
-  if (!isDeepStrictEqual(judgeClusters, result.judge.output.clusters)) throw new Error(`${entry.id}: cluster_mismatch`);
   result.validatedFindings.forEach((finding) => validateNormalizedFinding(finding));
   result.rejectedFindings.forEach((finding) => validateNormalizedFinding(finding, "rejected"));
-  for (const cluster of result.clusters) {
-    const validated = result.validatedFindings.filter((finding) => finding.clusterId === cluster.clusterId);
-    const rejected = result.rejectedFindings.filter((finding) => finding.clusterId === cluster.clusterId);
-    if (
-      (cluster.disposition === "validated" && (
-        validated.length !== 1 ||
-        validated[0].canonicalFindingId !== cluster.canonicalFindingId ||
-        validated[0].adjudicatedSeverity !== cluster.adjudicatedSeverity
-      )) ||
-      (cluster.disposition === "rejected" && (
-        validated.length !== 0 ||
-        !rejected.some((finding) =>
-          finding.canonicalFindingId === cluster.canonicalFindingId && finding.disposition === "rejected"
-        )
-      ))
-    ) throw new Error(`${entry.id}: normalized_cluster_mismatch`);
-  }
-  const clusterIds = new Set(result.clusters.map(({ clusterId }) => clusterId));
-  if ([...result.validatedFindings, ...result.rejectedFindings].some((finding) => !clusterIds.has(finding.clusterId))) {
-    throw new Error(`${entry.id}: normalized_cluster_missing`);
+  const projection = deriveNormalizedProjection(
+    result.judge.output,
+    new Map(submitted.map(({ id, finding }) => [id, finding])),
+  );
+  for (const key of ["clusters", "validatedFindings", "rejectedFindings", "unresolvedFindings"]) {
+    if (!isDeepStrictEqual(result[key], projection[key])) {
+      throw new Error(`${entry.id}: normalized_${key}`);
+    }
   }
   validateModelDiversity(result.modelDiversity, result, entry);
   validateUsage(result.usage, `${entry.id}: usage`);
