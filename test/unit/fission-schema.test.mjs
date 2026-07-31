@@ -98,6 +98,34 @@ test("strict JSON rejects decoded duplicate keys recursively", () => {
   assert.throws(() => parseStrictJsonObject('{"outer":{"x":1,"x":2}}'), /duplicate_key/);
 });
 
+test("strict JSON retains prototype-named keys as inert own data properties", () => {
+  const parsed = parseStrictJsonObject(
+    '{"__proto__":{"polluted":true},"constructor":{"prototype":{"owned":true}},"prototype":{"x":1},"nested":{"__proto__":"safe"}}',
+  );
+  assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
+  assert.equal(Object.hasOwn(parsed, "__proto__"), true);
+  assert.equal(Object.hasOwn(parsed, "constructor"), true);
+  assert.equal(Object.hasOwn(parsed, "prototype"), true);
+  assert.equal(Object.hasOwn(parsed.nested, "__proto__"), true);
+  assert.deepEqual(parsed.__proto__, { polluted: true });
+  assert.equal(parsed.nested.__proto__, "safe");
+  assert.equal({}.polluted, undefined);
+  assert.equal({}.owned, undefined);
+});
+
+test("prototype-named unknown properties cannot bypass strict TypeBox schemas", () => {
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    const output = parseStrictJsonObject(JSON.stringify({ ...reviewer(), [key]: "unexpected" }));
+    assert.equal(Object.hasOwn(output, key), true);
+    assert.equal(Value.Check(ReviewerOutputSchema, output), false);
+  }
+  const nested = parseStrictJsonObject(JSON.stringify({
+    ...reviewer(),
+    findings: [{ ...finding(), location: { ...finding().location, __proto_marker: true } }],
+  }));
+  assert.equal(Value.Check(ReviewerOutputSchema, nested), false);
+});
+
 test("strict JSON enforces depth, node, token, and output byte boundaries", () => {
   const nested = (depth) => `${'{"x":'.repeat(depth - 1)}{}${"}".repeat(depth - 1)}`;
   assert.doesNotThrow(() => parseStrictJsonObject(nested(64)));
@@ -113,6 +141,18 @@ test("strict JSON enforces depth, node, token, and output byte boundaries", () =
   assert.equal(Buffer.byteLength(exact), 256 * 1024);
   assert.doesNotThrow(() => parseStrictJsonObject(exact));
   assert.throws(() => parseStrictJsonObject(`${exact} `), /output_limit/);
+});
+
+test("strict JSON accepts exactly 50,000 lexical tokens and rejects token 50,001", () => {
+  const fixture = (emptyContainers) => {
+    const properties = [];
+    for (let index = 0; index < 12_499; index += 1) {
+      properties.push(`"k${index}":${index < emptyContainers ? "[]" : "0"}`);
+    }
+    return `{${properties.join(",")}}`;
+  };
+  assert.doesNotThrow(() => parseStrictJsonObject(fixture(3)));
+  assert.throws(() => parseStrictJsonObject(fixture(4)), /token_limit/);
 });
 
 test("strict JSON lexes escaped strings, numbers, booleans, and null", () => {
@@ -144,6 +184,157 @@ test("exported TypeBox contracts are strict and cover every union member", () =>
   assert.equal(Value.Check(ReviewerOutputSchema, { ...reviewer(), unknown: true }), false);
   assert.equal(Value.Check(JudgeOutputSchema, { clusters: [], judgeConcern: null }), true);
   assert.equal(Value.Check(JudgeOutputSchema, { clusters: [] }), false);
+});
+
+test("all required properties and recursive unknown properties are enforced", () => {
+  const remove = (value, key) => {
+    const copy = structuredClone(value);
+    delete copy[key];
+    return copy;
+  };
+  for (const key of ["reviewerRole", "coverage", "findings", "errors"]) {
+    assert.equal(Value.Check(ReviewerOutputSchema, remove(reviewer(), key)), false, `reviewer.${key}`);
+  }
+  for (const key of [
+    "severity", "claim", "affectedPath", "location", "evidence", "reproduction", "suggestedFix", "confidence",
+  ]) assert.equal(Value.Check(FindingSchema, remove(finding(), key)), false, `finding.${key}`);
+  for (const key of ["artifact", "artifactPath", "lineStart", "lineEnd", "artifactDigest"]) {
+    const invalid = finding({ location: remove(finding().location, key) });
+    assert.equal(Value.Check(FindingSchema, invalid), false, `location.${key}`);
+  }
+
+  const id = findingId("correctness", 0, finding());
+  const cluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "validated",
+    adjudicatedSeverity: "high",
+    rationale: "supported",
+    evidenceRefs: [ref()],
+  };
+  const judge = { clusters: [cluster], judgeConcern: null };
+  for (const key of ["clusters", "judgeConcern"])
+    assert.equal(Value.Check(JudgeOutputSchema, remove(judge, key)), false, `judge.${key}`);
+  for (const key of [
+    "canonicalFindingId", "findingIds", "disposition", "adjudicatedSeverity", "rationale", "evidenceRefs",
+  ]) {
+    assert.equal(
+      Value.Check(JudgeOutputSchema, { ...judge, clusters: [remove(cluster, key)] }),
+      false,
+      `cluster.${key}`,
+    );
+  }
+  for (const [label, invalid] of [
+    ["finding", reviewer({ findings: [{ ...finding(), unknown: true }] })],
+    ["location", reviewer({ findings: [finding({ location: { ...finding().location, unknown: true } })] })],
+  ]) assert.equal(Value.Check(ReviewerOutputSchema, invalid), false, label);
+  for (const [label, invalid] of [
+    ["cluster", { ...judge, clusters: [{ ...cluster, unknown: true }] }],
+    ["evidenceRef", { ...judge, clusters: [{ ...cluster, evidenceRefs: [{ ...ref(), unknown: true }] }] }],
+    ["concern", { ...judge, judgeConcern: { claim: "c", rationale: "r", evidenceRefs: [ref()], unknown: true } }],
+  ]) assert.equal(Value.Check(JudgeOutputSchema, invalid), false, label);
+});
+
+test("schema nullability is exact at every nullable boundary", () => {
+  const id = findingId("correctness", 0, finding());
+  const baseCluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "rejected",
+    adjudicatedSeverity: null,
+    rationale: "rejected",
+    evidenceRefs: [],
+  };
+  assert.equal(Value.Check(JudgeOutputSchema, { clusters: [baseCluster], judgeConcern: null }), true);
+  assert.equal(Value.Check(JudgeOutputSchema, {
+    clusters: [{ ...baseCluster, disposition: "validated", adjudicatedSeverity: "high", evidenceRefs: [ref()] }],
+    judgeConcern: { claim: "Concern", rationale: "Supported", evidenceRefs: [ref()] },
+  }), true);
+  for (const value of [null, undefined]) {
+    assert.equal(Value.Check(FindingSchema, { ...finding(), claim: value }), false);
+    assert.equal(Value.Check(FindingSchema, { ...finding(), location: value }), false);
+  }
+  assert.equal(Value.Check(JudgeOutputSchema, {
+    clusters: [{ ...baseCluster, adjudicatedSeverity: undefined }], judgeConcern: null,
+  }), false);
+  assert.equal(Value.Check(JudgeOutputSchema, { clusters: [], judgeConcern: undefined }), false);
+});
+
+test("schema collection counts enforce exact accepted and +1 boundaries", () => {
+  assert.equal(Value.Check(ReviewerOutputSchema, reviewer({
+    coverage: Array.from({ length: 20 }, (_, index) => `area-${index}`),
+    findings: Array.from({ length: 50 }, () => finding()),
+    errors: Array.from({ length: 10 }, () => "error"),
+  })), true);
+  assert.equal(Value.Check(ReviewerOutputSchema, reviewer({
+    coverage: Array.from({ length: 21 }, (_, index) => `area-${index}`),
+  })), false);
+  assert.equal(Value.Check(ReviewerOutputSchema, reviewer({ findings: Array.from({ length: 51 }, () => finding()) })), false);
+  assert.equal(Value.Check(ReviewerOutputSchema, reviewer({ errors: Array.from({ length: 11 }, () => "error") })), false);
+
+  const id = findingId("correctness", 0, finding());
+  const cluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "validated",
+    adjudicatedSeverity: "high",
+    rationale: "supported",
+    evidenceRefs: Array.from({ length: 20 }, () => ref()),
+  };
+  assert.equal(Value.Check(JudgeOutputSchema, { clusters: [cluster], judgeConcern: null }), true);
+  assert.equal(Value.Check(JudgeOutputSchema, {
+    clusters: [{ ...cluster, evidenceRefs: Array.from({ length: 21 }, () => ref()) }], judgeConcern: null,
+  }), false);
+  assert.equal(Value.Check(JudgeOutputSchema, {
+    clusters: [], judgeConcern: { claim: "c", rationale: "r", evidenceRefs: [] },
+  }), false);
+});
+
+test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
+  const exactCoverage = "é".repeat(256);
+  const exactNarrative = "é".repeat(4 * 1024);
+  const exactPath = "é".repeat(2 * 1024);
+  assert.doesNotThrow(() => validateReviewerOutput({
+    output: reviewer({
+      coverage: [exactCoverage],
+      findings: [finding({ claim: exactNarrative, affectedPath: exactPath })],
+      errors: ["é".repeat(1024)],
+    }),
+    reviewerRole: "correctness_regressions",
+    packet,
+  }));
+  for (const output of [
+    reviewer({ coverage: [`${exactCoverage}é`] }),
+    reviewer({ findings: [finding({ claim: `${exactNarrative}é` })] }),
+    reviewer({ findings: [finding({ affectedPath: `${exactPath}é` })] }),
+    reviewer({ errors: [`${"é".repeat(1024)}é`] }),
+  ]) assert.throws(() => validateReviewerOutput({
+    output, reviewerRole: "correctness_regressions", packet,
+  }), /byte_limit/);
+});
+
+test("evidence references and judge concerns require every exact property", () => {
+  const id = findingId("correctness", 0, finding());
+  const cluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "validated",
+    adjudicatedSeverity: "high",
+    rationale: "supported",
+    evidenceRefs: [ref()],
+  };
+  for (const key of ["artifactPath", "artifactDigest", "lineStart", "lineEnd"]) {
+    const invalidRef = { ...ref() };
+    delete invalidRef[key];
+    assert.equal(Value.Check(JudgeOutputSchema, {
+      clusters: [{ ...cluster, evidenceRefs: [invalidRef] }], judgeConcern: null,
+    }), false, `evidenceRef.${key}`);
+  }
+  for (const key of ["claim", "rationale", "evidenceRefs"]) {
+    const concern = { claim: "Concern", rationale: "Supported", evidenceRefs: [ref()] };
+    delete concern[key];
+    assert.equal(Value.Check(JudgeOutputSchema, { clusters: [cluster], judgeConcern: concern }), false, `concern.${key}`);
+  }
 });
 
 test("reviewer validation enforces exact role, unique coverage, finite confidence, bytes, and packet refs", () => {
@@ -228,20 +419,55 @@ test("judge validation requires exhaustive unique clusters and disposition evide
 });
 
 test("host verdict table is ordered and reviewer agreement never determines PASS", () => {
-  const pass = { clusters: [{ disposition: "rejected", adjudicatedSeverity: null }], judgeConcern: null };
+  const id = findingId("correctness", 0, finding());
+  const rejectedCluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "rejected",
+    adjudicatedSeverity: null,
+    rationale: "not supported",
+    evidenceRefs: [],
+  };
+  const pass = { clusters: [rejectedCluster], judgeConcern: null };
+  const complete = {
+    preflight: { state: "READY" },
+    packet,
+    sourceVerified: true,
+    artifactsVerified: true,
+    requestedReviewers: 1,
+    reviewers: [{ status: "ok", valid: true, output: reviewer() }],
+    judge: { status: "ok", valid: true, output: pass },
+  };
   const cases = [
-    [{ preflight: { state: "NO_CHANGES" } }, "NO_CHANGES"],
+    [{ preflight: { state: "NO_CHANGES" } }, null],
     [{ preflight: { state: "READY" }, packet: { evidenceComplete: false } }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, sourceVerified: false }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [{ status: "timeout" }] }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [{ status: "ok", output: { errors: ["failed"] } }] }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [], judge: { status: "timeout" } }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [], judge: { status: "ok", output: { ...pass, judgeConcern: { claim: "x" } } } }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [], judge: { status: "ok", output: { clusters: [{ disposition: "needs_probe", adjudicatedSeverity: null }], judgeConcern: null } } }, "INCOMPLETE"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [], judge: { status: "ok", output: { clusters: [{ disposition: "validated", adjudicatedSeverity: "critical" }], judgeConcern: null } } }, "FAIL"],
-    [{ preflight: { state: "READY" }, packet, reviewers: [], judge: { status: "ok", output: pass } }, "PASS"],
+    [{ ...complete, sourceVerified: undefined }, "INCOMPLETE"],
+    [{ ...complete, sourceVerified: false }, "INCOMPLETE"],
+    [{ ...complete, artifactsVerified: undefined }, "INCOMPLETE"],
+    [{ ...complete, artifactsVerified: false }, "INCOMPLETE"],
+    [{ ...complete, requestedReviewers: undefined }, "INCOMPLETE"],
+    [{ ...complete, requestedReviewers: 0 }, "INCOMPLETE"],
+    [{ ...complete, requestedReviewers: 1.5 }, "INCOMPLETE"],
+    [{ ...complete, reviewers: [] }, "INCOMPLETE"],
+    [{ ...complete, reviewers: [null] }, "INCOMPLETE"],
+    [{ ...complete, reviewers: [{ status: "timeout", valid: false }] }, "INCOMPLETE"],
+    [{ ...complete, reviewers: [{ status: "ok", valid: false, output: reviewer() }] }, "INCOMPLETE"],
+    [{ ...complete, reviewers: [{ status: "ok", valid: true, output: reviewer({ errors: ["failed"] }) }] }, "INCOMPLETE"],
+    [{ ...complete, requestedReviewers: 2, reviewers: [...complete.reviewers, ...complete.reviewers] }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "timeout", valid: false } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: false, output: pass } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: true, output: { clusters: [null], judgeConcern: null } } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: true, output: { ...pass, judgeConcern: { claim: "x" } } } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: true, output: { ...pass, judgeConcern: { claim: "Concern", rationale: "Supported", evidenceRefs: [ref()] } } } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: true, output: { clusters: [{ ...rejectedCluster, disposition: "needs_probe" }], judgeConcern: null } } }, "INCOMPLETE"],
+    [{ ...complete, judge: { status: "ok", valid: true, output: { clusters: [{ ...rejectedCluster, disposition: "validated", adjudicatedSeverity: "critical", evidenceRefs: [ref()] }], judgeConcern: null } } }, "FAIL"],
+    [complete, "PASS"],
   ];
   for (const [input, verdict] of cases) assert.equal(deriveFissionResult(input).verdict, verdict);
+  assert.deepEqual(deriveFissionResult({ preflight: { state: "NO_CHANGES" } }), {
+    verdict: null,
+    message: "no changes to review.",
+  });
   assert.equal(
     deriveFissionResult(cases.at(-1)[0]).message,
     "no submitted blocking finding validated.",

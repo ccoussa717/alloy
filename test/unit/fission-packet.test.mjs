@@ -21,6 +21,7 @@ import {
   FISSION_FILE_TOTAL_LIMIT,
   FISSION_HEAD_LIMIT,
   FISSION_PATCH_LIMIT,
+  FISSION_REQUEST_LIMIT,
   FISSION_STATUS_LIMIT,
   captureBoundedDirtyBaseline,
   captureFissionPacket,
@@ -32,7 +33,17 @@ import {
 import { captureDirtyBaseline } from "../../lib/worktree.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "alloy-fission-packet-"));
-after(() => rmSync(root, { recursive: true, force: true }));
+function makeTreeWritable(path) {
+  if (!existsSync(path)) return;
+  const stat = statSync(path);
+  if (!stat.isDirectory()) return;
+  chmodSync(path, 0o700);
+  for (const entry of readdirSync(path)) makeTreeWritable(join(path, entry));
+}
+after(() => {
+  makeTreeWritable(root);
+  rmSync(root, { recursive: true, force: true });
+});
 
 function git(cwd, args, options = {}) {
   return spawnSync("git", args, { cwd, encoding: "utf8", ...options });
@@ -163,7 +174,7 @@ test("capture invokes bounded Git reads with lock suppression and no shell", () 
   assert.equal(calls[3].options.maxBuffer, FISSION_PATCH_LIMIT + 1);
 });
 
-test("porcelain rename records stay NUL-aligned and entry limits count logical entries", () => {
+test("porcelain rename/copy records stay NUL-aligned and entry limits count logical entries", () => {
   const make = (count) => {
     const records = [];
     for (let i = 0; i < count; i += 1) records.push(`?? f${i}.txt`);
@@ -187,6 +198,27 @@ test("porcelain rename records stay NUL-aligned and entry limits count logical e
   assert.equal(accepted.entries.length, FISSION_ENTRY_LIMIT);
   assert.equal(accepted.entries.at(-1).originalPath, "old.txt");
   assert.throws(() => capture(FISSION_ENTRY_LIMIT), /entry_limit/);
+
+  const copied = captureBoundedDirtyBaseline(root, undefined, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: (_root, path) => ({
+      bytes: Buffer.from(path), mode: 0o100644, size: path.length, executable: false,
+    }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? Buffer.from("C  copy.txt\0source.txt\0")
+          : Buffer.alloc(0),
+    }),
+  });
+  assert.deepEqual(copied.entries, [{
+    xy: "C ",
+    path: "copy.txt",
+    originalPath: "source.txt",
+    untracked: false,
+    deleted: false,
+  }]);
 });
 
 test("bounded evidence rejects exact overages without retaining truncation", () => {
@@ -239,6 +271,9 @@ test("readRegularFileNoFollow accepts bounded regular files and rejects links an
   assert.throws(() => readRegularFileNoFollow(repo, "safe.txt", 5), /file_limit/);
   symlinkSync("safe.txt", join(repo, "link.txt"));
   assert.throws(() => readRegularFileNoFollow(repo, "link.txt", 10), /symlink|unsupported/i);
+  const fifo = join(repo, "pipe");
+  assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+  assert.throws(() => readRegularFileNoFollow(repo, "pipe", 10), /unsupported source type/i);
   assert.throws(() => readRegularFileNoFollow(repo, "../escape.txt", 10), /escape/i);
 });
 
@@ -313,4 +348,523 @@ test("capture requires READY preflight and request bounds before creating direct
   }), /READY/);
   assert.equal(existsSync(target), false);
   assert.deepEqual(readdirSync(root).includes("refused-packet"), false);
+});
+
+test("READY preflight from one repository cannot authorize another repository", () => {
+  const repoA = initRepo("preflight-repo-a");
+  const repoB = initRepo("preflight-repo-b");
+  writeFileSync(join(repoA, "tracked.txt"), "dirty-a\n");
+  writeFileSync(join(repoB, "tracked.txt"), "dirty-b\n");
+  const preflight = preflightFissionRepository(repoA, trusted);
+  const packetRoot = join(root, "cross-repo-packet");
+
+  assert.throws(() => captureFissionPacket({
+    cwd: repoB,
+    packetRoot,
+    request: "review",
+    preflight,
+    deps: trusted,
+  }), /preflight_repository_mismatch/);
+  assert.equal(existsSync(packetRoot), false);
+  assert.equal(readdirSync(root).some((name) => name.startsWith("cross-repo-packet.attempt-")), false);
+});
+
+test("replayed READY preflight cannot authorize changed HEAD or status", () => {
+  const repo = initRepo("replayed-preflight");
+  writeFileSync(join(repo, "tracked.txt"), "first dirty state\n");
+  const statusPreflight = preflightFissionRepository(repo, trusted);
+  writeFileSync(join(repo, "new-status-entry.txt"), "new entry\n");
+  const statusPacket = join(root, "replayed-status-packet");
+  assert.throws(() => captureFissionPacket({
+    cwd: repo,
+    packetRoot: statusPacket,
+    request: "review",
+    preflight: statusPreflight,
+    deps: trusted,
+  }), /preflight_drift/);
+  assert.equal(existsSync(statusPacket), false);
+
+  rmSync(join(repo, "new-status-entry.txt"));
+  writeFileSync(join(repo, "tracked.txt"), "second dirty state\n");
+  const headPreflight = preflightFissionRepository(repo, trusted);
+  git(repo, ["add", "tracked.txt"]);
+  git(repo, ["commit", "-m", "advance head"]);
+  writeFileSync(join(repo, "tracked.txt"), "dirty after new head\n");
+  const headPacket = join(root, "replayed-head-packet");
+  assert.throws(() => captureFissionPacket({
+    cwd: repo,
+    packetRoot: headPacket,
+    request: "review",
+    preflight: headPreflight,
+    deps: trusted,
+  }), /preflight_drift/);
+  assert.equal(existsSync(headPacket), false);
+});
+
+test("preflight resolves repository root through a bounded Buffer Git operation", () => {
+  const repo = resolve(join(root, "bounded-root"));
+  const calls = [];
+  const outputs = [
+    Buffer.from(`${repo}\n`),
+    Buffer.from("abc123\n"),
+    Buffer.from(" M tracked.txt\0"),
+    Buffer.from("refs/heads/main\n"),
+  ];
+  const result = preflightFissionRepository(join(repo, "sub"), {
+    isProjectTrusted: () => true,
+    spawnSync(command, args, options) {
+      calls.push({ command, args, options });
+      return { status: 0, stdout: outputs.shift(), stderr: Buffer.alloc(0) };
+    },
+  });
+
+  assert.equal(result.state, "READY");
+  assert.equal(result.repoRoot, repo);
+  assert.deepEqual(calls[0].args, ["rev-parse", "--show-toplevel"]);
+  assert.equal(calls[0].options.encoding, "buffer");
+  assert.equal(calls[0].options.shell, false);
+  assert.equal(calls[0].options.env.GIT_OPTIONAL_LOCKS, "0");
+  assert.ok(calls[0].options.maxBuffer <= FISSION_FILE_LIMIT + 1);
+});
+
+test("artifact verification enforces exact files, bytes, file modes, and directory modes", () => {
+  const repo = initRepo("artifact-verification");
+  writeFileSync(join(repo, "nested.txt"), "packet payload\n");
+  const preflight = preflightFissionRepository(repo, trusted);
+  const packetRoot = join(root, "artifact-verification-packet");
+  const capture = captureFissionPacket({
+    cwd: repo,
+    packetRoot,
+    request: "review",
+    preflight,
+    deps: trusted,
+  });
+  assert.equal(verifyFissionArtifacts(capture).ok, true);
+
+  for (const child of Object.keys(capture.artifacts)) {
+    const path = join(packetRoot, child);
+    const accepted = readFileSync(path);
+    chmodSync(path, 0o600);
+    writeFileSync(path, Buffer.concat([accepted, Buffer.from("tamper")]));
+    assert.equal(verifyFissionArtifacts(capture).mismatches.includes(`content:${child}`), true, child);
+    writeFileSync(path, accepted);
+    chmodSync(path, 0o400);
+    assert.equal(verifyFissionArtifacts(capture).ok, true, `${child} restored`);
+  }
+
+  const requestPath = join(packetRoot, "request.txt");
+  chmodSync(requestPath, 0o600);
+  assert.deepEqual(verifyFissionArtifacts(capture), {
+    ok: false,
+    mismatches: ["mode:request.txt"],
+  });
+  chmodSync(requestPath, 0o400);
+
+  chmodSync(join(packetRoot, "files"), 0o700);
+  assert.equal(verifyFissionArtifacts(capture).mismatches.includes("directory_mode:files"), true);
+  chmodSync(join(packetRoot, "files"), 0o500);
+
+  chmodSync(packetRoot, 0o700);
+  writeFileSync(join(packetRoot, "unexpected.txt"), "unexpected\n", { mode: 0o400 });
+  chmodSync(packetRoot, 0o500);
+  assert.equal(verifyFissionArtifacts(capture).mismatches.includes("unexpected:unexpected.txt"), true);
+  chmodSync(packetRoot, 0o700);
+  rmSync(join(packetRoot, "unexpected.txt"));
+  chmodSync(packetRoot, 0o500);
+
+  const stagedPath = join(packetRoot, "staged.diff");
+  const stagedBytes = readFileSync(stagedPath);
+  chmodSync(packetRoot, 0o700);
+  rmSync(stagedPath);
+  chmodSync(packetRoot, 0o500);
+  assert.equal(verifyFissionArtifacts(capture).mismatches.includes("missing:staged.diff"), true);
+  chmodSync(packetRoot, 0o700);
+  writeFileSync(stagedPath, stagedBytes, { mode: 0o400 });
+  chmodSync(packetRoot, 0o500);
+  assert.equal(verifyFissionArtifacts(capture).ok, true);
+});
+
+test("manifest preserves exact omission reason for every unsupported path", () => {
+  const repo = initRepo("omission-reasons");
+  writeFileSync(join(repo, "binary.bin"), Buffer.from([0, 1, 2, 3]));
+  writeFileSync(join(repo, "deleted.txt"), "delete me\n");
+  git(repo, ["add", "binary.bin", "deleted.txt"]);
+  git(repo, ["commit", "-m", "add deletion fixtures"]);
+  rmSync(join(repo, "binary.bin"));
+  rmSync(join(repo, "deleted.txt"));
+  symlinkSync("tracked.txt", join(repo, "link.txt"));
+  writeFileSync(join(repo, "invalid.txt"), Buffer.from([0xc3, 0x28]));
+  writeFileSync(join(repo, "nul.txt"), Buffer.from("before\0after"));
+  writeFileSync(join(repo, "too-large.txt"), Buffer.alloc(FISSION_FILE_LIMIT + 1, 0x61));
+  const head = git(repo, ["rev-parse", "HEAD"]).stdout.trim();
+  git(repo, ["update-index", "--add", "--cacheinfo", `160000,${head},gitlink`]);
+
+  const preflight = preflightFissionRepository(repo, trusted);
+  const packetRoot = join(root, "omission-reasons-packet");
+  const capture = captureFissionPacket({
+    cwd: repo,
+    packetRoot,
+    request: "review",
+    preflight,
+    deps: trusted,
+  });
+  const reasons = Object.fromEntries(capture.manifest.entries.map((entry) => [entry.path, entry.reason]));
+  assert.equal(reasons["binary.bin"], "binary");
+  assert.equal(reasons["deleted.txt"], "deleted");
+  assert.equal(reasons["link.txt"], "symlink");
+  assert.equal(reasons["invalid.txt"], "invalid_utf8");
+  assert.equal(reasons["nul.txt"], "nul_content");
+  assert.equal(reasons["too-large.txt"], "file_limit");
+  assert.equal(reasons.gitlink, "submodule");
+});
+
+test("patch omission reasons match exact paths rather than path prefixes", () => {
+  const repo = initRepo("omission-path-prefix");
+  writeFileSync(join(repo, "foo"), "text file\n");
+  writeFileSync(join(repo, "foobar"), Buffer.from([0, 1, 2]));
+  git(repo, ["add", "foobar"]);
+  const preflight = preflightFissionRepository(repo, trusted);
+  const packetRoot = join(root, "omission-path-prefix-packet");
+  const capture = captureFissionPacket({ cwd: repo, packetRoot, request: "review", preflight, deps: trusted });
+  const entries = Object.fromEntries(capture.manifest.entries.map((entry) => [entry.path, entry]));
+  assert.equal(entries.foo.included, true);
+  assert.equal(entries.foo.reason, null);
+  assert.equal(entries.foobar.included, false);
+  assert.equal(entries.foobar.reason, "binary");
+});
+
+test("manifest records unsupported_type for a Git-enumerated FIFO", () => {
+  const status = Buffer.from("?? pipe\0");
+  const head = Buffer.from("abc123\n");
+  const packetRoot = join(root, "fifo-reason-packet");
+  const deps = {
+    isProjectTrusted: () => true,
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => {
+      throw new Error("Unsupported source type: pipe");
+    },
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? head
+        : args[0] === "status" ? status
+          : args[0] === "symbolic-ref" ? Buffer.from("refs/heads/main\n")
+            : Buffer.alloc(0),
+    }),
+  };
+  const capture = captureFissionPacket({
+    cwd: root,
+    packetRoot,
+    request: "review",
+    preflight: { state: "READY", repoRoot: root, head, status, detached: false },
+    deps,
+  });
+  assert.equal(capture.manifest.entries[0].path, "pipe");
+  assert.equal(capture.manifest.entries[0].reason, "unsupported_type");
+});
+
+test("manifest records file-total omission and is the only readable identity-free manifest", () => {
+  const repo = initRepo("file-total-reason");
+  for (let index = 0; index < 9; index += 1) {
+    writeFileSync(join(repo, `large-${index}.txt`), Buffer.alloc(FISSION_FILE_LIMIT, 0x61));
+  }
+  const preflight = preflightFissionRepository(repo, trusted);
+  const packetRoot = join(root, "file-total-reason-packet");
+  const capture = captureFissionPacket({
+    cwd: repo,
+    packetRoot,
+    request: "review",
+    preflight,
+    deps: trusted,
+  });
+  const omitted = capture.manifest.entries.filter((entry) => !entry.included);
+  assert.equal(omitted.length, 1);
+  assert.equal(omitted[0].reason, "file_total_limit");
+
+  const manifests = [];
+  const scan = (directory, prefix = "") => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const child = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) scan(join(directory, entry.name), child);
+      else if (entry.name.endsWith(".json")) manifests.push(child);
+    }
+  };
+  scan(packetRoot);
+  assert.deepEqual(manifests, ["review-packet.json"]);
+  assert.equal(statSync(join(packetRoot, "review-packet.json")).mode & 0o444, 0o400);
+  const manifestText = readFileSync(join(packetRoot, "review-packet.json"), "utf8");
+  assert.deepEqual(JSON.parse(manifestText), capture.manifest);
+  assert.doesNotMatch(manifestText, /reviewer|judge|credential|identity|api[_-]?key/i);
+});
+
+test("file-total omissions do not consume capacity from later retained files", () => {
+  const contents = {
+    "a.txt": Buffer.from("aaaaaa"),
+    "b.txt": Buffer.from("bbbbbb"),
+    "c.txt": Buffer.from("cccc"),
+  };
+  const baseline = captureBoundedDirtyBaseline(root, { file: 10, fileTotal: 10 }, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: (_repo, path) => ({
+      bytes: contents[path], mode: 0o100644, size: contents[path].length, executable: false,
+    }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? Buffer.from("?? a.txt\0?? b.txt\0?? c.txt\0")
+          : Buffer.alloc(0),
+    }),
+  });
+  assert.deepEqual(baseline.retainedFiles.map((file) => file.path), ["a.txt", "c.txt"]);
+  assert.equal(baseline.omissionReasons["b.txt"], "file_total_limit");
+});
+
+test("request limit accepts the exact boundary and rejects one byte over before writes", () => {
+  const repo = initRepo("request-limit");
+  writeFileSync(join(repo, "tracked.txt"), "dirty\n");
+  const acceptedRoot = join(root, "request-limit-accepted");
+  captureFissionPacket({
+    cwd: repo,
+    packetRoot: acceptedRoot,
+    request: "x".repeat(FISSION_REQUEST_LIMIT),
+    preflight: preflightFissionRepository(repo, trusted),
+    deps: trusted,
+  });
+  assert.equal(readFileSync(join(acceptedRoot, "request.txt")).length, FISSION_REQUEST_LIMIT);
+
+  const refusedRoot = join(root, "request-limit-refused");
+  assert.throws(() => captureFissionPacket({
+    cwd: repo,
+    packetRoot: refusedRoot,
+    request: "x".repeat(FISSION_REQUEST_LIMIT + 1),
+    preflight: preflightFissionRepository(repo, trusted),
+    deps: trusted,
+  }), /request_limit/);
+  assert.equal(existsSync(refusedRoot), false);
+});
+
+test("HEAD, status, patches, file, and retained-total exact limits are accepted", () => {
+  const head = Buffer.alloc(FISSION_HEAD_LIMIT, 0x61);
+  head[head.length - 1] = 0x0a;
+  const emptyCapture = (status, stagedPatch, unstagedPatch) => captureBoundedDirtyBaseline(
+    root,
+    undefined,
+    {
+      repositoryRoot: () => root,
+      spawnSync: (_command, args) => ({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: args[0] === "rev-parse" ? head
+          : args[0] === "status" ? status
+            : args.includes("--cached") ? stagedPatch : unstagedPatch,
+      }),
+    },
+  );
+  const headBoundary = emptyCapture(Buffer.alloc(0), Buffer.alloc(0), Buffer.alloc(0));
+  assert.equal(headBoundary.head.length, FISSION_HEAD_LIMIT);
+  assert.equal(headBoundary.head.at(-1), 0x0a, "HEAD terminator is retained");
+
+  const longDeletedPath = "a".repeat(FISSION_STATUS_LIMIT - 4);
+  const status = Buffer.from(` D ${longDeletedPath}\0`);
+  assert.equal(status.length, FISSION_STATUS_LIMIT);
+  assert.equal(emptyCapture(status, Buffer.alloc(0), Buffer.alloc(0)).status.length, FISSION_STATUS_LIMIT);
+
+  const stagedPatch = Buffer.alloc(FISSION_PATCH_LIMIT / 2, 0x78);
+  const unstagedPatch = Buffer.alloc(FISSION_PATCH_LIMIT / 2, 0x79);
+  const patchBoundary = emptyCapture(Buffer.alloc(0), stagedPatch, unstagedPatch);
+  assert.equal(patchBoundary.stagedPatch.length + patchBoundary.unstagedPatch.length, FISSION_PATCH_LIMIT);
+
+  const paths = Array.from({ length: 8 }, (_, index) => `file-${index}.txt`);
+  const fileStatus = Buffer.from(`${paths.map((path) => `?? ${path}`).join("\0")}\0`);
+  const fileBytes = Buffer.alloc(FISSION_FILE_LIMIT, 0x61);
+  const fileBoundary = captureBoundedDirtyBaseline(root, undefined, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => ({
+      bytes: fileBytes,
+      mode: 0o100644,
+      size: fileBytes.length,
+      executable: false,
+    }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? fileStatus : Buffer.alloc(0),
+    }),
+  });
+  assert.equal(fileBoundary.retainedFiles[0].bytes.length, FISSION_FILE_LIMIT);
+  assert.equal(
+    fileBoundary.retainedFiles.reduce((total, file) => total + file.bytes.length, 0),
+    FISSION_FILE_TOTAL_LIMIT,
+  );
+  assert.equal(fileBoundary.evidenceComplete, true);
+});
+
+test("exact +1 evidence limits reject or omit without retaining truncated bytes", () => {
+  const globalCases = [
+    ["head_limit", FISSION_HEAD_LIMIT + 1, 0, 0, 0],
+    ["status_limit", 1, FISSION_STATUS_LIMIT + 1, 0, 0],
+    ["patch_limit", 1, 0, FISSION_PATCH_LIMIT, 1],
+  ];
+  for (const [reason, headSize, statusSize, stagedSize, unstagedSize] of globalCases) {
+    let call = 0;
+    assert.throws(() => captureBoundedDirtyBaseline(root, undefined, {
+      repositoryRoot: () => root,
+      spawnSync: () => ({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: [
+          Buffer.alloc(headSize),
+          Buffer.alloc(statusSize),
+          Buffer.alloc(stagedSize),
+          Buffer.alloc(unstagedSize),
+        ][call++],
+      }),
+    }), new RegExp(reason));
+  }
+
+  const oversized = Buffer.alloc(FISSION_FILE_LIMIT + 1, 0x61);
+  const baseline = captureBoundedDirtyBaseline(root, undefined, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => {
+      throw new Error("file_limit:oversized.txt");
+    },
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? Buffer.from("?? oversized.txt\0") : Buffer.alloc(0),
+    }),
+  });
+  assert.equal(oversized.length, FISSION_FILE_LIMIT + 1);
+  assert.equal(baseline.retainedFiles.length, 0);
+  assert.equal(baseline.omissionReasons["oversized.txt"], "file_limit");
+});
+
+test("special paths, deletion, mode change, and intent-to-add retain exact Git state", () => {
+  const repo = initRepo("special-git-state");
+  writeFileSync(join(repo, "delete.txt"), "delete\n");
+  writeFileSync(join(repo, "mode.sh"), "#!/bin/sh\n");
+  git(repo, ["add", "delete.txt", "mode.sh"]);
+  git(repo, ["commit", "-m", "special base"]);
+  rmSync(join(repo, "delete.txt"));
+  chmodSync(join(repo, "mode.sh"), 0o755);
+  for (const path of ["line\nbreak.txt", "tab\tpath.txt", "-leading.txt"]) {
+    writeFileSync(join(repo, path), `${path}\n`);
+  }
+  writeFileSync(join(repo, "intent.txt"), "intent\n");
+  git(repo, ["add", "-N", "--", "intent.txt"]);
+
+  const baseline = captureBoundedDirtyBaseline(repo, undefined, trusted);
+  for (const path of ["line\nbreak.txt", "tab\tpath.txt", "-leading.txt", "intent.txt", "mode.sh"]) {
+    assert.equal(baseline.retainedFiles.some((file) => file.path === path), true, path);
+  }
+  assert.equal(baseline.entries.find((entry) => entry.path === "delete.txt").deleted, true);
+  assert.equal(baseline.omissionReasons["delete.txt"], "deleted");
+  assert.equal(baseline.retainedFiles.find((file) => file.path === "mode.sh").executable, true);
+  assert.equal(baseline.entries.find((entry) => entry.path === "intent.txt").xy, " A");
+});
+
+test("source recapture detects HEAD, status, each patch, and file bytes independently", () => {
+  const state = {
+    head: Buffer.from("head-a\n"),
+    status: Buffer.from("?? file.txt\0"),
+    staged: Buffer.from("staged-a\n"),
+    unstaged: Buffer.from("unstaged-a\n"),
+    file: Buffer.from("file-a\n"),
+  };
+  const deps = {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => ({
+      bytes: state.file,
+      mode: 0o100644,
+      size: state.file.length,
+      executable: false,
+    }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? state.head
+        : args[0] === "status" ? state.status
+          : args.includes("--cached") ? state.staged : state.unstaged,
+    }),
+  };
+  const baseline = captureBoundedDirtyBaseline(root, undefined, deps);
+  const capture = { repoRoot: root, sourceDigest: baseline.sourceDigest };
+  for (const [field, changed] of [
+    ["head", Buffer.from("head-b\n")],
+    ["status", Buffer.from("?? gile.txt\0")],
+    ["staged", Buffer.from("staged-b\n")],
+    ["unstaged", Buffer.from("unstaged-b\n")],
+    ["file", Buffer.from("file-b\n")],
+  ]) {
+    const original = state[field];
+    state[field] = changed;
+    assert.equal(recaptureFissionSource(capture, deps).ok, false, field);
+    state[field] = original;
+    assert.equal(recaptureFissionSource(capture, deps).ok, true, `${field} restored`);
+  }
+});
+
+test("immediate source mismatch deletes the attempt and returns incomplete capture", () => {
+  const status = Buffer.from("?? file.txt\0");
+  const head = Buffer.from("head\n");
+  let readCount = 0;
+  const deps = {
+    isProjectTrusted: () => true,
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => {
+      const bytes = Buffer.from(readCount++ === 0 ? "before\n" : "after\n");
+      return { bytes, mode: 0o100644, size: bytes.length, executable: false };
+    },
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? head
+        : args[0] === "status" ? status
+          : args[0] === "symbolic-ref" ? Buffer.from("refs/heads/main\n")
+            : Buffer.alloc(0),
+    }),
+  };
+  const packetRoot = join(root, "immediate-mismatch-packet");
+  const capture = captureFissionPacket({
+    cwd: root,
+    packetRoot,
+    request: "review",
+    preflight: { state: "READY", repoRoot: root, head, status, detached: false },
+    deps,
+  });
+  assert.equal(capture.evidenceComplete, false);
+  assert.equal(capture.reason, "source_drift");
+  assert.equal(existsSync(packetRoot), false);
+  assert.equal(readdirSync(root).some((name) => name.startsWith("immediate-mismatch-packet.attempt-")), false);
+});
+
+test("invalid UTF-8 patch evidence is refused before packet writes", () => {
+  const status = Buffer.from(" D deleted.txt\0");
+  const head = Buffer.from("head\n");
+  const deps = {
+    isProjectTrusted: () => true,
+    repositoryRoot: () => root,
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? head
+        : args[0] === "status" ? status
+          : args[0] === "symbolic-ref" ? Buffer.from("refs/heads/main\n")
+            : args.includes("--cached") ? Buffer.from([0xc3, 0x28])
+              : Buffer.alloc(0),
+    }),
+  };
+  const packetRoot = join(root, "invalid-patch-packet");
+  assert.throws(() => captureFissionPacket({
+    cwd: root,
+    packetRoot,
+    request: "review",
+    preflight: { state: "READY", repoRoot: root, head, status, detached: false },
+    deps,
+  }), /invalid_utf8/);
+  assert.equal(existsSync(packetRoot), false);
+  assert.equal(readdirSync(root).some((name) => name.startsWith("invalid-patch-packet.attempt-")), false);
 });
