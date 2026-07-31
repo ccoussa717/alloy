@@ -518,6 +518,55 @@ test("manifest preserves exact omission reason for every unsupported path", () =
   assert.equal(reasons.gitlink, "submodule");
 });
 
+test("bounded valid text deletion remains complete while manifest labels deletion", () => {
+  const repo = initRepo("complete-text-deletion");
+  writeFileSync(join(repo, "delete.txt"), "ordinary text\n");
+  git(repo, ["add", "delete.txt"]);
+  git(repo, ["commit", "-m", "add text fixture"]);
+  rmSync(join(repo, "delete.txt"));
+  const preflight = preflightFissionRepository(repo, trusted);
+  const packetRoot = join(root, "complete-text-deletion-packet");
+  const capture = captureFissionPacket({ cwd: repo, packetRoot, request: "review", preflight, deps: trusted });
+  const entry = capture.manifest.entries.find((candidate) => candidate.path === "delete.txt");
+
+  assert.equal(capture.evidenceComplete, true);
+  assert.equal(capture.baseline.evidenceComplete, true);
+  assert.equal(Object.hasOwn(capture.baseline.omissionReasons, "delete.txt"), false);
+  assert.equal(entry.included, false);
+  assert.equal(entry.reason, "deleted");
+  assert.match(readFileSync(join(packetRoot, "unstaged.diff"), "utf8"), /ordinary text/);
+});
+
+test("unmatched unsafe markers in either patch buffer fail closed globally", () => {
+  const markers = [
+    ["GIT binary patch", "binary"],
+    ["Binary files x and y differ", "binary"],
+    ["new file mode 160000", "submodule"],
+    ["Subproject commit deadbeef", "submodule"],
+  ];
+  for (const patchField of ["staged", "unstaged"]) {
+    for (const [marker, reason] of markers) {
+      const baseline = captureBoundedDirtyBaseline(root, undefined, {
+        repositoryRoot: () => root,
+        readRegularFileNoFollow: () => ({
+          bytes: Buffer.from("safe text\n"), mode: 0o100644, size: 10, executable: false,
+        }),
+        spawnSync: (_command, args) => ({
+          status: 0,
+          stderr: Buffer.alloc(0),
+          stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+            : args[0] === "status" ? Buffer.from(" M tracked.txt\0")
+              : args.includes("--cached") === (patchField === "staged")
+                ? Buffer.from(`${marker}\n`) : Buffer.alloc(0),
+        }),
+      });
+      assert.equal(baseline.evidenceComplete, false, `${patchField}: ${marker}`);
+      assert.equal(baseline.reason, reason, `${patchField}: ${marker}`);
+      assert.equal(baseline.retainedFiles.length, 1, "safe current file remains available");
+    }
+  }
+});
+
 test("patch omission reasons match exact paths rather than path prefixes", () => {
   const repo = initRepo("omission-path-prefix");
   writeFileSync(join(repo, "foo"), "text file\n");
@@ -761,7 +810,7 @@ test("special paths, deletion, mode change, and intent-to-add retain exact Git s
     assert.equal(baseline.retainedFiles.some((file) => file.path === path), true, path);
   }
   assert.equal(baseline.entries.find((entry) => entry.path === "delete.txt").deleted, true);
-  assert.equal(baseline.omissionReasons["delete.txt"], "deleted");
+  assert.equal(Object.hasOwn(baseline.omissionReasons, "delete.txt"), false);
   assert.equal(baseline.retainedFiles.find((file) => file.path === "mode.sh").executable, true);
   assert.equal(baseline.entries.find((entry) => entry.path === "intent.txt").xy, " A");
 });
