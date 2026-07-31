@@ -144,10 +144,10 @@ test("tool invocation parses UTF-8 bytes, preserves signal identity, and never c
     cwd: ctx.cwd,
     modelRegistry: ctx.modelRegistry,
     signal,
-    timeoutMs: 300_000,
     ...parent,
   }]);
   assert.equal(calls[0].signal, signal);
+  assert.equal(Object.hasOwn(calls[0], "timeoutMs"), false);
   assert.match(output.content[0].text, /^Fission PASS \/ COMPLETE/);
 
   await assert.rejects(

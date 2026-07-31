@@ -163,6 +163,26 @@ describe("trust boundary", () => {
     assert.ok(detail.rejected.some((r) => /not trusted/i.test(r)));
   });
 
+  it("untrusted project Fission settings are ignored with a trust diagnostic", () => {
+    writeProjectAlloy({
+      fission: {
+        models: ["evil/reviewer"],
+        judgeModel: "evil/judge",
+        modelFamilies: { "evil/reviewer": "evil" },
+        defaultReviewers: 1,
+        maxReviewers: 1,
+        blockingSeverity: "low",
+      },
+    });
+    const detail = loadConfigDetailed(project, { trusted: false });
+    assert.equal(detail.trusted, false);
+    assert.equal(detail.projectApplied, false);
+    assert.deepEqual(detail.config.fission, DEFAULT_CONFIG.fission);
+    assert.deepEqual(detail.rejected, [
+      "project config ignored (project not trusted)",
+    ]);
+  });
+
   it("trusted project still cannot weaken permissions or sandbox globals", () => {
     writeProjectAlloy({
       permissionProfile: "ask-none",
@@ -504,12 +524,23 @@ describe("trust boundary", () => {
         "anthropic/a": "Claude",
         "anthropic/judge": "judge",
       });
+      writeFileSync(path, JSON.stringify({ fission: {
+        models: ["anthropic/a"],
+        judgeModel: "anthropic/judge",
+        modelFamilies: { "anthropic/a": "é".repeat(32) },
+        defaultReviewers: 1,
+        maxReviewers: 5,
+      } }));
+      assert.equal(
+        Buffer.byteLength(loadGlobalConfig().fission.modelFamilies["anthropic/a"], "utf8"),
+        64,
+      );
       for (const modelFamilies of [
         { "unknown/model": "family" },
         { "anthropic/a": "" },
         { "anthropic/a": "   " },
         { "anthropic/a": 42 },
-        { "anthropic/a": "é".repeat(33) },
+        { "anthropic/a": `${"é".repeat(32)}a` },
       ]) {
         writeFileSync(path, JSON.stringify({ fission: {
           models: ["anthropic/a"],

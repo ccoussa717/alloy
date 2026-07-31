@@ -116,8 +116,7 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       maxReviewers,
       cwd: ctx.cwd,
       modelRegistry: ctx.modelRegistry,
-      ...(includeSignal ? { signal } : {}),
-      timeoutMs: 300_000,
+      ...(includeSignal ? { signal } : { timeoutMs: 300_000 }),
       ...parentPolicy,
     };
     const result = await executeFission(input);
