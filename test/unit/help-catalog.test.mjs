@@ -28,6 +28,7 @@ test("catalog has core topics", () => {
     "sandbox",
     "auto",
     "fusion",
+    "fission",
     "commands",
     "mcp",
     "memory",
@@ -67,6 +68,21 @@ test("fusion help documents the plan-only three-role workflow", () => {
   assert.match(topic.body, /builderModel/);
   assert.match(topic.body, /synthesizerModel/);
   assert.doesNotMatch(topic.body, /\[plan\|build\]|workers|mergerModel/i);
+});
+
+test("fission help documents its complete fail-closed review contract", () => {
+  const topic = help.getTopic("fission");
+  assert.match(topic.body, /trusted repositor/i);
+  assert.match(topic.body, /Git config.*attributes.*execute/is);
+  assert.match(topic.body, /hostile repositor.*unsupported/is);
+  assert.match(topic.body, /defaultReviewers.*maxReviewers/is);
+  assert.match(topic.body, /project.*lower.*global/is);
+  assert.match(topic.body, /read-only tools/i);
+  assert.match(topic.body, /maximum.*5|cap.*5/i);
+  assert.match(topic.body, /COMPLETE.*INCOMPLETE.*ABORTED.*REFUSED.*NO_CHANGES/is);
+  assert.match(topic.body, /PASS.*submitted blocking finding/is);
+  assert.match(topic.body, /no.*fallback/i);
+  assert.match(topic.body, /does not.*tests.*fixes.*merge.*deploy/is);
 });
 
 test("help assigns Shift+Tab to Build and Plan, not approval levels", () => {
@@ -120,6 +136,7 @@ test("help argument completions expose search and every topic", () => {
   assert.ok(all.some((item) => item.value === "search "));
   assert.ok(all.some((item) => item.value === "commands"));
   assert.ok(all.some((item) => item.value === "fusion"));
+  assert.ok(all.some((item) => item.value === "fission"));
   assert.deepEqual(
     help.getHelpArgumentCompletions("fus").map((item) => item.value),
     ["fusion"],

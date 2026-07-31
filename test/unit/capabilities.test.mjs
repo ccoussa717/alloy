@@ -16,6 +16,11 @@ describe("capability policy", () => {
     assert.ok(capabilitiesForTool("alloy_auto").includes("child_agent"));
     assert.ok(capabilitiesForTool("alloy_remember").includes("persistent_state"));
     assert.ok(capabilitiesForTool("alloy_worktree").includes("git_destructive"));
+    assert.deepEqual(capabilitiesForTool("alloy_fission"), [
+      "child_agent",
+      "workspace_write",
+      "process",
+    ]);
     assert.deepEqual(capabilitiesForTool("alloy_memory_search"), ["read"]);
   });
 
@@ -64,6 +69,7 @@ describe("capability policy", () => {
       "alloy_remember",
       "alloy_diagnostics",
       "alloy_fusion",
+      "alloy_fission",
       "alloy_task",
     ]) {
       const r = evaluateToolPolicy({
