@@ -33,7 +33,7 @@ const { getAgent, getAgentTranscript, listAgents } = require(
   join(root, "lib", "agent-registry.mjs"),
 );
 
-const VERSION = process.env.ALLOY_VERSION || "0.8.3";
+const VERSION = process.env.ALLOY_VERSION || "0.8.4";
 
 type ThemeLike = {
   fg: (c: string, t: string) => string;
