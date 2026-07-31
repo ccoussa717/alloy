@@ -40,6 +40,7 @@ const packet = {
       size: 10,
       lineCount: 10,
       mode: 0o400,
+      sections: [{ affectedPath: "lib/a.mjs", lineStart: 1, lineEnd: 10 }],
     },
   },
 };
@@ -357,6 +358,7 @@ describe("Fission coordinator", () => {
         '"critical"', '"low"', '"staged_diff"', '"unstaged_diff"', '"file"',
         '"maxItems":50', '"maxItems":20', '"maxLength":8192', '"maxLength":4096',
         '"errors"', '"artifactDigest"', '"lineStart"', '"lineEnd"',
+        'entirely within one diff section owned by affectedPath',
         'Concrete valid JSON example',
       ]) assert.equal(child.prompt.includes(required), true, required);
     }
@@ -366,6 +368,7 @@ describe("Fission coordinator", () => {
       '"validated"', '"rejected"', '"needs_probe"', '"human_decision"',
       '"adjudicatedSeverity"', '"null"', '"judgeConcern"', '"evidenceRefs"',
       '"maxItems":50', '"maxItems":20', '"maxLength":8192', '"maxLength":4096',
+      'owned by at least one member finding affectedPath',
       'Concrete valid JSON example',
     ]) assert.equal(judgePrompt.includes(required), true, required);
   });

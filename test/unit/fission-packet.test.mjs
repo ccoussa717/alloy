@@ -482,6 +482,13 @@ test("artifact verification enforces exact files, bytes, file modes, and directo
   writeFileSync(stagedPath, stagedBytes, { mode: 0o400 });
   chmodSync(packetRoot, 0o500);
   assert.equal(verifyFissionArtifacts(capture).ok, true);
+
+  capture.artifacts["unstaged.diff"].sections.push({ affectedPath: "nested.txt", lineStart: 1, lineEnd: 1 });
+  const sectionMismatch = verifyFissionArtifacts(capture).mismatches;
+  assert.equal(sectionMismatch.includes("sections:unstaged.diff"), true);
+  assert.equal(sectionMismatch.includes("inventory:unstaged.diff"), true);
+  capture.artifacts["unstaged.diff"].sections.pop();
+  assert.equal(verifyFissionArtifacts(capture).ok, true);
 });
 
 test("manifest preserves exact omission reason for every unsupported path", () => {
@@ -543,6 +550,10 @@ test("unmatched unsafe markers in either patch buffer fail closed globally", () 
     ["Binary files x and y differ", "binary"],
     ["new file mode 160000", "submodule"],
     ["Subproject commit deadbeef", "submodule"],
+    ["new file mode 120000", "symlink"],
+    ["deleted file mode 120000", "symlink"],
+    ["old mode 120000", "symlink"],
+    ["new mode 120000", "symlink"],
   ];
   for (const patchField of ["staged", "unstaged"]) {
     for (const [marker, reason] of markers) {
@@ -565,6 +576,97 @@ test("unmatched unsafe markers in either patch buffer fail closed globally", () 
       assert.equal(baseline.retainedFiles.length, 1, "safe current file remains available");
     }
   }
+});
+
+test("diff artifacts inventory exact sections for modifications, additions, deletions, renames, and quoted UTF-8 paths", () => {
+  const repo = initRepo("diff-section-ownership");
+  writeFileSync(join(repo, "a.mjs"), "export const a = 1;\n");
+  writeFileSync(join(repo, "space name.mjs"), "export const spaced = 1;\n");
+  writeFileSync(join(repo, "delete.mjs"), "export const gone = true;\n");
+  writeFileSync(join(repo, "rename-old.mjs"), "export const renamed = true;\n");
+  git(repo, ["add", "a.mjs", "space name.mjs", "delete.mjs", "rename-old.mjs"]);
+  git(repo, ["commit", "-m", "section base"]);
+  writeFileSync(join(repo, "a.mjs"), "export const a = 2;\n");
+  writeFileSync(join(repo, "space name.mjs"), "export const spaced = 2;\n");
+  writeFileSync(join(repo, "é-add.mjs"), "export const added = true;\n");
+  rmSync(join(repo, "delete.mjs"));
+  git(repo, ["mv", "rename-old.mjs", "rename-new.mjs"]);
+  git(repo, ["add", "--all"]);
+
+  const packetRoot = join(root, "diff-section-ownership-packet");
+  const capture = captureFissionPacket({
+    cwd: repo,
+    packetRoot,
+    request: "review",
+    preflight: preflightFissionRepository(repo, trusted),
+    deps: trusted,
+  });
+  const staged = capture.artifacts["staged.diff"];
+  assert.deepEqual(staged.sections.map(({ affectedPath }) => affectedPath).sort(), [
+    "a.mjs", "delete.mjs", "rename-new.mjs", "space name.mjs", "é-add.mjs",
+  ]);
+  assert.deepEqual(capture.manifest.artifacts.find(({ path }) => path === "staged.diff").sections, staged.sections);
+  for (const section of staged.sections) {
+    assert.equal(Number.isInteger(section.lineStart) && section.lineStart > 0, true);
+    assert.equal(section.lineEnd >= section.lineStart, true);
+    assert.equal(section.lineEnd <= staged.lineCount, true);
+  }
+  assert.equal(new Set(staged.sections.map(({ affectedPath }) => affectedPath)).size, staged.sections.length);
+  assert.match(readFileSync(join(packetRoot, "staged.diff"), "utf8"), /\\303\\251-add\.mjs|é-add\.mjs/);
+  assert.equal(verifyFissionArtifacts(capture).ok, true);
+});
+
+test("malformed or ambiguous diff headers fail section ownership closed", () => {
+  for (const patch of [
+    'diff --git "a/\\303" "b/\\303"\n--- "a/\\303"\n+++ "b/\\303"\n',
+    "diff --git a/a.mjs b/a.mjs\ndiff --git a/a.mjs b/a.mjs\n",
+  ]) {
+    const baseline = captureBoundedDirtyBaseline(root, undefined, {
+      repositoryRoot: () => root,
+      readRegularFileNoFollow: () => ({ bytes: Buffer.from("safe\n"), mode: 0o100644, size: 5, executable: false }),
+      spawnSync: (_command, args) => ({
+        status: 0,
+        stderr: Buffer.alloc(0),
+        stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+          : args[0] === "status" ? Buffer.from(" M a.mjs\0")
+            : args.includes("--cached") ? Buffer.from(patch) : Buffer.alloc(0),
+      }),
+    });
+    assert.equal(baseline.evidenceComplete, false);
+    assert.equal(baseline.reason, "patch_sections");
+  }
+});
+
+test("global symlink mode detection survives an unmatched quoted header", () => {
+  const baseline = captureBoundedDirtyBaseline(root, undefined, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => ({ bytes: Buffer.from("safe\n"), mode: 0o100644, size: 5, executable: false }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? Buffer.from(" M a.mjs\0")
+          : args.includes("--cached")
+            ? Buffer.from('diff --git "a/unterminated b/a.mjs\nnew file mode 120000\n')
+            : Buffer.alloc(0),
+    }),
+  });
+  assert.equal(baseline.evidenceComplete, false);
+  assert.equal(baseline.reason, "symlink");
+});
+
+test("deleting a quoted non-ASCII symlink is globally incomplete evidence", () => {
+  const repo = initRepo("quoted-symlink-deletion");
+  symlinkSync("tracked.txt", join(repo, "é-link"));
+  git(repo, ["add", "é-link"]);
+  git(repo, ["commit", "-m", "add quoted symlink"]);
+  rmSync(join(repo, "é-link"));
+
+  const baseline = captureBoundedDirtyBaseline(repo, undefined, trusted);
+  assert.match(baseline.unstagedPatch.toString("utf8"), /deleted file mode 120000/);
+  assert.match(baseline.unstagedPatch.toString("utf8"), /\\303\\251-link|é-link/);
+  assert.equal(baseline.evidenceComplete, false);
+  assert.equal(baseline.reason, "symlink:é-link");
 });
 
 test("canonical patch capture ignores configured external diff and color while retaining unsafe markers", () => {

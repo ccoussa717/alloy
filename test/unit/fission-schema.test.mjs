@@ -21,7 +21,10 @@ const digestB = "b".repeat(64);
 const packet = {
   evidenceComplete: true,
   manifest: {
-    entries: [{ path: "a.txt", included: true, artifactPath: "files/a.txt" }],
+    entries: [
+      { path: "a.txt", included: true, artifactPath: "files/a.txt" },
+      { path: "b.txt", included: false, artifactPath: null },
+    ],
   },
   artifacts: {
     "staged.diff": {
@@ -31,6 +34,10 @@ const packet = {
       size: 20,
       lineCount: 4,
       mode: 0o400,
+      sections: [
+        { affectedPath: "a.txt", lineStart: 1, lineEnd: 2 },
+        { affectedPath: "b.txt", lineStart: 3, lineEnd: 4 },
+      ],
     },
     "files/a.txt": {
       type: "file",
@@ -308,6 +315,10 @@ test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
   const exactPacket = {
     ...packet,
     manifest: { entries: [...packet.manifest.entries, { path: exactPath, included: false, artifactPath: null }] },
+    artifacts: {
+      ...packet.artifacts,
+      "staged.diff": { ...packet.artifacts["staged.diff"], sections: [{ affectedPath: exactPath, lineStart: 1, lineEnd: 4 }] },
+    },
   };
   assert.doesNotThrow(() => validateReviewerOutput({
     output: reviewer({
@@ -327,7 +338,17 @@ test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
     output,
     reviewerRole: "correctness_regressions",
     packet: output.findings?.[0]?.affectedPath === `${exactPath}é`
-      ? { ...packet, manifest: { entries: [{ path: `${exactPath}é`, included: false, artifactPath: null }] } }
+      ? {
+          ...packet,
+          manifest: { entries: [{ path: `${exactPath}é`, included: false, artifactPath: null }] },
+          artifacts: {
+            ...packet.artifacts,
+            "staged.diff": {
+              ...packet.artifacts["staged.diff"],
+              sections: [{ affectedPath: `${exactPath}é`, lineStart: 1, lineEnd: 4 }],
+            },
+          },
+        }
       : packet,
   }), /byte_limit/);
 });
@@ -415,6 +436,17 @@ test("reviewer validation enforces exact role, unique coverage, finite confidenc
     } })] }),
     reviewerRole: "correctness_regressions", packet,
   }), /evidence_ref/);
+  assert.throws(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding({ location: { ...finding().location, lineStart: 3, lineEnd: 4 } })] }),
+    reviewerRole: "correctness_regressions", packet,
+  }), /affected_path/);
+  assert.throws(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding({ location: { ...finding().location, lineStart: 2, lineEnd: 3 } })] }),
+    reviewerRole: "correctness_regressions", packet,
+  }), /line_range/);
+  assert.doesNotThrow(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding()] }), reviewerRole: "correctness_regressions", packet,
+  }));
 });
 
 test("finding IDs are stable lowercase identifiers over canonical finding fields", () => {
@@ -478,6 +510,40 @@ test("judge validation requires exhaustive unique clusters and disposition evide
     findings: submitted,
     packet,
   }), /evidence_ref/);
+
+  const bFinding = finding({ affectedPath: "b.txt", location: { ...finding().location, lineStart: 3, lineEnd: 4 } });
+  const bId = findingId("correctness", 1, bFinding);
+  const twoSubmitted = [...submitted, { id: bId, finding: bFinding }];
+  const twoClusters = [
+    valid.clusters[0],
+    {
+      canonicalFindingId: bId,
+      findingIds: [bId],
+      disposition: "rejected",
+      adjudicatedSeverity: null,
+      rationale: "not supported",
+      evidenceRefs: [],
+    },
+  ];
+  assert.throws(() => validateJudgeOutput({
+    output: {
+      clusters: [{ ...twoClusters[0], evidenceRefs: [ref({ lineStart: 3, lineEnd: 4 })] }, twoClusters[1]],
+      judgeConcern: null,
+    },
+    findings: twoSubmitted,
+    packet,
+  }), /affected_path/);
+  assert.throws(() => validateJudgeOutput({
+    output: {
+      clusters: [{ ...twoClusters[0], evidenceRefs: [ref({ lineStart: 2, lineEnd: 3 })] }, twoClusters[1]],
+      judgeConcern: null,
+    },
+    findings: twoSubmitted,
+    packet,
+  }), /line_range/);
+  assert.doesNotThrow(() => validateJudgeOutput({
+    output: { clusters: twoClusters, judgeConcern: null }, findings: twoSubmitted, packet,
+  }));
 });
 
 test("host verdict table is ordered and reviewer agreement never determines PASS", () => {
