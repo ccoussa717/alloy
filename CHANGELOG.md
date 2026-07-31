@@ -7,6 +7,14 @@ and releases use semantic versioning during the 0.x development series.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-07-31
+
+### Fixed
+
+- Existing installs with Alloy's generated 0.8.2 hosted-only provider allowlist
+  now gain implicit Ollama, llama.cpp, and LM Studio discovery after upgrade.
+  Customized allowlists and explicit local-engine settings remain authoritative.
+
 ## [0.8.3] - 2026-07-30
 
 ### Added

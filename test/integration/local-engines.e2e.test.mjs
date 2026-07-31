@@ -69,7 +69,7 @@ function runAlloy(args, env) {
   });
 }
 
-test("real Pi --list-models includes all discovered local engines before session_start", async (t) => {
+test("real Pi migrates the generated hosted-only allowlist before local discovery", async (t) => {
   const inferenceHeaders = [];
   const ollama = await listen((request, response) => {
     if (request.url === "/api/tags") {
@@ -118,6 +118,17 @@ test("real Pi --list-models includes all discovered local engines before session
   const agentDir = join(home, ".pi", "agent");
   const alloyHome = join(home, ".pi", "alloy");
   await mkdir(agentDir, { recursive: true });
+  await mkdir(alloyHome, { recursive: true });
+  await writeFile(
+    join(alloyHome, "config.json"),
+    JSON.stringify({
+      version: 1,
+      providers: {
+        allow: ["anthropic", "openai", "openai-codex", "xai"],
+        favorites: ["anthropic/claude-sonnet-4-5"],
+      },
+    }),
+  );
 
   const childEnv = {
     ...process.env,
