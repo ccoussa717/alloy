@@ -46,6 +46,10 @@ isolation and Docker for stronger containment.
 | Doctor leaks credentials | Presence and shape only; never values | provider tests |
 | Release installs different code | Exact dependencies, release-included shrinkwrap, packed-artifact test, npm provenance | release CI |
 | Secret enters source or history | Local signature gate plus maintained historic detector | security CI |
+| Fission reads a hostile repository | Operator trust prerequisite; hostile repositories are outside the product boundary | Fission trust and packet tests |
+| Fission child escapes review evidence | Read-only tools confined to the immutable packet root | Fission workflow tests |
+| Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
+| Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
 
 ## Credentials
 
@@ -70,6 +74,26 @@ plaintext HTTP is limited to loopback development.
 
 MCP stdio servers run as host processes. Configure them as deliberately as any
 other executable. Published examples never execute floating npm packages.
+
+## Fission trusted-repository boundary
+
+Fission is for projects the operator has marked trusted. Repository Git
+config/attributes may execute under normal Git behavior. Do not run it on
+hostile/untrusted repositories. This is an explicit product boundary, not a
+hidden implementation caveat or a claim that repository capture is inert.
+
+The workflow limits model-visible evidence rather than making the repository
+hostile-safe. Children can read only the accepted packet root, exact requested
+routes must attest their actual identities, and complete assistant payloads are
+bounded. Source and packet drift checks fail closed before judgment and verdict.
+These controls do not defend against arbitrary same-UID host access, a malicious
+Git configuration already trusted by the operator, or a byte-identical ABA
+change that restores accepted bytes between checks.
+
+`PASS` means only `no submitted blocking finding validated.` It is not a test,
+correctness, merge, or deployment guarantee. `NO_CHANGES` creates no review run;
+all incomplete evidence, identity, cost, adjudication, and drift paths are
+`INCOMPLETE`.
 
 ## Host and Docker claims
 
@@ -103,6 +127,8 @@ Host mode must never be described as filesystem isolation.
 ## Residual risks
 
 - Host children run as the operator's user and are not filesystem-isolated.
+- Fission assumes trusted repository Git behavior and cannot exclude same-user
+  host mutation or byte-identical ABA restoration.
 - MCP servers are trusted host executables.
 - Checkpoint restore cannot prevent all concurrent writes from external
   processes.

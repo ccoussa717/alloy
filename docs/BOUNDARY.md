@@ -16,7 +16,7 @@ This boundary is required whether the repo stays private **or** is published ope
 | Memory | Local durable user/project facts (`/remember`, `/memory`) |
 | Skills | Capture → human approve → promote mechanism + starter skills |
 | MCP | Config shape + stdio / HTTP (streamable) / SSE bridges; tools under the same gate |
-| Orchestration | `/auto`, `/fusion`, `/agent` primitives |
+| Orchestration | `/auto`, `/fusion`, `/fission`, `alloy_fission`, and `/agent` primitives |
 | Git | Checkpoints, worktrees, diagnostics helpers |
 | Docs | Architecture, security model, adoption checklist |
 
@@ -45,6 +45,21 @@ This boundary is required whether the repo stays private **or** is published ope
 | Docker sandbox | Stronger isolation for paths Alloy routes through the container. Fail closed without Docker. Not a multi-tenant micro-VM product. |
 
 Do not describe host mode as “isolation.”
+
+## Fission standalone v1
+
+Fission v1 is a standalone trusted-repository review workflow, not an automatic
+stage of `/auto`. The operator owns its exact reviewer and judge routes globally;
+projects may only tighten permitted counts and thresholds. Routes use no
+fallback. Children are confined to a bounded packet root, and host drift checks
+guard the narrow verdict, but same-UID access and byte-identical ABA restoration
+remain outside the guarantee.
+
+Offline dogfood materialization and evaluation ship as package mechanisms, but
+authenticated model execution remains a manual Alloy-session gate. `/auto`
+integration is follow-up work only after all nine manual `/fission 5` dogfood
+runs pass. `NO_CHANGES` and `INCOMPLETE` are not success, and `PASS` means only
+`no submitted blocking finding validated.`
 
 ---
 

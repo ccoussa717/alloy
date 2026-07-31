@@ -286,6 +286,8 @@ route uses ChatGPT subscription auth from Pi `/login`. The **MVP target is subsc
 | `/auto <request>` | Multi-agent pipeline + fix loops |
 | `/fusion <objective>` | Plan-only Architect-Builder fusion |
 | `/fusion setup` / `/fusion status` / `/fusion help` | Configure, inspect, and explain Fusion role models and effort |
+| `/fission [1..5] <contract>` | Trusted-repository, read-only, adjudicated review of the current Git changes |
+| `alloy_fission` | Programmatic Fission tool with `request` and optional `reviewers` |
 | `/panel` | Clear agent panel widget |
 | `/runs` | Show runs artifact directory |
 | **`Shift+Tab`** | Cycle primary operating mode: Build ↔ Plan |
@@ -592,6 +594,86 @@ Each child receives only the selected provider credential in its ephemeral Pi
 home, and its read tools are mechanically confined to the repository root. Run
 artifacts contain proposals, synthesis, model identity, usage, and a truthful
 terminal status, but never credential values.
+
+### Fission
+
+> **Trust boundary:** Fission is for projects the operator has marked trusted.
+> Repository Git config/attributes may execute under normal Git behavior.
+> Do not run it on hostile/untrusted repositories.
+> This is a product boundary, not a hidden implementation caveat.
+
+Fission freezes the current dirty Git state, sends only the bounded packet to
+blind read-only reviewers, and has a fresh judge adjudicate their structured
+findings. Use `/fission <contract>` for the configured default count or
+`/fission 5 <contract>` for an explicit count. The equivalent `alloy_fission`
+tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are integers from
+1 through the effective maximum of 5 and are rejected, never clamped, above
+that limit.
+
+Reviewer roles expand with the count: general adversarial at one; correctness
+and security at two; architecture/failure handling at three; test/spec coverage
+at four; and performance/concurrency/resources at five. Reviewer routes,
+the judge route, and optional family labels are owned by the global operator
+config. A five-reviewer run requires five distinct configured reviewer routes.
+Fission admits each exact route with no fallback and attests the actual
+provider/model emitted by every child. Authentication, transport, capacity,
+concurrency, and budget must all be available for those exact routes.
+
+Capture uses normal bounded Git commands. Review children receive only
+`read`, `grep`, `find`, and `ls`, with `cwd` and `readRoot` confined to the
+immutable packet root. Reviewer and judge assistant payloads have complete
+serialized output limits. Reservations and observed usage live only in the
+current process's in-process registry; a restart cannot resume a run. Alloy
+checks source and packet digests before review, before judgment, and before the
+verdict. These checks detect ordinary drift, not malicious same-UID mutation
+or byte-identical ABA restoration.
+
+`NO_CHANGES` means the repository was clean and no run was created.
+`INCOMPLETE` means evidence, route admission, a child, adjudication, settlement,
+or a drift check failed; it is never a pass. `FAIL` requires a judge-validated
+finding at the configured blocking severity. `PASS` means only:
+`no submitted blocking finding validated.` It does not mean tests ran, the code
+is correct, or the change is safe to merge or deploy.
+
+The example in [`config/alloy.example.json`](./config/alloy.example.json) uses
+routes from the pinned Pi catalogs. Confirm they are authenticated in the live
+catalog; five-reviewer runs need five distinct eligible reviewer routes in
+addition to the judge.
+
+#### Offline dogfood and authenticated gate
+
+The corpus utility only prepares repositories and evaluates saved normalized
+results. It does not load Alloy, credentials, or models and cannot make model
+calls:
+
+```bash
+node scripts/fission-dogfood.mjs materialize \
+  --fixture-root test/fixtures/fission-dogfood \
+  --out /tmp/alloy-fission-dogfood
+```
+
+In a separate live authenticated Alloy session, mark each of the nine generated
+repositories trusted, paste its `contract.md` into `/fission 5 <contract
+contents>`, and save the run's `result.json`. Then evaluate all nine paths:
+
+```bash
+node scripts/fission-dogfood.mjs evaluate \
+  --manifest test/fixtures/fission-dogfood/manifest.json \
+  --case correctness-stale-cache=/path/to/result.json \
+  --case correctness-partial-write=/path/to/result.json \
+  --case security-path-traversal=/path/to/result.json \
+  --case security-tenant-bypass=/path/to/result.json \
+  --case failure-handling-reservation-leak=/path/to/result.json \
+  --case failure-handling-cancellation-reported-as-success=/path/to/result.json \
+  --case control-cache-invalidation=/path/to/result.json \
+  --case control-contained-upload=/path/to/result.json \
+  --case control-finally-settlement=/path/to/result.json
+```
+
+Missing saved paths are `UNEXECUTED`, malformed or incomplete artifacts are
+`FAILED`, and only six matched high/critical seeds plus three clean controls are
+`PASSED`. Integrating Fission into `/auto` is follow-up work only after this
+manual authenticated dogfood gate passes.
 
 The immediate product goal is a reliable daily harness for Claude, Codex, and
 Grok users.

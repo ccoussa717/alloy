@@ -19,7 +19,8 @@ alloy (bin/alloy.mjs)
                  ├── worktree    isolated trees
                  ├── diagnostics project checks
                  ├── auto        /auto orchestration
-                 ├── agents      /agent multi-model children
+                  ├── agents      /agent multi-model children
+                  ├── fission     /fission bounded review + alloy_fission
                  ├── sandbox     Docker session container
                  ├── child-enforcer  mechanical child policy ceiling
                  ├── honesty     no-fabrication policy
@@ -70,6 +71,32 @@ concurrently with read-only tools, and a Synthesizer runs only after both output
 contracts validate. An eligible successful run performs exactly three model
 calls; preflight, proposal, abort, and budget failures stop earlier. Fusion has
 no code-writing or automatic validation phase.
+
+Fission is a separate trusted-repository review coordinator. Pure preflight
+rejects untrusted projects, non-repositories, unborn `HEAD`, conflicts, and a
+clean tree before creating artifacts; clean state returns `NO_CHANGES`. For a
+ready tree, normal bounded Git commands capture exact `HEAD`, status, staged and
+unstaged patches, and changed regular files. The accepted source digest is
+checked immediately and again before judgment and verdict. The packet itself is
+also digest-checked. This detects ordinary drift but not hostile same-UID races
+or byte-identical ABA restoration.
+
+Each reviewer and the fresh judge is admitted against one global
+operator-configured exact route with no fallback. The emitted provider plus bare
+model must attest to that route. Reviewer children have only read tools, and
+their `cwd` and `readRoot` are the frozen packet root rather than the repository
+root. Complete serialized assistant payloads are subject to an output limit
+before parsing or retention. Capacity reservations and usage settlement belong
+to the current process's in-process registry, so Fission is intentionally not a
+durable workflow engine.
+
+Host normalization, not reviewer claim wording or submitted severity, produces
+the final findings. The judge must cover every submitted finding with a legal
+disposition. Unresolved findings, judge concerns, drift, malformed output,
+route/identity failure, cancellation, unknown cost, or settlement failure all
+produce `INCOMPLETE`. A completed run is `FAIL` only for an adjudicated finding
+at or above the configured blocking threshold; otherwise its deliberately
+narrow `PASS` is `no submitted blocking finding validated.`
 
 ## Docker sandbox (session)
 
