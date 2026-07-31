@@ -628,6 +628,13 @@ checks source and packet digests before review, before judgment, and before the
 verdict. These checks detect ordinary drift, not malicious same-UID mutation
 or byte-identical ABA restoration.
 
+Exact capture and output caps are fail-closed: request: 16 KiB; status: 1 MiB;
+staged plus unstaged patches: 2 MiB; each retained file: 256 KiB;
+all retained files: 2 MiB; changed entries: 10,000;
+assistant output per reviewer or judge: 256 KiB cumulative serialized
+completed-assistant messages. Crossing a cap produces `INCOMPLETE`; accepted
+evidence is never truncated.
+
 `NO_CHANGES` means the repository was clean and no run was created.
 `INCOMPLETE` means evidence, route admission, a child, adjudication, settlement,
 or a drift check failed; it is never a pass. `FAIL` requires a judge-validated

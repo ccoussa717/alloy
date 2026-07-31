@@ -1,16 +1,19 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const CASES = Object.freeze([
   ["correctness-stale-cache", "correctness", false],
@@ -26,10 +29,23 @@ const CASES = Object.freeze([
 const CASE_BY_ID = new Map(CASES.map((entry) => [entry[0], entry]));
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const BLOCKING_SEVERITIES = new Set(["critical", "high"]);
-const ROUTE = /^[^/\s]+\/.+$/;
+const ROUTE = /^[^/\s]+\/[^\s]+$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const FINDING_ID = /^F[0-9a-f]{24}$/;
 const CLUSTER_ID = /^C\d{4}$/;
+const REVIEWER_ROLES = Object.freeze([
+  "correctness_regressions",
+  "security_trust_boundaries",
+  "architecture_failure_handling",
+  "test_quality_spec_coverage",
+  "performance_concurrency_resources",
+]);
+const RESULT_KEYS = Object.freeze([
+  "kind", "runId", "runDir", "status", "verdict", "message", "request",
+  "requestedReviewers", "blockingSeverity", "packetDigest", "sourceDigest",
+  "evidenceComplete", "reviewers", "judge", "clusters", "validatedFindings",
+  "rejectedFindings", "unresolvedFindings", "modelDiversity", "usage", "error", "panel",
+]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -128,13 +144,27 @@ function git(cwd, args) {
   execFileSync("git", args, { cwd, stdio: "pipe" });
 }
 
+function canonicalPotentialPath(path) {
+  let ancestor = resolve(path);
+  const missing = [];
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) throw new Error("output_root_ancestor_missing");
+    missing.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+  return resolve(realpathSync(ancestor), ...missing);
+}
+
 export function materializeDogfoodFixtures({ fixtureRoot, outputRoot }) {
-  const resolvedFixtureRoot = resolve(fixtureRoot);
-  const resolvedOutputRoot = resolve(outputRoot);
+  const resolvedFixtureRoot = realpathSync(resolve(fixtureRoot));
+  const resolvedOutputRoot = canonicalPotentialPath(outputRoot);
   const outputFromFixtures = relative(resolvedFixtureRoot, resolvedOutputRoot);
   if (
     outputFromFixtures === "" ||
-    (!outputFromFixtures.startsWith("..") && !isAbsolute(outputFromFixtures))
+    (outputFromFixtures !== ".." &&
+      !outputFromFixtures.startsWith(`..${sep}`) &&
+      !isAbsolute(outputFromFixtures))
   ) throw new Error("output_root_inside_fixture_root");
   const manifest = JSON.parse(readFileSync(join(resolvedFixtureRoot, "manifest.json"), "utf8"));
   validateDogfoodManifest(manifest, resolvedFixtureRoot);
@@ -218,9 +248,175 @@ function validateNormalizedFinding(finding, disposition = null) {
   finding.evidenceRefs.forEach((ref, index) => validateEvidenceRef(ref, `evidence_ref_${index}`));
 }
 
+function finiteNonnegative(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function resultFindingId(alias, ordinal, finding) {
+  const identity = {
+    alias,
+    ordinal,
+    affectedPath: finding.affectedPath,
+    location: finding.location,
+    claimDigest: createHash("sha256").update(finding.claim).digest("hex"),
+  };
+  return `F${createHash("sha256").update(canonical(identity)).digest("hex").slice(0, 24)}`;
+}
+
+function validateUsage(usage, label) {
+  exactKeys(usage, ["input", "output", "cost", "turns", "costKnown"], label);
+  if (
+    !finiteNonnegative(usage.input) ||
+    !finiteNonnegative(usage.output) ||
+    !finiteNonnegative(usage.cost) ||
+    !finiteNonnegative(usage.turns) ||
+    usage.costKnown !== true
+  ) throw new Error(label);
+}
+
+function validateRawFinding(finding, label) {
+  exactKeys(finding, [
+    "severity", "claim", "affectedPath", "location", "evidence",
+    "reproduction", "suggestedFix", "confidence",
+  ], label);
+  if (
+    !SEVERITIES.has(finding.severity) ||
+    typeof finding.claim !== "string" || !finding.claim.trim() ||
+    !validRelativePath(finding.affectedPath) ||
+    typeof finding.evidence !== "string" || !finding.evidence.trim() ||
+    typeof finding.reproduction !== "string" || !finding.reproduction.trim() ||
+    typeof finding.suggestedFix !== "string" || !finding.suggestedFix.trim() ||
+    typeof finding.confidence !== "number" || !Number.isFinite(finding.confidence) ||
+    finding.confidence < 0 || finding.confidence > 1
+  ) throw new Error(label);
+  validateLocation(finding.location, label);
+}
+
+function validateReviewerOutput(output, role, label) {
+  exactKeys(output, ["reviewerRole", "coverage", "findings", "errors"], label);
+  if (
+    output.reviewerRole !== role ||
+    !Array.isArray(output.coverage) || output.coverage.length === 0 ||
+    !output.coverage.every((item) => typeof item === "string" && item.trim()) ||
+    new Set(output.coverage).size !== output.coverage.length ||
+    !Array.isArray(output.findings) ||
+    !Array.isArray(output.errors) || output.errors.length !== 0
+  ) throw new Error(label);
+  output.findings.forEach((finding, index) => validateRawFinding(finding, `${label}_finding_${index}`));
+}
+
+function validateReviewer(reviewer, index, entry) {
+  const label = `${entry.id}: reviewer_${index}`;
+  exactKeys(reviewer, [
+    "alias", "role", "requestedModel", "actualModel", "status", "valid",
+    "malformed", "output", "error", "usage",
+  ], label);
+  if (
+    reviewer.alias !== `R${String(index + 1).padStart(2, "0")}` ||
+    reviewer.role !== REVIEWER_ROLES[index] ||
+    !ROUTE.test(reviewer.requestedModel) ||
+    reviewer.actualModel !== reviewer.requestedModel ||
+    reviewer.status !== "ok" || reviewer.valid !== true || reviewer.malformed !== false ||
+    reviewer.error !== null
+  ) throw new Error(label);
+  validateReviewerOutput(reviewer.output, reviewer.role, `${label}_output`);
+  validateUsage(reviewer.usage, `${label}_usage`);
+}
+
+function validateCluster(cluster, resultShape, label) {
+  exactKeys(cluster, [
+    ...(resultShape ? ["clusterId"] : []),
+    "canonicalFindingId", "findingIds", "disposition", "adjudicatedSeverity",
+    "rationale", "evidenceRefs",
+  ], label);
+  if (
+    (resultShape && !CLUSTER_ID.test(cluster.clusterId)) ||
+    !FINDING_ID.test(cluster.canonicalFindingId) ||
+    !Array.isArray(cluster.findingIds) || cluster.findingIds.length === 0 ||
+    new Set(cluster.findingIds).size !== cluster.findingIds.length ||
+    !cluster.findingIds.every((id) => FINDING_ID.test(id)) ||
+    !cluster.findingIds.includes(cluster.canonicalFindingId) ||
+    !["validated", "rejected"].includes(cluster.disposition) ||
+    (cluster.disposition === "validated"
+      ? !SEVERITIES.has(cluster.adjudicatedSeverity)
+      : cluster.adjudicatedSeverity !== null) ||
+    typeof cluster.rationale !== "string" || !cluster.rationale.trim() ||
+    !Array.isArray(cluster.evidenceRefs) ||
+    (cluster.disposition === "validated" && cluster.evidenceRefs.length === 0)
+  ) throw new Error(label);
+  cluster.evidenceRefs.forEach((ref, index) => validateEvidenceRef(ref, `${label}_evidence_${index}`));
+}
+
+function validateJudge(judge, entry) {
+  const label = `${entry.id}: judge`;
+  exactKeys(judge, [
+    "requestedModel", "actualModel", "status", "valid", "malformed", "output", "error", "usage",
+  ], label);
+  if (
+    !ROUTE.test(judge.requestedModel) || judge.actualModel !== judge.requestedModel ||
+    judge.status !== "ok" || judge.valid !== true || judge.malformed !== false || judge.error !== null
+  ) throw new Error(label);
+  exactKeys(judge.output, ["clusters", "judgeConcern"], `${label}_output`);
+  if (!Array.isArray(judge.output.clusters) || judge.output.judgeConcern !== null) throw new Error(`${label}_output`);
+  judge.output.clusters.forEach((cluster, index) => validateCluster(cluster, false, `${label}_cluster_${index}`));
+  validateUsage(judge.usage, `${label}_usage`);
+}
+
+function sortedUniqueStrings(values) {
+  return Array.isArray(values) &&
+    values.every((value) => typeof value === "string" && value) &&
+    isDeepStrictEqual(values, [...new Set(values)].sort());
+}
+
+function validateModelDiversity(diversity, result, entry) {
+  const label = `${entry.id}: model_diversity`;
+  exactKeys(diversity, [
+    "requestedModels", "actualModels", "providers", "families",
+    "exactModelCount", "providerCount", "familyCount",
+  ], label);
+  const requestedModels = [...result.reviewers.map((item) => item.requestedModel), result.judge.requestedModel];
+  const actualModels = [...result.reviewers.map((item) => item.actualModel), result.judge.actualModel];
+  if (
+    !sortedUniqueStrings(diversity.requestedModels) ||
+    !sortedUniqueStrings(diversity.actualModels) ||
+    !sortedUniqueStrings(diversity.providers) ||
+    !sortedUniqueStrings(diversity.families) ||
+    !isDeepStrictEqual(diversity.requestedModels, [...new Set(requestedModels)].sort()) ||
+    !isDeepStrictEqual(diversity.actualModels, [...new Set(actualModels)].sort()) ||
+    !isDeepStrictEqual(
+      diversity.providers,
+      [...new Set(actualModels.map((route) => route.slice(0, route.indexOf("/"))))].sort(),
+    ) ||
+    diversity.exactModelCount !== diversity.actualModels.length ||
+    diversity.providerCount !== diversity.providers.length ||
+    diversity.familyCount !== diversity.families.length
+  ) throw new Error(label);
+}
+
 function validateResult(entry, result) {
-  if (!isObject(result)) throw new Error(`${entry.id}: result_object`);
-  if (result.status !== "COMPLETE" || !["PASS", "FAIL"].includes(result.verdict)) {
+  exactKeys(result, RESULT_KEYS, `${entry.id}: result`);
+  if (
+    result.kind !== "fission" ||
+    typeof result.runId !== "string" || !result.runId ||
+    typeof result.runDir !== "string" || !result.runDir ||
+    result.status !== "COMPLETE" || !["PASS", "FAIL"].includes(result.verdict) ||
+    result.message !== (result.verdict === "PASS"
+      ? "no submitted blocking finding validated."
+      : "a submitted blocking finding was validated.") ||
+    typeof result.request !== "string" || !result.request.trim() ||
+    !SEVERITIES.has(result.blockingSeverity) ||
+    !DIGEST.test(result.packetDigest) || !DIGEST.test(result.sourceDigest) ||
+    result.evidenceComplete !== true || result.error !== null ||
+    !Array.isArray(result.panel) || !result.panel.every((line) => typeof line === "string")
+  ) {
     throw new Error(`${entry.id}: terminal_result`);
   }
   if (result.requestedReviewers !== 5 || !Array.isArray(result.reviewers) || result.reviewers.length !== 5) {
@@ -228,31 +424,61 @@ function validateResult(entry, result) {
   }
   const requested = [];
   const actual = [];
-  for (const reviewer of result.reviewers) {
-    if (!isObject(reviewer) || !ROUTE.test(reviewer.requestedModel) || !ROUTE.test(reviewer.actualModel)) {
-      throw new Error(`${entry.id}: reviewer_route`);
-    }
-    if (reviewer.requestedModel !== reviewer.actualModel) throw new Error(`${entry.id}: reviewer_attestation`);
+  for (const [index, reviewer] of result.reviewers.entries()) {
+    validateReviewer(reviewer, index, entry);
     requested.push(reviewer.requestedModel);
     actual.push(reviewer.actualModel);
   }
   if (new Set(requested).size !== 5 || new Set(actual).size !== 5) {
     throw new Error(`${entry.id}: reviewer_diversity`);
   }
-  if (!isObject(result.judge) || !ROUTE.test(result.judge.actualModel)) {
-    throw new Error(`${entry.id}: judge_attestation`);
-  }
-  if (result.judge.requestedModel !== undefined && result.judge.requestedModel !== result.judge.actualModel) {
-    throw new Error(`${entry.id}: judge_attestation`);
-  }
+  validateJudge(result.judge, entry);
+  const submittedIds = result.reviewers.flatMap((reviewer) =>
+    reviewer.output.findings.map((finding, index) => resultFindingId(reviewer.alias, index, finding))
+  ).sort();
+  const judgedIds = result.judge.output.clusters.flatMap((cluster) => cluster.findingIds).sort();
+  if (!isDeepStrictEqual(submittedIds, judgedIds)) throw new Error(`${entry.id}: judge_coverage`);
   if (
+    !Array.isArray(result.clusters) ||
     !Array.isArray(result.validatedFindings) ||
     !Array.isArray(result.rejectedFindings) ||
     !Array.isArray(result.unresolvedFindings) ||
     result.unresolvedFindings.length !== 0
   ) throw new Error(`${entry.id}: normalized_findings`);
+  result.clusters.forEach((cluster, index) => validateCluster(cluster, true, `${entry.id}: cluster_${index}`));
+  const judgeClusters = result.clusters.map(({ clusterId: _clusterId, ...cluster }) => cluster);
+  if (!isDeepStrictEqual(judgeClusters, result.judge.output.clusters)) throw new Error(`${entry.id}: cluster_mismatch`);
   result.validatedFindings.forEach((finding) => validateNormalizedFinding(finding));
   result.rejectedFindings.forEach((finding) => validateNormalizedFinding(finding, "rejected"));
+  for (const cluster of result.clusters) {
+    const validated = result.validatedFindings.filter((finding) => finding.clusterId === cluster.clusterId);
+    const rejected = result.rejectedFindings.filter((finding) => finding.clusterId === cluster.clusterId);
+    if (
+      (cluster.disposition === "validated" && (
+        validated.length !== 1 ||
+        validated[0].canonicalFindingId !== cluster.canonicalFindingId ||
+        validated[0].adjudicatedSeverity !== cluster.adjudicatedSeverity
+      )) ||
+      (cluster.disposition === "rejected" && (
+        validated.length !== 0 ||
+        !rejected.some((finding) =>
+          finding.canonicalFindingId === cluster.canonicalFindingId && finding.disposition === "rejected"
+        )
+      ))
+    ) throw new Error(`${entry.id}: normalized_cluster_mismatch`);
+  }
+  const clusterIds = new Set(result.clusters.map(({ clusterId }) => clusterId));
+  if ([...result.validatedFindings, ...result.rejectedFindings].some((finding) => !clusterIds.has(finding.clusterId))) {
+    throw new Error(`${entry.id}: normalized_cluster_missing`);
+  }
+  validateModelDiversity(result.modelDiversity, result, entry);
+  validateUsage(result.usage, `${entry.id}: usage`);
+  const expectedPanel = [
+    "ALLOY FISSION COMPLETE",
+    ...result.reviewers.map((reviewer) => `${reviewer.alias} ${reviewer.role}: ok`),
+    "JUDGE: ok",
+  ];
+  if (!isDeepStrictEqual(result.panel, expectedPanel)) throw new Error(`${entry.id}: panel`);
   if (entry.control && result.verdict !== "PASS") throw new Error(`${entry.id}: control_verdict`);
   if (!entry.control && result.verdict !== "FAIL") throw new Error(`${entry.id}: defect_verdict`);
 }

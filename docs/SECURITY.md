@@ -90,6 +90,12 @@ These controls do not defend against arbitrary same-UID host access, a malicious
 Git configuration already trusted by the operator, or a byte-identical ABA
 change that restores accepted bytes between checks.
 
+Fission rejects capture beyond 16 KiB request text, 1 MiB Git status, 2 MiB
+combined staged and unstaged patches, 256 KiB per retained file, 2 MiB across
+all retained files, or 10,000 changed entries. Each reviewer and judge also has
+a 256 KiB cumulative serialized completed-assistant output cap. No accepted
+evidence or assistant payload is silently truncated.
+
 `PASS` means only `no submitted blocking finding validated.` It is not a test,
 correctness, merge, or deployment guarantee. `NO_CHANGES` creates no review run;
 all incomplete evidence, identity, cost, adjudication, and drift paths are

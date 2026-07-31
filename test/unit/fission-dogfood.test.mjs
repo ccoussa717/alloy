@@ -4,13 +4,14 @@ import { createHash } from "node:crypto";
 import {
   cpSync,
   mkdtempSync,
+  symlinkSync,
   readFileSync,
   readdirSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
@@ -20,6 +21,7 @@ import {
   validateDogfoodManifest,
 } from "../../scripts/fission-dogfood.mjs";
 import { loadProviderCatalogIds } from "../../lib/model-catalog.mjs";
+import { findingId } from "../../lib/fission-schema.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureRoot = join(root, "test/fixtures/fission-dogfood");
@@ -92,21 +94,103 @@ function resultFor(caseEntry, overrides = {}) {
     "openrouter/deepseek/deepseek-r1",
   ];
   const control = caseEntry.control;
+  const roles = [
+    "correctness_regressions",
+    "security_trust_boundaries",
+    "architecture_failure_handling",
+    "test_quality_spec_coverage",
+    "performance_concurrency_resources",
+  ];
+  const rawFinding = control ? null : {
+    severity: "high",
+    claim: "Text is intentionally irrelevant to seed matching.",
+    affectedPath: caseEntry.expectedFindings[0].affectedPath,
+    location: normalizedFinding(caseEntry).location,
+    evidence: "The accepted patch contains the seeded behavior.",
+    reproduction: "Exercise the contract against the changed tree.",
+    suggestedFix: "Restore the safe base behavior.",
+    confidence: 0.95,
+  };
+  const validatedFindings = control ? [] : [normalizedFinding(caseEntry, {
+    canonicalFindingId: findingId("R01", 0, rawFinding),
+    memberFindingIds: [findingId("R01", 0, rawFinding)],
+  })];
+  const judgeClusters = validatedFindings.map((finding) => ({
+    canonicalFindingId: finding.canonicalFindingId,
+    findingIds: finding.memberFindingIds,
+    disposition: "validated",
+    adjudicatedSeverity: finding.adjudicatedSeverity,
+    rationale: finding.rationale,
+    evidenceRefs: finding.evidenceRefs,
+  }));
+  const clusters = judgeClusters.map((cluster, index) => ({
+    clusterId: `C${String(index + 1).padStart(4, "0")}`,
+    ...cluster,
+  }));
+  const usage = { input: 10, output: 5, cost: 0.1, turns: 1, costKnown: true };
+  const requestedModels = [...reviewerModels, "anthropic/claude-opus-4-6"].sort();
   return {
+    kind: "fission",
+    runId: `dogfood-${caseEntry.id}`,
+    runDir: `/tmp/alloy-fission/${caseEntry.id}`,
     status: "COMPLETE",
     verdict: control ? "PASS" : "FAIL",
+    message: control
+      ? "no submitted blocking finding validated."
+      : "a submitted blocking finding was validated.",
+    request: `Review ${caseEntry.id} against its contract.`,
     requestedReviewers: 5,
-    reviewers: reviewerModels.map((model) => ({
+    blockingSeverity: "high",
+    packetDigest: "b".repeat(64),
+    sourceDigest: "c".repeat(64),
+    evidenceComplete: true,
+    reviewers: reviewerModels.map((model, index) => ({
+      alias: `R${String(index + 1).padStart(2, "0")}`,
+      role: roles[index],
       requestedModel: model,
       actualModel: model,
+      status: "ok",
+      valid: true,
+      malformed: false,
+      output: {
+        reviewerRole: roles[index],
+        coverage: [`coverage:${roles[index]}`],
+        findings: index === 0 && rawFinding ? [rawFinding] : [],
+        errors: [],
+      },
+      error: null,
+      usage,
     })),
     judge: {
       requestedModel: "anthropic/claude-opus-4-6",
       actualModel: "anthropic/claude-opus-4-6",
+      status: "ok",
+      valid: true,
+      malformed: false,
+      output: { clusters: judgeClusters, judgeConcern: null },
+      error: null,
+      usage,
     },
-    validatedFindings: control ? [] : [normalizedFinding(caseEntry)],
+    clusters,
+    validatedFindings,
     rejectedFindings: [],
     unresolvedFindings: [],
+    modelDiversity: {
+      requestedModels,
+      actualModels: requestedModels,
+      providers: ["anthropic", "google", "openai-codex", "openrouter", "xai"],
+      families: ["unknown"],
+      exactModelCount: 6,
+      providerCount: 5,
+      familyCount: 1,
+    },
+    usage: { input: 60, output: 30, cost: 0.6, turns: 6, costKnown: true },
+    error: null,
+    panel: [
+      "ALLOY FISSION COMPLETE",
+      ...roles.map((role, index) => `R${String(index + 1).padStart(2, "0")} ${role}: ok`),
+      "JUDGE: ok",
+    ],
     ...overrides,
   };
 }
@@ -165,6 +249,23 @@ test("dogfood manifest has the exact nine strict cases and valid source trees", 
   }
 });
 
+test("safe upload fixtures use separator-aware cross-platform containment", () => {
+  const safePaths = [
+    "control-contained-upload/changed/subject.mjs",
+    "security-path-traversal/base/subject.mjs",
+  ];
+  const sources = safePaths.map((path) => readFileSync(join(fixtureRoot, path), "utf8"));
+  assert.equal(sources[0], sources[1]);
+  for (const source of sources) {
+    assert.match(source, /import \{ isAbsolute, relative, resolve, sep \} from "node:path";/);
+    assert.match(source, /rel === "\.\."/);
+    assert.match(source, /rel\.startsWith\(`\.\.\$\{sep\}`\)/);
+    assert.match(source, /isAbsolute\(rel\)/);
+  }
+  const windowsRelative = `..${win32.sep}outside`;
+  assert.equal(windowsRelative.startsWith(`..${win32.sep}`), true);
+});
+
 test("manifest validation rejects unknown keys, IDs, counts, and invalid locations", () => {
   const manifest = readManifest();
   const invalid = [
@@ -209,6 +310,20 @@ test("materializer rejects an output root inside fixture sources", () => {
   assert.equal(treeDigest(copiedFixtures), before);
 });
 
+test("materializer resolves a symlinked output ancestor before containment checks", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "alloy-fission-dogfood-symlink-"));
+  const copiedFixtures = join(temporaryRoot, "fixtures");
+  const outputAlias = join(temporaryRoot, "output-alias");
+  cpSync(fixtureRoot, copiedFixtures, { recursive: true });
+  symlinkSync(copiedFixtures, outputAlias, "dir");
+  const before = treeDigest(copiedFixtures);
+  assert.throws(() => materializeDogfoodFixtures({
+    fixtureRoot: copiedFixtures,
+    outputRoot: join(outputAlias, "generated"),
+  }), /output_root_inside_fixture_root/);
+  assert.equal(treeDigest(copiedFixtures), before);
+});
+
 test("evaluator passes only complete exact-route results with every seed matched", () => {
   const manifest = readManifest();
   const evaluation = evaluateDogfoodResults(manifest, resultPathsFor(manifest));
@@ -228,21 +343,42 @@ test("evaluator matches exact paths and inclusive line overlap without consultin
   const manifest = readManifest();
   const entry = manifest.cases.find(({ id }) => id === "correctness-stale-cache");
   const pass = validResults(manifest);
-  pass[entry.id] = resultFor(entry, {
-    validatedFindings: [normalizedFinding(entry, {
-      claim: "This says nothing about a cache.",
-      location: {
-        ...normalizedFinding(entry).location,
-        lineStart: entry.expectedFindings[0].lineEnd,
-        lineEnd: entry.expectedFindings[0].lineEnd + 3,
-      },
-    }), normalizedFinding(entry, {
-      clusterId: "C0002",
-      canonicalFindingId: "Fabcdef1234567890abcdef12",
-      memberFindingIds: ["Fabcdef1234567890abcdef12"],
-      adjudicatedSeverity: "medium",
-    })],
+  const result = pass[entry.id];
+  result.validatedFindings[0].claim = "This says nothing about a cache.";
+  result.validatedFindings[0].location = {
+    ...result.validatedFindings[0].location,
+    lineStart: entry.expectedFindings[0].lineEnd,
+    lineEnd: entry.expectedFindings[0].lineEnd + 3,
+  };
+  const secondRawFinding = {
+    severity: "medium",
+    claim: "A separate nonblocking observation.",
+    affectedPath: entry.expectedFindings[0].affectedPath,
+    location: normalizedFinding(entry).location,
+    evidence: "The accepted patch contains the observation.",
+    reproduction: "Inspect the changed tree.",
+    suggestedFix: "Consider a follow-up cleanup.",
+    confidence: 0.8,
+  };
+  const secondId = findingId("R02", 0, secondRawFinding);
+  const second = normalizedFinding(entry, {
+    clusterId: "C0002",
+    canonicalFindingId: secondId,
+    memberFindingIds: [secondId],
+    adjudicatedSeverity: "medium",
   });
+  result.reviewers[1].output.findings.push(secondRawFinding);
+  result.validatedFindings.push(second);
+  const secondJudgeCluster = {
+    canonicalFindingId: second.canonicalFindingId,
+    findingIds: second.memberFindingIds,
+    disposition: "validated",
+    adjudicatedSeverity: second.adjudicatedSeverity,
+    rationale: second.rationale,
+    evidenceRefs: second.evidenceRefs,
+  };
+  result.judge.output.clusters.push(secondJudgeCluster);
+  result.clusters.push({ clusterId: second.clusterId, ...secondJudgeCluster });
   assert.equal(evaluateDogfoodResults(manifest, resultPathsFor(manifest, pass)).status, "PASSED");
 
   const wrongPath = structuredClone(pass);
@@ -260,13 +396,34 @@ test("evaluator fails closed for malformed, incomplete, nonterminal, route, verd
   const firstControl = manifest.cases.find(({ control }) => control);
   const mutations = [
     (results) => { results[firstDefect.id] = null; },
+    (results) => { results[firstDefect.id] = { status: "COMPLETE", verdict: "FAIL" }; },
+    (results) => { results[firstDefect.id].kind = "other"; },
+    (results) => { results[firstDefect.id].unknown = true; },
     (results) => { results[firstDefect.id].status = "RUNNING"; },
     (results) => { results[firstDefect.id].verdict = "PASS"; },
+    (results) => { results[firstDefect.id].message = "complete but inconsistent"; },
+    (results) => { results[firstDefect.id].evidenceComplete = false; },
+    (results) => { results[firstDefect.id].packetDigest = null; },
+    (results) => { results[firstDefect.id].sourceDigest = "z".repeat(64); },
+    (results) => { results[firstDefect.id].error = "fabricated_terminal_error"; },
     (results) => { results[firstDefect.id].requestedReviewers = 4; },
     (results) => { results[firstDefect.id].reviewers.pop(); },
+    (results) => { delete results[firstDefect.id].reviewers[0].output; },
+    (results) => { results[firstDefect.id].reviewers[0].unknown = true; },
+    (results) => { results[firstDefect.id].reviewers[0].output.unknown = true; },
     (results) => { results[firstDefect.id].reviewers[1].requestedModel = results[firstDefect.id].reviewers[0].requestedModel; },
     (results) => { results[firstDefect.id].reviewers[0].actualModel = "other/model"; },
     (results) => { results[firstDefect.id].judge.actualModel = null; },
+    (results) => { results[firstDefect.id].judge.valid = false; },
+    (results) => { results[firstDefect.id].judge.unknown = true; },
+    (results) => { results[firstDefect.id].judge.output.unknown = true; },
+    (results) => { results[firstDefect.id].clusters = []; },
+    (results) => { results[firstDefect.id].clusters[0].unknown = true; },
+    (results) => { results[firstDefect.id].modelDiversity.exactModelCount = 5; },
+    (results) => { results[firstDefect.id].modelDiversity.unknown = true; },
+    (results) => { results[firstDefect.id].usage.costKnown = false; },
+    (results) => { results[firstDefect.id].usage.unknown = true; },
+    (results) => { results[firstDefect.id].panel = [null]; },
     (results) => { results[firstDefect.id].validatedFindings[0].adjudicatedSeverity = "medium"; },
     (results) => { results[firstDefect.id].validatedFindings[0].unknown = true; },
     (results) => { delete results[firstDefect.id].validatedFindings[0].location.lineEnd; },
@@ -277,6 +434,9 @@ test("evaluator fails closed for malformed, incomplete, nonterminal, route, verd
     (results) => { results[firstControl.id].verdict = "FAIL"; },
     (results) => { results[firstControl.id].validatedFindings = [normalizedFinding(firstDefect)]; },
   ];
+  for (const key of Object.keys(resultFor(firstDefect))) {
+    mutations.push((results) => { delete results[firstDefect.id][key]; });
+  }
   for (const mutate of mutations) {
     const results = validResults(manifest);
     mutate(results);
@@ -346,6 +506,15 @@ test("operator docs and example config state the complete Fission acceptance bou
   assert.match(readme, /Repository Git config\/attributes may execute under normal Git behavior\./);
   assert.match(readme, /Do not run it on hostile\/untrusted repositories\./);
   assert.match(readme, /product boundary, not a hidden implementation caveat/);
+  for (const cap of [
+    "request: 16 KiB",
+    "status: 1 MiB",
+    "staged plus unstaged patches: 2 MiB",
+    "each retained file: 256 KiB",
+    "all retained files: 2 MiB",
+    "changed entries: 10,000",
+    "assistant output per reviewer or judge: 256 KiB",
+  ]) assert.equal(readme.includes(cap), true, cap);
   assert.match(architecture, /packet root/);
   assert.match(architecture, /in-process registry/);
   assert.match(architecture, /drift/i);

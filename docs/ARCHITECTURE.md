@@ -90,6 +90,12 @@ before parsing or retention. Capacity reservations and usage settlement belong
 to the current process's in-process registry, so Fission is intentionally not a
 durable workflow engine.
 
+The exact fail-closed caps are 16 KiB request text, 1 MiB status, 2 MiB combined
+staged and unstaged patches, 256 KiB per retained file, 2 MiB aggregate retained
+files, 10,000 changed entries, and 256 KiB cumulative serialized
+completed-assistant output for each reviewer or judge. Evidence is rejected,
+not truncated, when a cap is crossed.
+
 Host normalization, not reviewer claim wording or submitted severity, produces
 the final findings. The judge must cover every submitted finding with a legal
 disposition. Unresolved findings, judge concerns, drift, malformed output,
