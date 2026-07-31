@@ -20,6 +20,9 @@ const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
 const packet = {
   evidenceComplete: true,
+  manifest: {
+    entries: [{ path: "a.txt", included: true, artifactPath: "files/a.txt" }],
+  },
   artifacts: {
     "staged.diff": {
       type: "staged_diff",
@@ -36,6 +39,14 @@ const packet = {
       size: 10,
       lineCount: 2,
       mode: 0o100644,
+    },
+    "request.txt": {
+      type: "request",
+      path: "request.txt",
+      digest: "c".repeat(64),
+      size: 10,
+      lineCount: 2,
+      mode: 0o400,
     },
   },
 };
@@ -294,6 +305,10 @@ test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
   const exactCoverage = "é".repeat(256);
   const exactNarrative = "é".repeat(4 * 1024);
   const exactPath = "é".repeat(2 * 1024);
+  const exactPacket = {
+    ...packet,
+    manifest: { entries: [...packet.manifest.entries, { path: exactPath, included: false, artifactPath: null }] },
+  };
   assert.doesNotThrow(() => validateReviewerOutput({
     output: reviewer({
       coverage: [exactCoverage],
@@ -301,7 +316,7 @@ test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
       errors: ["é".repeat(1024)],
     }),
     reviewerRole: "correctness_regressions",
-    packet,
+    packet: exactPacket,
   }));
   for (const output of [
     reviewer({ coverage: [`${exactCoverage}é`] }),
@@ -309,7 +324,11 @@ test("semantic UTF-8 byte limits accept exact bounds and reject +1", () => {
     reviewer({ findings: [finding({ affectedPath: `${exactPath}é` })] }),
     reviewer({ errors: [`${"é".repeat(1024)}é`] }),
   ]) assert.throws(() => validateReviewerOutput({
-    output, reviewerRole: "correctness_regressions", packet,
+    output,
+    reviewerRole: "correctness_regressions",
+    packet: output.findings?.[0]?.affectedPath === `${exactPath}é`
+      ? { ...packet, manifest: { entries: [{ path: `${exactPath}é`, included: false, artifactPath: null }] } }
+      : packet,
   }), /byte_limit/);
 });
 
@@ -366,6 +385,36 @@ test("reviewer validation enforces exact role, unique coverage, finite confidenc
     output: reviewer({ findings: [finding({ location: { ...finding().location, lineEnd: 5 } })] }),
     reviewerRole: "correctness_regressions", packet,
   }), /line_range/);
+  assert.throws(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding({ affectedPath: "missing.txt" })] }),
+    reviewerRole: "correctness_regressions", packet,
+  }), /affected_path/);
+  assert.throws(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding({
+      location: {
+        artifact: "file",
+        artifactPath: "files/a.txt",
+        artifactDigest: digestB,
+        lineStart: 1,
+        lineEnd: 1,
+      },
+      affectedPath: "other.txt",
+    })] }),
+    reviewerRole: "correctness_regressions", packet: {
+      ...packet,
+      manifest: { entries: [...packet.manifest.entries, { path: "other.txt", included: false }] },
+    },
+  }), /affected_path/);
+  assert.throws(() => validateReviewerOutput({
+    output: reviewer({ findings: [finding({ location: {
+      artifact: "staged_diff",
+      artifactPath: "request.txt",
+      artifactDigest: "c".repeat(64),
+      lineStart: 1,
+      lineEnd: 1,
+    } })] }),
+    reviewerRole: "correctness_regressions", packet,
+  }), /evidence_ref/);
 });
 
 test("finding IDs are stable lowercase identifiers over canonical finding fields", () => {
@@ -416,6 +465,19 @@ test("judge validation requires exhaustive unique clusters and disposition evide
     output: { ...valid, judgeConcern: { claim: "Concern", rationale: "Reason", evidenceRefs: [] } },
     findings: submitted, packet,
   }));
+  assert.throws(() => validateJudgeOutput({
+    output: {
+      ...valid,
+      clusters: [{ ...valid.clusters[0], evidenceRefs: [{
+        artifactPath: "request.txt",
+        artifactDigest: "c".repeat(64),
+        lineStart: 1,
+        lineEnd: 1,
+      }] }],
+    },
+    findings: submitted,
+    packet,
+  }), /evidence_ref/);
 });
 
 test("host verdict table is ordered and reviewer agreement never determines PASS", () => {

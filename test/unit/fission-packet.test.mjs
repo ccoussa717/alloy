@@ -159,8 +159,8 @@ test("capture invokes bounded Git reads with lock suppression and no shell", () 
   assert.deepEqual(calls.map((call) => call.args), [
     ["rev-parse", "HEAD"],
     ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    ["diff", "--cached", "--binary"],
-    ["diff", "--binary"],
+    ["diff", "--cached", "--binary", "--no-ext-diff", "--no-color"],
+    ["diff", "--binary", "--no-ext-diff", "--no-color"],
   ]);
   for (const call of calls) {
     assert.equal(call.command, "git");
@@ -567,6 +567,35 @@ test("unmatched unsafe markers in either patch buffer fail closed globally", () 
   }
 });
 
+test("canonical patch capture ignores configured external diff and color while retaining unsafe markers", () => {
+  const repo = initRepo("canonical-patch");
+  const external = join(repo, "external-diff.sh");
+  writeFileSync(external, "#!/bin/sh\nprintf 'EXTERNAL_DIFF_SECRET\\nGIT binary patch\\n'\n");
+  chmodSync(external, 0o755);
+  git(repo, ["config", "diff.external", external]);
+  git(repo, ["config", "color.ui", "always"]);
+  writeFileSync(join(repo, "tracked.txt"), "changed\n");
+
+  const baseline = captureBoundedDirtyBaseline(repo, undefined, trusted);
+  const patch = baseline.unstagedPatch.toString("utf8");
+  assert.match(patch, /^diff --git /m);
+  assert.doesNotMatch(patch, /EXTERNAL_DIFF_SECRET|\u001b\[/);
+
+  const synthetic = captureBoundedDirtyBaseline(root, undefined, {
+    repositoryRoot: () => root,
+    readRegularFileNoFollow: () => ({ bytes: Buffer.from("safe\n"), mode: 0o100644, size: 5, executable: false }),
+    spawnSync: (_command, args) => ({
+      status: 0,
+      stderr: Buffer.alloc(0),
+      stdout: args[0] === "rev-parse" ? Buffer.from("head\n")
+        : args[0] === "status" ? Buffer.from(" M tracked.txt\0")
+          : args.includes("--cached") ? Buffer.from("GIT binary patch\n") : Buffer.alloc(0),
+    }),
+  });
+  assert.equal(synthetic.evidenceComplete, false);
+  assert.equal(synthetic.reason, "binary");
+});
+
 test("patch omission reasons match exact paths rather than path prefixes", () => {
   const repo = initRepo("omission-path-prefix");
   writeFileSync(join(repo, "foo"), "text file\n");
@@ -691,6 +720,14 @@ test("request limit accepts the exact boundary and rejects one byte over before 
     deps: trusted,
   }), /request_limit/);
   assert.equal(existsSync(refusedRoot), false);
+  assert.throws(() => captureFissionPacket({
+    cwd: repo,
+    packetRoot: join(root, "request-utf8-refused"),
+    request: "review \ud800",
+    preflight: preflightFissionRepository(repo, trusted),
+    deps: trusted,
+  }), /request_utf8/);
+  assert.equal(existsSync(join(root, "request-utf8-refused")), false);
 });
 
 test("HEAD, status, patches, file, and retained-total exact limits are accepted", () => {

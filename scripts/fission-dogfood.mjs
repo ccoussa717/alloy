@@ -14,6 +14,8 @@ import {
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { Value } from "typebox/value";
+import { JudgeOutputSchema, ReviewerOutputSchema } from "../lib/fission-schema.mjs";
 
 const CASES = Object.freeze([
   ["correctness-stale-cache", "correctness", false],
@@ -302,17 +304,33 @@ function validateRawFinding(finding, label) {
   validateLocation(finding.location, label);
 }
 
-function validateReviewerOutput(output, role, label) {
-  exactKeys(output, ["reviewerRole", "coverage", "findings", "errors"], label);
+function exactUtf8Bytes(value, limit) {
+  return typeof value === "string" &&
+    Buffer.from(value, "utf8").toString("utf8") === value &&
+    Buffer.byteLength(value, "utf8") <= limit;
+}
+
+export function validateDogfoodReviewerOutput(output, role, label = "reviewer_output") {
+  if (!Value.Check(ReviewerOutputSchema, output)) throw new Error(label);
   if (
     output.reviewerRole !== role ||
-    !Array.isArray(output.coverage) || output.coverage.length === 0 ||
-    !output.coverage.every((item) => typeof item === "string" && item.trim()) ||
+    !output.coverage.every((item) => item.trim() && exactUtf8Bytes(item, 512)) ||
     new Set(output.coverage).size !== output.coverage.length ||
-    !Array.isArray(output.findings) ||
-    !Array.isArray(output.errors) || output.errors.length !== 0
+    output.errors.length !== 0 ||
+    !output.errors.every((item) => exactUtf8Bytes(item, 2 * 1024))
   ) throw new Error(label);
-  output.findings.forEach((finding, index) => validateRawFinding(finding, `${label}_finding_${index}`));
+  for (const [index, finding] of output.findings.entries()) {
+    validateRawFinding(finding, `${label}_finding_${index}`);
+    if (
+      !exactUtf8Bytes(finding.claim, 8 * 1024) ||
+      !exactUtf8Bytes(finding.evidence, 8 * 1024) ||
+      !exactUtf8Bytes(finding.reproduction, 8 * 1024) ||
+      !exactUtf8Bytes(finding.suggestedFix, 8 * 1024) ||
+      !exactUtf8Bytes(finding.affectedPath, 4 * 1024) ||
+      !exactUtf8Bytes(finding.location.artifactPath, 4 * 1024)
+    ) throw new Error(label);
+  }
+  return output;
 }
 
 function validateReviewer(reviewer, index, entry) {
@@ -329,7 +347,7 @@ function validateReviewer(reviewer, index, entry) {
     reviewer.status !== "ok" || reviewer.valid !== true || reviewer.malformed !== false ||
     reviewer.error !== null
   ) throw new Error(label);
-  validateReviewerOutput(reviewer.output, reviewer.role, `${label}_output`);
+  validateDogfoodReviewerOutput(reviewer.output, reviewer.role, `${label}_output`);
   validateUsage(reviewer.usage, `${label}_usage`);
 }
 
@@ -357,6 +375,24 @@ function validateCluster(cluster, resultShape, label) {
   cluster.evidenceRefs.forEach((ref, index) => validateEvidenceRef(ref, `${label}_evidence_${index}`));
 }
 
+export function validateDogfoodJudgeOutput(output, label = "judge_output") {
+  if (!Value.Check(JudgeOutputSchema, output)) throw new Error(label);
+  for (const cluster of output.clusters) {
+    if (!exactUtf8Bytes(cluster.rationale, 8 * 1024)) throw new Error(label);
+    for (const ref of cluster.evidenceRefs) {
+      if (!exactUtf8Bytes(ref.artifactPath, 4 * 1024)) throw new Error(label);
+    }
+  }
+  if (output.judgeConcern) {
+    if (
+      !exactUtf8Bytes(output.judgeConcern.claim, 8 * 1024) ||
+      !exactUtf8Bytes(output.judgeConcern.rationale, 8 * 1024) ||
+      output.judgeConcern.evidenceRefs.some((ref) => !exactUtf8Bytes(ref.artifactPath, 4 * 1024))
+    ) throw new Error(label);
+  }
+  return output;
+}
+
 function validateJudge(judge, entry) {
   const label = `${entry.id}: judge`;
   exactKeys(judge, [
@@ -366,8 +402,8 @@ function validateJudge(judge, entry) {
     !ROUTE.test(judge.requestedModel) || judge.actualModel !== judge.requestedModel ||
     judge.status !== "ok" || judge.valid !== true || judge.malformed !== false || judge.error !== null
   ) throw new Error(label);
-  exactKeys(judge.output, ["clusters", "judgeConcern"], `${label}_output`);
-  if (!Array.isArray(judge.output.clusters) || judge.output.judgeConcern !== null) throw new Error(`${label}_output`);
+  validateDogfoodJudgeOutput(judge.output, `${label}_output`);
+  if (judge.output.judgeConcern !== null) throw new Error(`${label}_output`);
   judge.output.clusters.forEach((cluster, index) => validateCluster(cluster, false, `${label}_cluster_${index}`));
   validateUsage(judge.usage, `${label}_usage`);
 }

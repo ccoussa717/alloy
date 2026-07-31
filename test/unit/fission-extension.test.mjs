@@ -86,6 +86,7 @@ test("parseFissionRequest honors every effective reviewer pair and UTF-8 bounds"
     () => parseFissionRequest("☃".repeat(5462), { defaultReviewers: 2, maxReviewers: 4 }),
     /request_limit/,
   );
+  assert.throws(() => parseFissionRequest("inspect \ud800"), /request_utf8/);
 });
 
 test("registerFission adds exactly one command and one tool with a strict hard-cap schema", () => {
@@ -158,6 +159,11 @@ test("tool invocation parses UTF-8 bytes, preserves signal identity, and never c
   await assert.rejects(
     tools.get("alloy_fission").execute("call-3", { request: "☃".repeat(5462) }, signal, undefined, ctx),
     /request_limit/,
+  );
+  assert.equal(calls.length, 1);
+  await assert.rejects(
+    tools.get("alloy_fission").execute("call-4", { request: "inspect \udfff" }, signal, undefined, ctx),
+    /request_utf8/,
   );
   assert.equal(calls.length, 1);
 });

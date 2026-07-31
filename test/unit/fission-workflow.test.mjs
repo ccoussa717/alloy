@@ -29,6 +29,9 @@ const packet = {
   sourceDigest: "c".repeat(64),
   evidenceComplete: true,
   reason: null,
+  manifest: {
+    entries: [{ path: "lib/a.mjs", included: false, reason: "deleted", artifactPath: null }],
+  },
   artifacts: {
     "unstaged.diff": {
       type: "unstaged_diff",
@@ -200,6 +203,7 @@ describe("Fission pure contracts", () => {
       assert.throws(() => parseFissionRequest(text, { defaultReviewers: 2, maxReviewers: 4 }));
     }
     assert.throws(() => parseFissionRequest("é".repeat(8193), { defaultReviewers: 1, maxReviewers: 5 }), /request_limit/);
+    assert.throws(() => parseFissionRequest("review \ud800"), /request_utf8/);
   });
 
   it("selects ordered unique global routes and rejects overrides or a missing judge", () => {
@@ -247,6 +251,14 @@ describe("Fission coordinator", () => {
       assert.equal(calls.preflight, 0);
       assert.equal(calls.createRunDir, 0);
     }
+  });
+
+  it("rejects non-round-tripping direct requests before preflight or run creation", async () => {
+    const { deps, calls } = makeDeps();
+    const result = await runFissionWithDependencies({ request: "review \udfff", reviewers: 1 }, deps);
+    assert.equal(result.error, "request_utf8");
+    assert.equal(calls.preflight, 0);
+    assert.equal(calls.createRunDir, 0);
   });
 
   it("uses the supplied effective default and direct runFission preserves explicit counts", async () => {
@@ -339,7 +351,23 @@ describe("Fission coordinator", () => {
       assert.equal(child.mode, "review");
       assert.equal(child.maxOutputBytes, 256 * 1024);
       assert.doesNotMatch(child.prompt, /anthropic\/opus|openai-codex\/gpt|reviewer-[1-5]/);
+      assert.doesNotMatch(child.prompt, /R0[1-5]|fission-reviewer|sibling|peer/i);
+      for (const required of [
+        '"general_adversarial"', '"performance_concurrency_resources"',
+        '"critical"', '"low"', '"staged_diff"', '"unstaged_diff"', '"file"',
+        '"maxItems":50', '"maxItems":20', '"maxLength":8192', '"maxLength":4096',
+        '"errors"', '"artifactDigest"', '"lineStart"', '"lineEnd"',
+        'Concrete valid JSON example',
+      ]) assert.equal(child.prompt.includes(required), true, required);
     }
+    const judgePrompt = state.calls.children.at(-1).prompt;
+    assert.doesNotMatch(judgePrompt, /anthropic\/judge|R0[1-5]|fission-judge|sibling|peer/i);
+    for (const required of [
+      '"validated"', '"rejected"', '"needs_probe"', '"human_decision"',
+      '"adjudicatedSeverity"', '"null"', '"judgeConcern"', '"evidenceRefs"',
+      '"maxItems":50', '"maxItems":20', '"maxLength":8192', '"maxLength":4096',
+      'Concrete valid JSON example',
+    ]) assert.equal(judgePrompt.includes(required), true, required);
   });
 
   it("fails reviewers closed for child, schema, attestation, diversity, usage, and budget failures", async () => {
@@ -371,6 +399,25 @@ describe("Fission coordinator", () => {
     } });
     const result = await runFissionWithDependencies({ request: "review", reviewers: 2, defaultReviewers: 2, maxReviewers: 5 }, duplicate.deps);
     assert.equal(result.error, "actual_model_mismatch");
+  });
+
+  it("settles an output-limited reviewer with all provider-reported crossing-turn usage", async () => {
+    const usage = { input: 30, output: 6, cost: 0.34, turns: 2, costKnown: true };
+    const state = makeDeps({
+      runChild: (input) => childResult(input.model, reviewerOutput("general_adversarial"), {
+        ok: false,
+        error: "output_limit",
+        usage,
+      }),
+    });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, state.deps);
+    assert.equal(result.error, "output_limit");
+    assert.deepEqual(state.calls.settle[0].usage, usage);
   });
 
   it("aborts a waiting reviewer on terminal sibling failure before all reservations settle", async () => {
@@ -497,7 +544,7 @@ describe("Fission coordinator", () => {
     let ids;
     const state = makeDeps({ runChild: (input) => {
       if (input.role !== "fission-judge") return childResult(input.model, reviewerOutput("general_adversarial", claims));
-      ids = JSON.parse(input.prompt.match(/\{[\s\S]*\}$/)[0]).findings.map((item) => item.id);
+      ids = JSON.parse(input.prompt.trim().split("\n").at(-1)).findings.map((item) => item.id);
       const ref = { artifactPath: "unstaged.diff", artifactDigest: digest, lineStart: 1, lineEnd: 1 };
       return childResult(input.model, {
         clusters: [
@@ -523,7 +570,7 @@ describe("Fission coordinator", () => {
       let submittedId;
       const state = makeDeps({ modelFamilies, runChild: (input) => {
         if (input.role !== "fission-judge") return childResult(input.model, reviewerOutput("general_adversarial", severity ? ["claim"] : []));
-        const payload = JSON.parse(input.prompt.match(/\{[\s\S]*\}$/)[0]);
+        const payload = JSON.parse(input.prompt.trim().split("\n").at(-1));
         submittedId = payload.findings[0]?.id;
         return childResult(input.model, {
           clusters: submittedId ? [{

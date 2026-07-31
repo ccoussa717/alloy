@@ -181,4 +181,48 @@ describe("child output and model attestation", () => {
       assert.equal(JSON.stringify({ callbacks, result }).includes("SECRET"), false);
     }
   });
+
+  it("accounts for every completed assistant turn including the omitted crossing message", async () => {
+    const first = message({
+      provider: "anthropic",
+      model: "safe",
+      content: [{ type: "text", text: "accepted" }],
+      usage: { input: 10, output: 2, cost: { total: 0.11 } },
+    });
+    const crossing = message({
+      provider: "anthropic",
+      model: "safe",
+      content: [{ type: "text", text: "CROSSING_SECRET" }],
+      usage: { input: 20, output: 4, cost: { total: 0.23 } },
+    });
+    const result = await runEvents([first, crossing], {
+      maxOutputBytes: Buffer.byteLength(JSON.stringify(first.message), "utf8"),
+    });
+    assert.deepEqual(result.usage, {
+      input: 30,
+      output: 6,
+      cost: 0.34,
+      turns: 2,
+      costKnown: true,
+    });
+    assert.equal(JSON.stringify(result).includes("CROSSING_SECRET"), false);
+  });
+
+  it("drops limited assistant updates without dispatching or retaining delta secrets", async () => {
+    for (const update of [
+      { type: "message_update", message: { role: "assistant" }, delta: { thinking: "THINKING_DELTA_SECRET" } },
+      { type: "message_update", message: { role: "assistant" }, delta: { type: "toolCall", argumentsDelta: "TOOL_DELTA_SECRET" } },
+    ]) {
+      const complete = message({ provider: "anthropic", model: "safe" });
+      const callbacks = [];
+      const result = await runEvents([update, complete], {
+        maxOutputBytes: Buffer.byteLength(JSON.stringify(complete.message), "utf8"),
+        onEvent: (event) => callbacks.push(event),
+      });
+      assert.deepEqual(callbacks, [complete]);
+      assert.deepEqual(result.events, [complete]);
+      assert.deepEqual(result.messages, [complete.message]);
+      assert.equal(JSON.stringify({ callbacks, result }).includes("SECRET"), false);
+    }
+  });
 });

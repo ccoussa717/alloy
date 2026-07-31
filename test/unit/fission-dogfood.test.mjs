@@ -19,6 +19,8 @@ import {
   evaluateDogfoodResults,
   materializeDogfoodFixtures,
   validateDogfoodManifest,
+  validateDogfoodJudgeOutput,
+  validateDogfoodReviewerOutput,
 } from "../../scripts/fission-dogfood.mjs";
 import { loadProviderCatalogIds } from "../../lib/model-catalog.mjs";
 import { findingId } from "../../lib/fission-schema.mjs";
@@ -352,6 +354,54 @@ test("evaluator passes only complete exact-route results with every seed matched
     message: "PASSED: 6/6 seeded blockers validated; 0/3 controls produced blocking findings",
     errors: [],
   });
+});
+
+test("dogfood raw validation enforces exported schema counts before projection", () => {
+  const manifest = readManifest();
+  const entry = manifest.cases.find(({ control }) => !control);
+  const result = resultFor(entry);
+  const reviewer = result.reviewers[0];
+  const raw = reviewer.output.findings[0];
+  assert.throws(() => validateDogfoodReviewerOutput({
+    ...reviewer.output,
+    coverage: Array.from({ length: 21 }, (_, index) => `area-${index}`),
+  }, reviewer.role, "reviewer"), /reviewer/);
+  assert.throws(() => validateDogfoodReviewerOutput({
+    ...reviewer.output,
+    findings: Array.from({ length: 51 }, () => raw),
+  }, reviewer.role, "reviewer"), /reviewer/);
+
+  const id = result.judge.output.clusters[0].canonicalFindingId;
+  assert.throws(() => validateDogfoodJudgeOutput({
+    clusters: [{
+      ...result.judge.output.clusters[0],
+      findingIds: Array.from({ length: 51 }, (_, index) => `F${index.toString(16).padStart(24, "0")}`),
+      canonicalFindingId: id,
+    }],
+    judgeConcern: null,
+  }, "judge"), /judge/);
+  assert.throws(() => validateDogfoodJudgeOutput({
+    clusters: Array.from({ length: 51 }, () => result.judge.output.clusters[0]),
+    judgeConcern: null,
+  }, "judge"), /judge/);
+});
+
+test("dogfood raw validation enforces UTF-8 byte bounds", () => {
+  const manifest = readManifest();
+  const entry = manifest.cases.find(({ control }) => !control);
+  const result = resultFor(entry);
+  const reviewer = result.reviewers[0];
+  const finding = reviewer.output.findings[0];
+  for (const output of [
+    { ...reviewer.output, coverage: ["é".repeat(257)] },
+    { ...reviewer.output, findings: [{ ...finding, claim: "é".repeat(4097) }] },
+    { ...reviewer.output, findings: [{ ...finding, affectedPath: `${"é".repeat(2048)}a` }] },
+    { ...reviewer.output, errors: ["é".repeat(1025)] },
+  ]) assert.throws(() => validateDogfoodReviewerOutput(output, reviewer.role, "reviewer"), /reviewer/);
+  assert.throws(() => validateDogfoodJudgeOutput({
+    ...result.judge.output,
+    clusters: [{ ...result.judge.output.clusters[0], rationale: "é".repeat(4097) }],
+  }, "judge"), /judge/);
 });
 
 test("evaluator rejects normalized fields altered independently of raw findings and judge clusters", () => {
