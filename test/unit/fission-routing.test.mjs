@@ -126,4 +126,43 @@ describe("exact agent launch admission", () => {
       assert.equal(JSON.stringify(result.decision).includes("wrong"), false);
     }
   });
+
+  it("requires the exact nonempty requested tool set before candidate inspection", async () => {
+    for (const [tools, expected] of [
+      [[], []],
+      [["write"], []],
+      [["read", "write"], ["read"]],
+    ]) {
+      const { deps, inspected } = dependencies();
+      const result = await prepareExactAgentLaunch({
+        cwd: "/project",
+        model: route,
+        profile: "review",
+        tools,
+        activeChildren: 0,
+        spentCostUsd: 0,
+      }, deps);
+      assert.equal(result.ok, false);
+      assert.match(result.decision.reason, /exact nonempty requested tool set/);
+      assert.deepEqual(result.spec.tools, expected);
+      assert.deepEqual(inspected, []);
+    }
+  });
+
+  it("rejects a candidate without tool capability for an exact requested set", async () => {
+    const { deps, inspected } = dependencies({
+      inspect: inspection({ candidate: { supportsTools: false } }),
+    });
+    const result = await prepareExactAgentLaunch({
+      cwd: "/project",
+      model: route,
+      profile: "review",
+      tools: ["read"],
+      activeChildren: 0,
+      spentCostUsd: 0,
+    }, deps);
+    assert.equal(result.ok, false);
+    assert.match(result.decision.reason, /required tools/);
+    assert.deepEqual(inspected, [route]);
+  });
 });

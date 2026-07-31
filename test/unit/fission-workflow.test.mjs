@@ -416,12 +416,80 @@ describe("Fission coordinator", () => {
       const result = await runFissionWithDependencies({ request: "review", reviewers: 1, defaultReviewers: 1, maxReviewers: 5 }, state.deps);
       assert.equal(result.status, "INCOMPLETE");
       assert.equal(result.error, error);
+      if (error !== "judge_concern") {
+        const judgeCall = state.calls.children.find((child) => child.role === "fission-judge");
+        assert.equal(judgeCall.signal.aborted, true);
+      }
     }
 
     const drift = makeDeps({ recapture: [{ ok: true }, { ok: false, reason: "source_drift" }] });
     const drifted = await runFissionWithDependencies({ request: "review", reviewers: 1, defaultReviewers: 1, maxReviewers: 5 }, drift.deps);
     assert.equal(drifted.status, "INCOMPLETE");
     assert.equal(drifted.error, "source_drift");
+  });
+
+  it("fails closed and rewrites judge artifacts when judge settlement throws", async () => {
+    const state = makeDeps();
+    const settle = state.deps.settleAgentLaunch;
+    state.deps.settleAgentLaunch = (reservation, usage) => {
+      settle(reservation, usage);
+      if (reservation.id === "r2") throw new Error("synthetic settlement failure");
+    };
+
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.verdict, "INCOMPLETE");
+    assert.equal(result.error, "settlement_failed");
+    assert.equal(result.judge.valid, false);
+    assert.equal(result.judge.status, "fail");
+    assert.equal(result.judge.error, "settlement_failed");
+    assert.equal(state.calls.settle.filter(({ reserved }) => reserved.id === "r2").length, 1);
+    assert.equal(state.calls.children.find((child) => child.role === "fission-judge").signal.aborted, true);
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "judge.json"), "utf8")).valid, false);
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "result.json"), "utf8")).error, "settlement_failed");
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "host-manifest.json"), "utf8")).error, "settlement_failed");
+  });
+
+  it("propagates caller cancellation through judge cleanup and settles judge exactly once", async () => {
+    const caller = new AbortController();
+    let judgeSawAbort = false;
+    const state = makeDeps({ runChild: (input) => {
+      if (input.role !== "fission-judge") {
+        return childResult(input.model, reviewerOutput("general_adversarial"));
+      }
+      return new Promise((resolve) => {
+        input.signal.addEventListener("abort", () => {
+          judgeSawAbort = true;
+          resolve(childResult(input.model, {}, { ok: false, error: "aborted" }));
+        }, { once: true });
+      });
+    } });
+    const running = runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      signal: caller.signal,
+    }, state.deps);
+    while (!state.calls.children.some((child) => child.role === "fission-judge")) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    caller.abort("operator_cancelled");
+    const result = await running;
+
+    assert.equal(judgeSawAbort, true);
+    assert.equal(result.status, "ABORTED");
+    assert.equal(result.error, "aborted");
+    assert.equal(result.judge.valid, false);
+    assert.equal(result.judge.error, "aborted");
+    assert.equal(state.calls.settle.filter(({ reserved }) => reserved.id === "r2").length, 1);
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "result.json"), "utf8")).status, "ABORTED");
   });
 
   it("normalizes validated, rejected, needs-probe, human-decision, and duplicate members", async () => {
