@@ -46,6 +46,10 @@ isolation and Docker for stronger containment.
 | Doctor leaks credentials | Presence and shape only; never values | provider tests |
 | Release installs different code | Exact dependencies, release-included shrinkwrap, packed-artifact test, npm provenance | GitHub Actions |
 | Secret enters source or history | Full-tree and full-history signature gate | security CI |
+| Fission reads a hostile repository | Operator trust prerequisite; hostile repositories are outside the product boundary | Fission trust and packet tests |
+| Fission child escapes review evidence | Read-only tools confined to the immutable packet root | Fission workflow tests |
+| Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
+| Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
 
 ## Credentials
 
@@ -80,6 +84,32 @@ arbitrary host variables. The model-callable diagnostics tool requires approval
 under the default profile, but the commands still have the operator's same-user
 filesystem and network access and do not run through the Docker Bash sandbox.
 `/auto` fails closed before launching agents when sandbox isolation is required.
+
+## Fission trusted-repository boundary
+
+Fission is for projects the operator has marked trusted. Repository Git
+config/attributes may execute under normal Git behavior. Do not run it on
+hostile/untrusted repositories. This is an explicit product boundary, not a
+hidden implementation caveat or a claim that repository capture is inert.
+
+The workflow limits model-visible evidence rather than making the repository
+hostile-safe. Children can read only the accepted packet root, exact requested
+routes must attest their actual identities, and complete assistant payloads are
+bounded. Source and packet drift checks fail closed before judgment and verdict.
+These controls do not defend against arbitrary same-UID host access, a malicious
+Git configuration already trusted by the operator, or a byte-identical ABA
+change that restores accepted bytes between checks.
+
+Fission rejects capture beyond 16 KiB request text, 1 MiB Git status, 2 MiB
+combined staged and unstaged patches, 256 KiB per retained file, 2 MiB across
+all retained files, or 10,000 changed entries. Each reviewer and Judge also has
+a 256 KiB cumulative serialized completed-assistant output limit. No accepted
+evidence or assistant payload is silently truncated.
+
+`PASS` means only `no submitted blocking finding validated.` It is not a test,
+correctness, merge, or deployment guarantee. `NO_CHANGES` creates no review run;
+all incomplete evidence, identity, cost, adjudication, and drift paths are
+`INCOMPLETE`.
 
 ## Host and Docker claims
 

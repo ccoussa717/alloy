@@ -821,6 +821,17 @@ describe("worktrees", () => {
     }
   });
 
+  test("captureDirtyBaseline retains its string-based public contract", () => {
+    const repo = initRepo("legacy-baseline-contract");
+    writeFileSync(join(repo, "f.txt"), "dirty\n");
+    const baseline = wt.captureDirtyBaseline(repo);
+    assert.equal(typeof baseline.head, "string");
+    assert.equal(typeof baseline.porcelainRaw, "string");
+    assert.equal(typeof baseline.stagedPatch, "string");
+    assert.equal(typeof baseline.unstagedPatch, "string");
+    assert.equal(baseline.repoRoot, resolve(repo));
+  });
+
   test("does not three-way an unstaged patch into the target index", () => {
     const repo = initRepo("unstaged-divergence");
     writeFileSync(join(repo, "f.txt"), "line-one\nline-two\n");

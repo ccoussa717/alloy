@@ -1,10 +1,37 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   buildChildEnv,
   buildChildPolicyManifest,
   CHILD_ENV_ALLOWLIST,
+  runChildAgent,
 } from "../../lib/child-runner.mjs";
+
+function runEvents(events, options = {}) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.killed = true;
+  return runChildAgent({
+    prompt: "review",
+    cwd: process.cwd(),
+    mode: "review",
+    model: options.model || "anthropic/requested",
+    maxOutputBytes: options.maxOutputBytes,
+    onEvent: options.onEvent,
+    spawnImpl: () => {
+      queueMicrotask(() => {
+        for (const event of events) child.stdout.write(`${JSON.stringify(event)}\n`);
+        child.exitCode = 0;
+        child.emit("close", 0);
+      });
+      return child;
+    },
+  });
+}
 
 describe("child isolation", () => {
   it("buildChildEnv does not copy full process.env", () => {
@@ -70,5 +97,145 @@ describe("child isolation", () => {
     assert.equal(m.role, "builder");
     assert.equal(m.mechanical, true);
     assert.ok(Array.isArray(m.rules) && m.rules.length > 0);
+  });
+});
+
+describe("child output and model attestation", () => {
+  const message = (fields = {}) => ({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "reviewed" }],
+      usage: { input: 1, output: 1, cost: { total: 0.01 } },
+      ...fields,
+    },
+  });
+
+  const withoutStreamTelemetry = (event) => {
+    const { outputText: _outputText, stdoutBytes: _stdoutBytes, eventCount: _eventCount, ...raw } = event;
+    return raw;
+  };
+
+  it("attests only observed provider plus bare model while preserving compatibility model", async () => {
+    for (const [fields, expectedActual, expectedModel] of [
+      [{ provider: " anthropic ", model: " claude-opus-4-6 " }, "anthropic/claude-opus-4-6", " claude-opus-4-6 "],
+      [{ model: "other" }, null, "other"],
+      [{ provider: "anthropic", model: "" }, null, "anthropic/requested"],
+      [{ provider: "openai-codex", model: "gpt-5.4" }, "openai-codex/gpt-5.4", "gpt-5.4"],
+    ]) {
+      const result = await runEvents([message(fields)]);
+      assert.equal(result.actualModel, expectedActual);
+      assert.equal(result.model, expectedModel);
+    }
+  });
+
+  it("keeps unlimited callback and retention ordering unchanged", async () => {
+    const calls = [];
+    const first = message({ content: [{ type: "text", text: "first" }] });
+    const second = message({ content: [{ type: "text", text: "second" }] });
+    const result = await runEvents([first, second], {
+      onEvent: (event) => calls.push(event),
+    });
+    assert.deepEqual(calls.map(withoutStreamTelemetry), [first, second]);
+    assert.deepEqual(calls.map((event) => event.outputText), ["first", "second"]);
+    assert.deepEqual(calls.map((event) => event.eventCount), [1, 2]);
+    assert.ok(calls.every((event) => Number.isInteger(event.stdoutBytes)));
+    assert.deepEqual(result.events, [first, second]);
+    assert.deepEqual(result.messages, [first.message, second.message]);
+    assert.equal(result.text, "second");
+  });
+
+  it("accepts the exact cumulative serialized assistant cap", async () => {
+    const event = message({ provider: "anthropic", model: "exact", content: [{ type: "text", text: "å" }] });
+    const cap = Buffer.byteLength(JSON.stringify(event.message), "utf8");
+    const result = await runEvents([event], { maxOutputBytes: cap });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.events, [event]);
+    assert.equal(result.actualModel, "anthropic/exact");
+  });
+
+  it("replaces an over-cap assistant payload before callback or retention and never leaks it", async () => {
+    const accepted = message({ provider: "anthropic", model: "safe", content: [{ type: "text", text: "safe text" }] });
+    const secrets = [
+      { thinking: "THINKING_SECRET" },
+      { content: [{ type: "toolCall", name: "TOOL_SECRET", arguments: { key: "ARG_SECRET" }, signature: "SIG_SECRET" }] },
+      { content: [{ type: "text", text: "MULTIBYTE_SECRET_秘密" }], other: "OTHER_SECRET" },
+    ];
+    for (const oversizedFields of secrets) {
+      const oversized = message(oversizedFields);
+      const acceptedBytes = Buffer.byteLength(JSON.stringify(accepted.message), "utf8");
+      const serializedBytes = Buffer.byteLength(JSON.stringify(oversized.message), "utf8");
+      const callbacks = [];
+      const result = await runEvents([accepted, oversized], {
+        maxOutputBytes: acceptedBytes + serializedBytes - 1,
+        onEvent: (event) => {
+          const body = JSON.stringify(event);
+          if (body.includes("SECRET")) throw new Error("secret reached callback");
+          callbacks.push(event);
+        },
+      });
+      const marker = {
+        type: "message_end",
+        message: { role: "assistant", omitted: true, reason: "output_limit", serializedBytes },
+      };
+      assert.equal(result.ok, false);
+      assert.equal(result.error, "output_limit");
+      assert.equal(result.outputLimitExceeded, true);
+      assert.equal(result.actualModel, "anthropic/safe");
+      assert.equal(result.text, "safe text");
+      assert.deepEqual(callbacks.map(withoutStreamTelemetry), [accepted, marker]);
+      assert.equal(callbacks[0].outputText, "safe text");
+      assert.equal(callbacks[0].eventCount, 1);
+      assert.equal(callbacks[1].outputText, undefined);
+      assert.deepEqual(result.events, [accepted, marker]);
+      assert.deepEqual(result.messages, [accepted.message, marker.message]);
+      assert.equal(JSON.stringify({ callbacks, result }).includes("SECRET"), false);
+    }
+  });
+
+  it("accounts for every completed assistant turn including the omitted crossing message", async () => {
+    const first = message({
+      provider: "anthropic",
+      model: "safe",
+      content: [{ type: "text", text: "accepted" }],
+      usage: { input: 10, output: 2, cost: { total: 0.11 } },
+    });
+    const crossing = message({
+      provider: "anthropic",
+      model: "safe",
+      content: [{ type: "text", text: "CROSSING_SECRET" }],
+      usage: { input: 20, output: 4, cost: { total: 0.23 } },
+    });
+    const result = await runEvents([first, crossing], {
+      maxOutputBytes: Buffer.byteLength(JSON.stringify(first.message), "utf8"),
+    });
+    assert.deepEqual(result.usage, {
+      input: 30,
+      output: 6,
+      cost: 0.34,
+      turns: 2,
+      costKnown: true,
+    });
+    assert.equal(JSON.stringify(result).includes("CROSSING_SECRET"), false);
+  });
+
+  it("drops limited assistant updates without dispatching or retaining delta secrets", async () => {
+    for (const update of [
+      { type: "message_update", message: { role: "assistant" }, delta: { thinking: "THINKING_DELTA_SECRET" } },
+      { type: "message_update", message: { role: "assistant" }, delta: { type: "toolCall", argumentsDelta: "TOOL_DELTA_SECRET" } },
+    ]) {
+      const complete = message({ provider: "anthropic", model: "safe" });
+      const callbacks = [];
+      const result = await runEvents([update, complete], {
+        maxOutputBytes: Buffer.byteLength(JSON.stringify(complete.message), "utf8"),
+        onEvent: (event) => callbacks.push(event),
+      });
+      assert.deepEqual(callbacks.map(withoutStreamTelemetry), [complete]);
+      assert.equal(callbacks[0].outputText, "reviewed");
+      assert.equal(callbacks[0].eventCount, 1);
+      assert.deepEqual(result.events, [complete]);
+      assert.deepEqual(result.messages, [complete.message]);
+      assert.equal(JSON.stringify({ callbacks, result }).includes("SECRET"), false);
+    }
   });
 });

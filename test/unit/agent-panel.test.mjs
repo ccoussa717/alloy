@@ -63,6 +63,20 @@ test("fusion roles render as Architect, Builder, then Synthesizer", () => {
   assert.match(roleLines[2], /Synthesizer/);
 });
 
+test("fission roles render indexed Reviewers before the Judge", () => {
+  const p = panel.createPanelState({ title: "ALLOY FISSION", runId: "fission-1" });
+  panel.upsertAgent(p, { role: "judge", status: "pending" });
+  panel.upsertAgent(p, { role: "reviewer", index: 2, status: "ok" });
+  panel.upsertAgent(p, { role: "reviewer", index: 1, status: "ok" });
+  const roleLines = panel
+    .renderPanelLines(p)
+    .filter((line) => /Reviewer|Judge/.test(line));
+  assert.equal(roleLines.length, 3);
+  assert.match(roleLines[0], /Reviewer #1/);
+  assert.match(roleLines[1], /Reviewer #2/);
+  assert.match(roleLines[2], /Judge/);
+});
+
 test("fusion proposal view renders Architect and Builder output side by side", () => {
   const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-2" });
   panel.setPhase(p, "PROPOSING");

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "seededBlockerCount": 6,
+  "cases": [
+    {
+      "id": "correctness-stale-cache",
+      "category": "correctness",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs",
+        "lineStart": 7,
+        "lineEnd": 10
+      }]
+    },
+    {
+      "id": "correctness-partial-write",
+      "category": "correctness",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs"
+      }]
+    },
+    {
+      "id": "security-path-traversal",
+      "category": "security",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs"
+      }]
+    },
+    {
+      "id": "security-tenant-bypass",
+      "category": "security",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs"
+      }]
+    },
+    {
+      "id": "failure-handling-reservation-leak",
+      "category": "failure-handling",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs"
+      }]
+    },
+    {
+      "id": "failure-handling-cancellation-reported-as-success",
+      "category": "failure-handling",
+      "control": false,
+      "expectedFindings": [{
+        "affectedPath": "subject.mjs"
+      }]
+    },
+    {
+      "id": "control-cache-invalidation",
+      "category": "correctness",
+      "control": true,
+      "expectedFindings": []
+    },
+    {
+      "id": "control-contained-upload",
+      "category": "security",
+      "control": true,
+      "expectedFindings": []
+    },
+    {
+      "id": "control-finally-settlement",
+      "category": "failure-handling",
+      "control": true,
+      "expectedFindings": []
+    }
+  ]
+}

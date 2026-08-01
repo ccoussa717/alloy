@@ -163,6 +163,26 @@ describe("trust boundary", () => {
     assert.ok(detail.rejected.some((r) => /not trusted/i.test(r)));
   });
 
+  it("untrusted project Fission settings are ignored with a trust diagnostic", () => {
+    writeProjectAlloy({
+      fission: {
+        models: ["evil/reviewer"],
+        judgeModel: "evil/judge",
+        modelFamilies: { "evil/reviewer": "evil" },
+        defaultReviewers: 1,
+        maxReviewers: 1,
+        blockingSeverity: "low",
+      },
+    });
+    const detail = loadConfigDetailed(project, { trusted: false });
+    assert.equal(detail.trusted, false);
+    assert.equal(detail.projectApplied, false);
+    assert.deepEqual(detail.config.fission, DEFAULT_CONFIG.fission);
+    assert.deepEqual(detail.rejected, [
+      "project config ignored (project not trusted)",
+    ]);
+  });
+
   it("trusted project still cannot weaken permissions or sandbox globals", () => {
     writeProjectAlloy({
       permissionProfile: "ask-none",
@@ -401,5 +421,152 @@ describe("trust boundary", () => {
     const g = loadGlobalConfig();
     assert.equal(g.permissionProfile, "ask-dangerous");
     assert.equal(g.mcp.connectOnStart, false);
+  });
+
+  it("defines and validates the global Fission defaults", () => {
+    assert.deepEqual(DEFAULT_CONFIG.fission, {
+      models: [],
+      judgeModel: null,
+      modelFamilies: {},
+      defaultReviewers: 3,
+      maxReviewers: 5,
+      blockingSeverity: "medium",
+    });
+    const path = join(home, ".pi", "alloy", "config.json");
+    const valid = readFileSync(path, "utf8");
+    try {
+      for (const fission of [
+        { defaultReviewers: 0, maxReviewers: 5 },
+        { defaultReviewers: 3.5, maxReviewers: 5 },
+        { defaultReviewers: 4, maxReviewers: 3 },
+        { defaultReviewers: 3, maxReviewers: 6 },
+      ]) {
+        writeFileSync(path, JSON.stringify({ fission }));
+        assert.throws(() => loadGlobalConfig(), /fission.*reviewer/i);
+      }
+    } finally {
+      writeFileSync(path, valid);
+    }
+  });
+
+  it("applies trusted Fission reviewer tightening without clamping", () => {
+    const base = {
+      ...DEFAULT_CONFIG,
+      fission: {
+        ...DEFAULT_CONFIG.fission,
+        models: ["anthropic/a", "openai/b"],
+        judgeModel: "anthropic/judge",
+        defaultReviewers: 3,
+        maxReviewers: 5,
+        blockingSeverity: "high",
+      },
+    };
+    const cases = [
+      [{ defaultReviewers: 2 }, { defaultReviewers: 2, maxReviewers: 5 }, false],
+      [{ maxReviewers: 4 }, { defaultReviewers: 3, maxReviewers: 4 }, false],
+      [{ maxReviewers: 2 }, { defaultReviewers: 2, maxReviewers: 2 }, false],
+      [{ defaultReviewers: 2, maxReviewers: 4 }, { defaultReviewers: 2, maxReviewers: 4 }, false],
+      [{ defaultReviewers: 4, maxReviewers: 2 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ defaultReviewers: 4 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ maxReviewers: 6 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ defaultReviewers: 0 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ maxReviewers: 0 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ defaultReviewers: 2.5 }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+      [{ maxReviewers: "4" }, { defaultReviewers: 3, maxReviewers: 5 }, true],
+    ];
+    for (const [fission, expected, rejected] of cases) {
+      const merged = mergeProjectConfigTightenOnly(base, { fission });
+      assert.deepEqual(
+        {
+          defaultReviewers: merged.config.fission.defaultReviewers,
+          maxReviewers: merged.config.fission.maxReviewers,
+        },
+        expected,
+        JSON.stringify(fission),
+      );
+      assert.equal(merged.rejected.some((item) => /fission.*Reviewers/.test(item)), rejected);
+    }
+  });
+
+  it("keeps Fission routes global-only and permits only tighter blocking thresholds", () => {
+    const base = {
+      ...DEFAULT_CONFIG,
+      fission: {
+        ...DEFAULT_CONFIG.fission,
+        models: ["anthropic/a"],
+        judgeModel: "anthropic/judge",
+        modelFamilies: { "anthropic/a": "Claude" },
+        blockingSeverity: "high",
+      },
+    };
+    const tightened = mergeProjectConfigTightenOnly(base, {
+      fission: {
+        models: ["evil/model"],
+        judgeModel: "evil/judge",
+        modelFamilies: { "evil/model": "evil" },
+        blockingSeverity: "medium",
+      },
+    });
+    assert.deepEqual(tightened.config.fission.models, base.fission.models);
+    assert.equal(tightened.config.fission.judgeModel, base.fission.judgeModel);
+    assert.deepEqual(tightened.config.fission.modelFamilies, base.fission.modelFamilies);
+    assert.equal(tightened.config.fission.blockingSeverity, "medium");
+    assert.equal(tightened.rejected.filter((item) => /global-only/.test(item)).length, 3);
+
+    const loosened = mergeProjectConfigTightenOnly(base, {
+      fission: { blockingSeverity: "critical" },
+    });
+    assert.equal(loosened.config.fission.blockingSeverity, "high");
+    assert.ok(loosened.rejected.some((item) => /blockingSeverity/.test(item)));
+  });
+
+  it("validates and trims global Fission family labels against selected exact routes", () => {
+    const path = join(home, ".pi", "alloy", "config.json");
+    const valid = readFileSync(path, "utf8");
+    try {
+      writeFileSync(path, JSON.stringify({ fission: {
+        models: ["anthropic/a", "openai/b"],
+        judgeModel: "anthropic/judge",
+        modelFamilies: {
+          "anthropic/a": "  Claude  ",
+          "anthropic/judge": "judge",
+        },
+        defaultReviewers: 2,
+        maxReviewers: 4,
+      } }));
+      assert.deepEqual(loadGlobalConfig().fission.modelFamilies, {
+        "anthropic/a": "Claude",
+        "anthropic/judge": "judge",
+      });
+      writeFileSync(path, JSON.stringify({ fission: {
+        models: ["anthropic/a"],
+        judgeModel: "anthropic/judge",
+        modelFamilies: { "anthropic/a": "é".repeat(32) },
+        defaultReviewers: 1,
+        maxReviewers: 5,
+      } }));
+      assert.equal(
+        Buffer.byteLength(loadGlobalConfig().fission.modelFamilies["anthropic/a"], "utf8"),
+        64,
+      );
+      for (const modelFamilies of [
+        { "unknown/model": "family" },
+        { "anthropic/a": "" },
+        { "anthropic/a": "   " },
+        { "anthropic/a": 42 },
+        { "anthropic/a": `${"é".repeat(32)}a` },
+      ]) {
+        writeFileSync(path, JSON.stringify({ fission: {
+          models: ["anthropic/a"],
+          judgeModel: "anthropic/judge",
+          modelFamilies,
+          defaultReviewers: 1,
+          maxReviewers: 5,
+        } }));
+        assert.throws(() => loadGlobalConfig(), /modelFamilies/);
+      }
+    } finally {
+      writeFileSync(path, valid);
+    }
   });
 });

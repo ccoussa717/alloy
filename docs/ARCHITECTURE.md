@@ -24,7 +24,7 @@ Pi + extensions
   ├─ policy and modes          capability gate + permissions
   ├─ MCP                       stdio / HTTP / SSE tools
   ├─ recovery                  checkpoints + worktrees
-  ├─ orchestration             /agent /fusion /auto
+  ├─ orchestration             /agent /fusion /fission /auto
   └─ sandbox and diagnostics   Docker Bash + project checks
 ```
 
@@ -97,7 +97,7 @@ All tool calls (native + MCP) pass through `lib/capabilities.mjs`:
 
 ## Child agents and credential boundary
 
-Children (`/auto`, `/fusion`, `/agent`) spawn via `lib/child-runner.mjs`:
+Children (`/auto`, `/fusion`, `/fission`, `/agent`) spawn via `lib/child-runner.mjs`:
 
 | Axis | Behavior |
 |---|---|
@@ -121,6 +121,38 @@ OpenTUI consumer independently redact common credential assignments, token
 signatures, URL userinfo, authorization values, and private-key blocks before
 rendering the native live role dashboard; RPC hosts that ignore the enhancement
 keep the fallback.
+
+Fission is a separate trusted-repository review coordinator. Pure preflight
+rejects untrusted projects, non-repositories, unborn `HEAD`, conflicts, and a
+clean tree before creating artifacts; clean state returns `NO_CHANGES`. For a
+ready tree, normal bounded Git commands capture exact `HEAD`, status, staged and
+unstaged patches, and changed regular files. The accepted source digest is
+checked immediately and again before judgment and verdict. The packet itself is
+also digest-checked. This detects ordinary drift but not hostile same-UID races
+or byte-identical ABA restoration.
+
+Each reviewer and the fresh Judge is admitted against one global
+operator-configured exact route with no fallback. The emitted provider plus bare
+model must attest to that route. Reviewer children have only read tools, and
+their `cwd` and `readRoot` are the frozen packet root rather than the repository
+root. Complete serialized assistant payloads are subject to an output limit
+before parsing or retention. Capacity reservations and usage settlement belong
+to the current process's in-process registry, so Fission is intentionally not a
+durable workflow engine.
+
+The exact fail-closed caps are 16 KiB request text, 1 MiB status, 2 MiB combined
+staged and unstaged patches, 256 KiB per retained file, 2 MiB aggregate retained
+files, 10,000 changed entries, and 256 KiB cumulative serialized
+completed-assistant output for each reviewer or Judge. Evidence is rejected,
+not truncated, when a cap is crossed.
+
+Host normalization, not reviewer claim wording or submitted severity, produces
+the final findings. The Judge must cover every submitted finding with a legal
+disposition. Unresolved findings, Judge concerns, drift, malformed output,
+route/identity failure, cancellation, unknown cost, or settlement failure all
+produce `INCOMPLETE`. A completed run is `FAIL` only for an adjudicated finding
+at or above the configured blocking threshold; otherwise its deliberately
+narrow `PASS` is `no submitted blocking finding validated.`
 
 ## Docker sandbox (session)
 

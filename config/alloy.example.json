@@ -47,5 +47,26 @@
     "architectEffort": "high",
     "builderEffort": "medium",
     "synthesizerEffort": "high"
+  },
+  "fission": {
+    "models": [
+      "anthropic/claude-sonnet-4-6",
+      "openai-codex/gpt-5.4",
+      "xai/grok-4.5",
+      "anthropic/claude-opus-4-6",
+      "openai-codex/gpt-5.4-mini"
+    ],
+    "judgeModel": "anthropic/claude-opus-4-8",
+    "modelFamilies": {
+      "anthropic/claude-sonnet-4-6": "claude",
+      "openai-codex/gpt-5.4": "gpt",
+      "xai/grok-4.5": "grok",
+      "anthropic/claude-opus-4-6": "claude",
+      "openai-codex/gpt-5.4-mini": "gpt",
+      "anthropic/claude-opus-4-8": "claude"
+    },
+    "defaultReviewers": 3,
+    "maxReviewers": 5,
+    "blockingSeverity": "high"
   }
 }
