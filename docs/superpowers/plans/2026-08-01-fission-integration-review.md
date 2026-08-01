@@ -33,7 +33,7 @@ Expected: `origin/main` and `origin/fission` have no merge base; the bounded ran
 ```bash
 git switch codex/fission-integration-review
 npm ci
-npm run tui:install
+PATH=/tmp/alloy-bun-1.3.14/node_modules/.bin:$PATH npm run tui:install
 ```
 
 Expected: npm and Bun complete with frozen lockfiles and exit 0.
@@ -41,7 +41,9 @@ Expected: npm and Bun complete with frozen lockfiles and exit 0.
 - [ ] **Step 3: Run the current-main canonical baseline**
 
 ```bash
-npm run ci:local
+PATH=/tmp/alloy-bun-1.3.14/node_modules/.bin:$PATH \
+  TMPDIR=/private/tmp \
+  npm run ci:local
 ```
 
 Expected: unit, TUI, PTY, integration, installer, release, security, audit, and SBOM gates exit 0.
@@ -71,20 +73,22 @@ Expected: checkout is detached at `9f82960` and install exits 0.
 - [ ] **Step 2: Run the source branch's complete declared suite**
 
 ```bash
-npm run test:all
-npm run ci:local
+TMPDIR=/private/tmp npm run ci:local
 ```
 
-Expected: all declared unit, integration, release, security, audit, and SBOM checks exit 0.
+Expected after Task 5: all declared unit, integration, release, security, audit, and SBOM checks exit 0. The first run intentionally records the branch's existing branch-name-dependent fixture failure.
 
 - [ ] **Step 3: Run `/fission` dogfood fixtures explicitly**
 
 ```bash
-node --test test/unit/fission-dogfood.test.mjs
-node scripts/fission-dogfood.mjs --manifest test/fixtures/fission-dogfood/manifest.json
+TMPDIR=/private/tmp node --test test/unit/fission-dogfood.test.mjs
+dogfood_out=$(mktemp -d /private/tmp/alloy-fission-dogfood.XXXXXX)/cases
+node scripts/fission-dogfood.mjs materialize \
+  --fixture-root test/fixtures/fission-dogfood \
+  --out "$dogfood_out"
 ```
 
-Expected: the deterministic dogfood suite accepts control cases, detects seeded correctness/security/failure-handling defects, and exits 0.
+Expected: the deterministic dogfood suite validates all nine strict cases and materializes nine committed dirty repositories without modifying source fixtures.
 
 ### Task 3: Audit Security and Behavioral Contracts
 
@@ -192,9 +196,47 @@ git commit -m "feat: add trusted fission review workflow"
 
 Expected: one integration commit is based directly on current `origin/main` and contains only the reviewed `/fission` feature plus this plan.
 
-If Tasks 2-4 expose a defect, pause this plan, invoke the systematic-debugging and test-driven-development workflows, and add a defect-specific plan task naming the exact failing test and production file before editing implementation code.
+### Task 5: Remove the Fission Test Fixture's Default-Branch Assumption
 
-### Task 5: Verify and Publish
+**Files:**
+- Modify: `test/unit/fission-packet.test.mjs`
+
+- [ ] **Step 1: Reproduce the branch-name-dependent failure**
+
+```bash
+TMPDIR=/private/tmp node --test \
+  --test-name-pattern='preflight rejects an unmerged index' \
+  test/unit/fission-packet.test.mjs
+```
+
+Expected before the fix: FAIL because Apple Git initializes `main`, `checkout master` fails, and no unmerged index is created.
+
+- [ ] **Step 2: Capture and restore the fixture's actual initial branch**
+
+Replace the hard-coded branch checkout in the test with:
+
+```js
+const initialBranch = git(repo, ["branch", "--show-current"]).stdout.trim();
+assert.ok(initialBranch);
+git(repo, ["checkout", "-b", "side"]);
+writeFileSync(join(repo, "tracked.txt"), "side\n");
+git(repo, ["commit", "-am", "side"]);
+git(repo, ["checkout", initialBranch]);
+```
+
+Expected: the fixture creates the intended conflict whether Git defaults to `main`, `master`, or another initial branch.
+
+- [ ] **Step 3: Verify red-green behavior**
+
+```bash
+TMPDIR=/private/tmp node --test \
+  --test-name-pattern='preflight rejects an unmerged index' \
+  test/unit/fission-packet.test.mjs
+```
+
+Expected after the fix: one test passes with zero failures.
+
+### Task 6: Verify and Publish
 
 **Files:**
 - Verify: all tracked source, tests, documentation, release metadata, and lockfiles
@@ -217,8 +259,10 @@ Expected: all focused tests pass with zero failures.
 
 ```bash
 npm ci
-npm run tui:install
-npm run ci:local
+PATH=/tmp/alloy-bun-1.3.14/node_modules/.bin:$PATH npm run tui:install
+PATH=/tmp/alloy-bun-1.3.14/node_modules/.bin:$PATH \
+  TMPDIR=/private/tmp \
+  npm run ci:local
 git diff --check origin/main...HEAD
 git status --short
 ```
@@ -232,7 +276,9 @@ git fetch origin main --prune
 git switch main
 git merge --ff-only origin/main
 git merge --ff-only codex/fission-integration-review
-npm run ci:local
+PATH=/tmp/alloy-bun-1.3.14/node_modules/.bin:$PATH \
+  TMPDIR=/private/tmp \
+  npm run ci:local
 ```
 
 Expected: local `main` fast-forwards from the latest remote `main`; the complete final tree passes fresh canonical verification.
