@@ -28,6 +28,7 @@ import { registerToolDisplay } from "./tool-display.ts";
 import { registerNativeCommands } from "./native-commands.ts";
 import { registerAuthCommands } from "./auth-commands.ts";
 import { registerSidebar } from "./sidebar.ts";
+import { registerFission } from "./fission.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,4 +66,5 @@ export default async function alloyExtension(pi: ExtensionAPI) {
   registerDiagnostics(pi);
   registerAuto(pi);
   registerAgents(pi); // /agent /agents /profiles · multi-model sub-agents
+  registerFission(pi);
 }

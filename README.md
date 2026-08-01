@@ -105,6 +105,7 @@ Explain the authentication flow in this repository
 /remember this project uses pnpm
 /fusion Plan a safe authentication refactor
 /auto Add the approved health-check endpoint
+/fission Review these changes against the authentication contract
 ```
 
 The convenience installer resolves `main` once and installs that exact commit.
@@ -138,7 +139,7 @@ Most coding agents make you choose a model and rebuild context around it. Alloy
 separates the **harness** from the **model**: use one model directly, route a task
 by role, or combine independent proposals without changing terminals.
 
-## Three ways to work
+## Four ways to work
 
 <p align="center">
   <img src="docs/assets/alloy-workflows.svg" alt="Alloy Chat, Fusion, and Auto workflow diagrams" width="1000">
@@ -149,6 +150,7 @@ by role, or combine independent proposals without changing terminals.
 | **Chat** | You want a fast answer or direct implementation from the active model. | Runs the Pi agent loop behind Alloy's Solid/OpenTUI shell, with Alloy memory, skills, MCP, and policy. |
 | **Fusion** | The decision benefits from two independent technical perspectives. | Runs read-only Architect and Builder proposals concurrently, then gives a fresh Synthesizer both validated outputs. |
 | **Auto** | The work has an accepted implementation boundary and should be checked as it progresses. | Runs Scout, Planner, Builder, diagnostics, independent review, and bounded fix rounds with artifacts. |
+| **Fission** | Current uncommitted changes need adversarial review against a contract. | Freezes bounded evidence for blind read-only specialists, then gives a fresh Judge their structured findings. |
 
 ### Fusion: combine perspectives, keep provenance
 
@@ -179,6 +181,75 @@ status under `~/.pi/alloy/runs/`. Treat these artifacts as operator data because
 repository diagnostics control what they print. Auto fails closed when Docker
 sandbox isolation is required because its diagnostics execute as host processes.
 
+### Fission: adjudicate the current change
+
+> **Trust boundary:** Fission is for projects the operator has marked trusted.
+> Repository Git config/attributes may execute under normal Git behavior.
+> Do not run it on hostile/untrusted repositories.
+> This is a product boundary, not a hidden implementation caveat.
+
+Fission freezes the current dirty Git state, sends only the bounded packet to
+blind read-only reviewers, and has a fresh Judge adjudicate their structured
+findings. Use `/fission <contract>` for the configured default count or
+`/fission 5 <contract>` for an explicit count. The equivalent `alloy_fission`
+tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are integers from
+1 through the effective maximum of five and are rejected, never clamped, above
+that limit.
+
+Reviewer roles expand with the count: general adversarial at one; correctness
+and security at two; architecture/failure handling at three; test/spec coverage
+at four; and performance/concurrency/resources at five. Reviewer routes, the
+Judge route, and optional family labels are owned by global operator config. A
+five-reviewer run requires five distinct configured reviewer routes. Fission
+admits each exact route with no fallback and attests the actual provider/model
+emitted by every child.
+
+Capture uses normal bounded Git commands. Review children receive only `read`,
+`grep`, `find`, and `ls`, with `cwd` and `readRoot` confined to the immutable
+packet root. Reservations and observed usage live only in the current process's
+in-process registry; a restart cannot resume a run. Source and packet digests
+are checked before review, before judgment, and before the verdict. These checks
+detect ordinary drift, not malicious same-UID mutation or byte-identical ABA
+restoration.
+
+Exact capture and output caps are fail-closed: request: 16 KiB; status: 1 MiB;
+staged plus unstaged patches: 2 MiB; each retained file: 256 KiB;
+all retained files: 2 MiB; changed entries: 10,000;
+assistant output per reviewer or judge: 256 KiB cumulative serialized
+completed-assistant messages. Crossing a cap produces `INCOMPLETE`; accepted
+evidence is never truncated.
+
+`NO_CHANGES` means the repository was clean and no run was created.
+`INCOMPLETE` means evidence, route admission, a child, adjudication, settlement,
+or a drift check failed; it is never a pass. `FAIL` requires a Judge-validated
+finding at the configured blocking severity. `PASS` means only:
+`no submitted blocking finding validated.` It does not mean tests ran, the code
+is correct, or the change is safe to merge or deploy.
+
+The example in [`config/alloy.example.json`](./config/alloy.example.json) uses
+routes from the pinned Pi catalogs. Confirm they are authenticated in the live
+catalog; five-reviewer runs need five distinct eligible reviewer routes in
+addition to the Judge.
+
+#### Offline dogfood and authenticated gate
+
+The corpus utility prepares repositories and evaluates saved normalized results.
+It does not load Alloy, credentials, or models and cannot make model calls:
+
+```bash
+node scripts/fission-dogfood.mjs materialize \
+  --fixture-root test/fixtures/fission-dogfood \
+  --out /tmp/alloy-fission-dogfood
+```
+
+In a separate authenticated Alloy session, mark each generated repository
+trusted, run `/fission 5 <contract contents>`, and save each `result.json`.
+Evaluate the nine saved paths with `node scripts/fission-dogfood.mjs evaluate`.
+Missing paths are `UNEXECUTED`, malformed or incomplete artifacts are `FAILED`,
+and only all six matched high/critical seeds plus three clean controls is
+`PASSED`. Integrating Fission into `/auto` remains follow-up work until this
+manual authenticated dogfood gate passes.
+
 ## The product layer on Pi
 
 | Alloy adds | What that means day to day |
@@ -189,7 +260,7 @@ sandbox isolation is required because its diagnostics execute as host processes.
 | **Live MCP** | Connect reviewed stdio, Streamable HTTP, or SSE servers; MCP tools use the same capability gate. |
 | **Modes and permissions** | Build and Plan are separate from approval profiles, so model tool calls in read-only work stay mechanically read-only. |
 | **Recovery tools** | Authenticated Git checkpoints and isolated worktrees make agent changes easier to inspect and undo. |
-| **Multi-model agents** | `/agent`, `/fusion`, and `/auto` route roles without copying the host's complete credential store. |
+| **Multi-model agents** | `/agent`, `/fusion`, `/fission`, and `/auto` route roles without copying the host's complete credential store. |
 | **Searchable help** | `/help`, `/help <topic>`, and `/help commands` describe the active harness from inside the TUI. |
 
 ```mermaid
@@ -223,6 +294,7 @@ Alloy treats safety as state enforced by code, not a sentence in a prompt.
 | **Default approvals** | `ask-dangerous` prompts for known dangerous shell patterns, destructive Git, MCP, and tools classified as network or external actions. |
 | **Child policy ceiling** | Child manifests constrain approval profile, sandbox requirement, tools, budget, and concurrency. Model child-tool calls are denied in read-only modes; operator-invoked Auto explicitly launches Build roles and confirms first when interactive. |
 | **Credential boundary** | Child environments are allowlisted; Fusion leases only the selected provider credential into an ephemeral home. |
+| **Fission evidence** | Trusted-repository review is confined to a bounded immutable packet; exact routes, model identity, output size, usage, and source drift fail closed. |
 | **Project trust** | Project config cannot weaken the operator approval profile, global sandbox controls, MCP enablement, or budget ceilings. |
 | **Docker Bash sandbox** | Optional `network=none` container with dropped Linux capabilities and a mounted workspace; fails closed if required but unavailable. |
 | **Diagnostics disclosure** | Repository-defined host commands have a scrubbed environment and require approval when model-triggered; they are not a filesystem sandbox. |
@@ -246,6 +318,7 @@ repository diagnostics are host processes. Read the
 | `/agent` / `/agents` | Launch and inspect a free-form routed child agent. |
 | `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
 | `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
+| `/fission [1..5] <contract>` | Run bounded adversarial review of the trusted repository's current changes. |
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
 | `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
 | `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
