@@ -417,6 +417,8 @@ describe("trust boundary", () => {
       defaultReviewers: 3,
       maxReviewers: 5,
       blockingSeverity: "medium",
+      minProviderCount: null,
+      minFamilyCount: null,
     });
     const path = join(home, ".pi", "alloy", "config.json");
     const valid = readFileSync(path, "utf8");
@@ -426,9 +428,12 @@ describe("trust boundary", () => {
         { defaultReviewers: 3.5, maxReviewers: 5 },
         { defaultReviewers: 4, maxReviewers: 3 },
         { defaultReviewers: 3, maxReviewers: 6 },
+        { minProviderCount: 0 },
+        { minProviderCount: 1.5 },
+        { minFamilyCount: -1 },
       ]) {
         writeFileSync(path, JSON.stringify({ fission }));
-        assert.throws(() => loadGlobalConfig(), /fission.*reviewer/i);
+        assert.throws(() => loadGlobalConfig(), /fission/i);
       }
     } finally {
       writeFileSync(path, valid);

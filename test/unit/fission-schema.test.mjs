@@ -180,6 +180,21 @@ test("strict JSON lexes escaped strings, numbers, booleans, and null", () => {
   );
 });
 
+test("strict JSON accepts valid surrogate pairs and rejects lone surrogates", () => {
+  assert.deepEqual(
+    parseStrictJsonObject('{"emoji":"\\uD83D\\uDE00"}'),
+    { emoji: "😀" },
+  );
+  assert.deepEqual(
+    parseStrictJsonObject('{"cjk":"\\uD869\\uDEDE"}'),
+    { cjk: "𪛞" },
+  );
+  assert.throws(() => parseStrictJsonObject('{"bad":"\\uD83D"}'), /lone_surrogate/);
+  assert.throws(() => parseStrictJsonObject('{"bad":"\\uD83Dx"}'), /lone_surrogate/);
+  assert.throws(() => parseStrictJsonObject('{"bad":"\\uD83D\\u0041"}'), /lone_surrogate/);
+  assert.throws(() => parseStrictJsonObject('{"bad":"\\uDC00"}'), /lone_surrogate/);
+});
+
 test("exported TypeBox contracts are strict and cover every union member", () => {
   for (const role of [
     "general_adversarial",

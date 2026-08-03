@@ -222,6 +222,30 @@ describe("Fission pure contracts", () => {
     assert.doesNotThrow(() => resolveFissionModels(distinctCfg, 3));
   });
 
+  it("enforces optional provider and family diversity minimums", () => {
+    const sameProviderCfg = {
+      fission: {
+        models: ["anthropic/sonnet", "anthropic/opus", "anthropic/haiku"],
+        judgeModel: "openai-codex/gpt",
+        modelFamilies: { "anthropic/sonnet": "claude", "anthropic/opus": "claude", "anthropic/haiku": "claude" },
+      },
+    };
+    assert.throws(() => resolveFissionModels({ ...sameProviderCfg, fission: { ...sameProviderCfg.fission, minProviderCount: 2 } }, 3), /provider_diversity/);
+    assert.doesNotThrow(() => resolveFissionModels({ ...sameProviderCfg, fission: { ...sameProviderCfg.fission, minProviderCount: 1 } }, 3));
+    assert.throws(() => resolveFissionModels({ ...sameProviderCfg, fission: { ...sameProviderCfg.fission, minFamilyCount: 2 } }, 3), /family_diversity/);
+    assert.doesNotThrow(() => resolveFissionModels({ ...sameProviderCfg, fission: { ...sameProviderCfg.fission, minFamilyCount: 1 } }, 3));
+    const diverseCfg = {
+      fission: {
+        models: ["anthropic/sonnet", "openai-codex/gpt", "xai/grok"],
+        judgeModel: "google/gemini",
+        modelFamilies: { "anthropic/sonnet": "claude", "openai-codex/gpt": "gpt", "xai/grok": "grok" },
+        minProviderCount: 3,
+        minFamilyCount: 3,
+      },
+    };
+    assert.doesNotThrow(() => resolveFissionModels(diverseCfg, 3));
+  });
+
   it("builds exact sorted unique observability-only model diversity", () => {
     assert.deepEqual(buildModelDiversity({
       requestedModels: ["xai/grok", "anthropic/opus", "xai/grok"],

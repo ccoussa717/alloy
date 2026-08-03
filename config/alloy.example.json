@@ -53,6 +53,8 @@
     },
     "defaultReviewers": 3,
     "maxReviewers": 5,
-    "blockingSeverity": "high"
+    "blockingSeverity": "high",
+    "minProviderCount": 2,
+    "minFamilyCount": 2
   }
 }
