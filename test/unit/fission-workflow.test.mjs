@@ -215,6 +215,13 @@ describe("Fission pure contracts", () => {
     assert.throws(() => resolveFissionModels(cfg, 2, { models: ["evil/override"] }), /override/);
   });
 
+  it("rejects judge model identical to a reviewer model", () => {
+    const overlapCfg = { fission: { models: reviewerModels, judgeModel: reviewerModels[0] } };
+    assert.throws(() => resolveFissionModels(overlapCfg, 3), /judge_model_not_distinct/);
+    const distinctCfg = { fission: { models: reviewerModels, judgeModel } };
+    assert.doesNotThrow(() => resolveFissionModels(distinctCfg, 3));
+  });
+
   it("builds exact sorted unique observability-only model diversity", () => {
     assert.deepEqual(buildModelDiversity({
       requestedModels: ["xai/grok", "anthropic/opus", "xai/grok"],
