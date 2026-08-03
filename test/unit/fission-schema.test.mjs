@@ -601,3 +601,47 @@ test("host verdict table is ordered and reviewer agreement never determines PASS
     "no submitted blocking finding validated.",
   );
 });
+
+test("deriveFissionResult respects configured blockingSeverity", () => {
+  const id = findingId("correctness", 0, finding());
+  const rejectedCluster = {
+    canonicalFindingId: id,
+    findingIds: [id],
+    disposition: "rejected",
+    adjudicatedSeverity: null,
+    rationale: "not supported",
+    evidenceRefs: [],
+  };
+  const complete = {
+    preflight: { state: "READY" },
+    packet,
+    sourceVerified: true,
+    artifactsVerified: true,
+    requestedReviewers: 1,
+    reviewers: [{ status: "ok", valid: true, output: reviewer() }],
+    judge: { status: "ok", valid: true, output: { clusters: [rejectedCluster], judgeConcern: null } },
+  };
+  const mediumValidated = {
+    ...complete,
+    judge: { status: "ok", valid: true, output: { clusters: [{
+      ...rejectedCluster,
+      disposition: "validated",
+      adjudicatedSeverity: "medium",
+      evidenceRefs: [ref()],
+    }], judgeConcern: null } },
+  };
+  assert.equal(deriveFissionResult({ ...mediumValidated, blockingSeverity: "medium" }).verdict, "FAIL");
+  assert.equal(deriveFissionResult({ ...mediumValidated, blockingSeverity: "high" }).verdict, "PASS");
+  assert.equal(deriveFissionResult(mediumValidated).verdict, "PASS");
+  const highValidated = {
+    ...complete,
+    judge: { status: "ok", valid: true, output: { clusters: [{
+      ...rejectedCluster,
+      disposition: "validated",
+      adjudicatedSeverity: "high",
+      evidenceRefs: [ref()],
+    }], judgeConcern: null } },
+  };
+  assert.equal(deriveFissionResult({ ...highValidated, blockingSeverity: "critical" }).verdict, "PASS");
+  assert.equal(deriveFissionResult({ ...highValidated, blockingSeverity: "high" }).verdict, "FAIL");
+});
