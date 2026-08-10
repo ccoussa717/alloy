@@ -80,6 +80,43 @@ describe("exact agent launch admission", () => {
     assert.equal(result.budgetLimitUsd, 6);
   });
 
+  it("admits exact Alloy local-engine routes (Ollama)", async () => {
+    const localRoute = "ollama/llama3.2";
+    const { deps, inspected } = dependencies({
+      config: {
+        ...baseConfig,
+        providers: { allow: ["anthropic", "openai-codex", "ollama"] },
+      },
+      inspect: {
+        candidate: {
+          model: localRoute,
+          available: true,
+          authenticated: true,
+          transport: "local",
+          supportsTools: true,
+        },
+        lease: {
+          mode: "runtime-key",
+          runtimeCredential: { provider: "ollama", apiKey: "ollama" },
+        },
+      },
+    });
+    const result = await prepareExactAgentLaunch({
+      cwd: "/project",
+      model: localRoute,
+      profile: "review",
+      tools: ["read"],
+      activeChildren: 0,
+      spentCostUsd: 0,
+    }, deps);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(inspected, [localRoute]);
+    assert.equal(result.decision.model, localRoute);
+    assert.equal(result.decision.provider, "ollama");
+    assert.equal(result.credential.mode, "runtime-key");
+  });
+
   it("rejects malformed routes, disabled orchestration, provider denial, capacity, and budget before inspection", async () => {
     const cases = [
       [{ model: "anthropic", activeChildren: 0, spentCostUsd: 0 }, baseConfig, /provider\/model/],

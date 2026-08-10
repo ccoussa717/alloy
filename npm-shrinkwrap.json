@@ -1,12 +1,12 @@
 {
   "name": "alloy-agent",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "alloy-agent",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "license": "MIT",
       "dependencies": {
         "@earendil-works/pi-agent-core": "0.82.1",

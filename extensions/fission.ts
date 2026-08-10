@@ -60,6 +60,9 @@ const FAMILY_BY_PROVIDER: Record<string, string> = {
   xai: "grok",
   google: "gemini",
   gemini: "gemini",
+  ollama: "ollama",
+  "llama.cpp-local": "llama.cpp",
+  "lm-studio": "lm-studio",
 };
 
 function getFissionArgumentCompletions(prefix = "") {

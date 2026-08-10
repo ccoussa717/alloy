@@ -533,3 +533,120 @@ test("isTrustedSessionModelRoute accepts registry routes with builtin transport"
   );
   assert.equal(broker.isTrustedSessionModelRoute("not-a-route", { find: () => null }), false);
 });
+
+function localOllamaModel(overrides = {}) {
+  return {
+    provider: "ollama",
+    id: "llama3.2",
+    name: "llama3.2",
+    api: "openai-completions",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 32_768,
+    ...overrides,
+  };
+}
+
+test("isTrustedSessionModelRoute accepts discovered local engines", () => {
+  const model = localOllamaModel();
+  assert.equal(
+    broker.isTrustedSessionModelRoute("ollama/llama3.2", {
+      find: (provider, id) =>
+        provider === "ollama" && id === "llama3.2" ? model : null,
+    }),
+    true,
+  );
+  assert.equal(
+    broker.isTrustedSessionModelRoute("ollama/llama3.2", {
+      find: () => localOllamaModel({ api: "anthropic-messages" }),
+    }),
+    false,
+  );
+  assert.equal(
+    broker.isTrustedSessionModelRoute("ollama/llama3.2", {
+      find: () => localOllamaModel({ baseUrl: "not-a-url" }),
+    }),
+    false,
+  );
+  assert.equal(
+    broker.isTrustedSessionModelRoute("ollama/missing", { find: () => null }),
+    false,
+  );
+  // Non-local custom providers remain untrusted even with openai-completions shape.
+  assert.equal(
+    broker.isTrustedSessionModelRoute("evil-proxy/gpt", {
+      find: () => ({
+        provider: "evil-proxy",
+        id: "gpt",
+        api: "openai-completions",
+        baseUrl: "http://127.0.0.1:9/v1",
+      }),
+    }),
+    false,
+  );
+});
+
+test("session credential broker leases local engine access like /model", async () => {
+  const model = localOllamaModel();
+  const lease = await broker.resolveSessionCredentialLease(["ollama/llama3.2"], {
+    find: () => model,
+    getApiKeyAndHeaders: async () => ({
+      ok: true,
+      apiKey: "ollama",
+      headers: {},
+    }),
+    getProviderAuth: async () => ({
+      auth: { apiKey: "ollama", headers: {} },
+    }),
+  });
+
+  assert.deepEqual(lease, {
+    mode: "runtime-key",
+    runtimeCredential: {
+      provider: "ollama",
+      apiKey: "ollama",
+      headers: {},
+    },
+    providers: ["ollama"],
+    missing: [],
+  });
+});
+
+test("inspectSessionModelCandidate marks local engines as local transport", async () => {
+  const model = localOllamaModel();
+  const inspected = await broker.inspectSessionModelCandidate(
+    "ollama/llama3.2",
+    {
+      find: () => model,
+      getApiKeyAndHeaders: async () => ({
+        ok: true,
+        apiKey: "ollama",
+        headers: {},
+      }),
+      getProviderAuth: async () => ({
+        auth: { apiKey: "ollama", headers: {} },
+      }),
+    },
+  );
+
+  assert.equal(inspected.candidate.available, true);
+  assert.equal(inspected.candidate.authenticated, true);
+  assert.equal(inspected.candidate.transport, "local");
+  assert.equal(inspected.candidate.supportsTools, true);
+  assert.equal(inspected.lease.mode, "runtime-key");
+  assert.equal(JSON.stringify(inspected.candidate).includes("ollama"), true);
+  assert.equal(
+    JSON.stringify(inspected.candidate).includes("apiKey"),
+    false,
+  );
+});
+
+test("isTrustedSessionTransport accepts builtin and local only", () => {
+  assert.equal(broker.isTrustedSessionTransport("builtin"), true);
+  assert.equal(broker.isTrustedSessionTransport("local"), true);
+  assert.equal(broker.isTrustedSessionTransport("custom"), false);
+  assert.equal(broker.isTrustedSessionTransport("invalid"), false);
+});

@@ -7,6 +7,16 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-10
+
+### Added
+
+- `/fission setup` (and other session-trusted model pickers) include
+  **auto-discovered Ollama, llama.cpp, and LM Studio** models the same way
+  `/model` does. Local engines get session credential leases and may run as
+  fission reviewers / workflow children; arbitrary custom transports stay
+  blocked.
+
 ## [1.0.4] - 2026-08-10
 
 ### Fixed
