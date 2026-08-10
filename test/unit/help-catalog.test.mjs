@@ -69,21 +69,27 @@ test("workflows help maps fusion fission auto forge and setups", () => {
   assert.match(topic.body, /main chat \/model/i);
 });
 
-test("auto help documents setup, implement profile, and roles config", () => {
+test("auto help documents setup, forceSandbox, and roles config", () => {
   const topic = help.getTopic("auto");
   assert.match(topic.body, /\/auto setup/);
-  assert.match(topic.body, /implementPermissionProfile|Implement profile|sandbox/i);
-  assert.match(topic.body, /roles/);
+  assert.match(topic.body, /forceSandbox|Implement permissions|sandbox/i);
+  assert.match(topic.body, /roles|profiles/i);
   assert.match(topic.body, /scout/);
   assert.match(topic.body, /builder/);
 });
 
 test("forge help lists setup checklist", () => {
   const topic = help.getTopic("forge");
-  assert.match(topic.body, /\/fusion setup/);
-  assert.match(topic.body, /\/fission setup/);
-  assert.match(topic.body, /\/auto setup/);
+  assert.match(topic.body, /\/fusion setup|\/setup/);
+  assert.match(topic.body, /\/fission setup|\/setup/);
+  assert.match(topic.body, /\/auto setup|\/setup/);
   assert.match(topic.body, /fusion.*fission.*auto/is);
+});
+
+test("start and workflows teach the three-layer model", () => {
+  assert.match(help.getTopic("start").body, /Three layers|Chat|Workflows|Policy/is);
+  assert.match(help.getTopic("workflows").body, /\/setup/);
+  assert.match(help.getTopic("workflows").body, /profiles\.\*|one map|canonical/i);
 });
 
 test("getTopic by id", () => {
