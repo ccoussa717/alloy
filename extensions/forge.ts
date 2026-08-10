@@ -20,7 +20,12 @@ const {
   setPhase,
 } = require(join(root, "lib", "agent-panel.mjs"));
 const { resolveParentChildSpawnOpts } = require(join(root, "lib", "parent-policy.mjs"));
-const { formatForgeCommandHelp } = require(join(root, "lib", "command-help.mjs"));
+const {
+  formatForgeCommandHelp,
+  FORGE_SUBCOMMANDS,
+  subcommandMenuOptions,
+  resolveSubcommandChoice,
+} = require(join(root, "lib", "command-help.mjs"));
 
 const FORGE_ARGUMENTS = [
   { value: "help", label: "help", description: "Show Forge usage" },
@@ -114,7 +119,20 @@ export function registerForge(pi: ExtensionAPI) {
     getArgumentCompletions: getForgeArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request || request.toLowerCase() === "help") {
+      if (!request) {
+        if (!ctx.hasUI) {
+          console.log(formatForgeHelp().join("\n"));
+          return;
+        }
+        const options = subcommandMenuOptions(FORGE_SUBCOMMANDS);
+        const picked = await ctx.ui.select("Forge — pick an action", options);
+        const id = resolveSubcommandChoice(picked, FORGE_SUBCOMMANDS);
+        if (id === "help") {
+          await ctx.ui.select("Forge help", formatForgeHelp());
+        }
+        return;
+      }
+      if (request.toLowerCase() === "help") {
         if (ctx.hasUI) await ctx.ui.select("Forge help", formatForgeHelp());
         else console.log(formatForgeHelp().join("\n"));
         return;

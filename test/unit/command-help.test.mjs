@@ -33,3 +33,20 @@ test("workflow command helps are non-empty and actionable", () => {
     );
   }
 });
+
+test("subcommand menus resolve selected rows to action ids", () => {
+  const options = help.subcommandMenuOptions(help.FISSION_SUBCOMMANDS);
+  assert.ok(options.some((o) => o.startsWith("help")));
+  assert.equal(
+    help.resolveSubcommandChoice(
+      "setup  —  Configure models, roles, judge",
+      help.FISSION_SUBCOMMANDS,
+    ),
+    "setup",
+  );
+  assert.equal(
+    help.resolveSubcommandChoice("status", help.FISSION_SUBCOMMANDS),
+    "status",
+  );
+  assert.equal(help.resolveSubcommandChoice(null, help.FISSION_SUBCOMMANDS), null);
+});
