@@ -18,12 +18,12 @@
 ## Table of contents
 
 - [Quick start](#quick-start)
-- [Why Alloy](#why-alloy)
+- [How Alloy works (3 layers)](#how-alloy-works-3-layers)
 - [In-product help](#in-product-help)
 - [What you see while it works](#what-you-see-while-it-works)
 - [Workflows](#workflows)
   - [Comparison](#comparison)
-  - [Setup checklist](#setup-checklist)
+  - [Setup once](#setup-once)
   - [Combinations](#combinations)
   - [Chat (default path)](#chat-default-path)
   - [Free-form sub-agents](#free-form-sub-agents)
@@ -31,7 +31,7 @@
   - [Fission](#fission-adjudicate-the-current-change)
   - [Auto](#auto-build-check-review-repeat)
   - [Forge](#forge-full-multi-model-spine)
-  - [Identity, CLI, and CI](#identity-cli-and-ci)
+  - [CLI and CI](#cli-and-ci)
 - [The product layer on Pi](#the-product-layer-on-pi)
 - [Safety that travels with the work](#safety-that-travels-with-the-work)
 - [Commands worth knowing](#commands-worth-knowing)
@@ -123,11 +123,11 @@ already running before Alloy starts. Discovered llama.cpp models use the
 command remain intact. Restart Alloy after starting an engine or changing its
 catalog; `/doctor` re-probes live status. See the reference for env overrides.
 
-Then ask a direct question or choose a workflow:
+Then chat, or set up multi-model once and use a workflow:
 
 ```text
 Explain the authentication flow in this repository
-/remember this project uses pnpm
+/setup                 # one path: fusion → fission → auto
 /fusion Plan a safe authentication refactor
 /auto Add the approved health-check endpoint
 /fission Review these changes against the authentication contract
@@ -156,33 +156,39 @@ npm link
 See the [complete command and configuration reference](docs/REFERENCE.md) for
 provider routing, permission profiles, MCP, paths, and troubleshooting.
 
-## Why Alloy
+## How Alloy works (3 layers)
 
-| One shell | Context that compounds | Orchestration with boundaries |
-|---|---|---|
-| Switch among connected Claude, Codex, and Grok routes without rebuilding your workspace. | Project and user facts survive `/new`, new sessions, and new days. Approved skills become reusable operating knowledge. | Direct chat uses the active policy; child workflows add credential isolation, budget ceilings, and inherited policy limits. |
+Keep this mental model; almost everything fits here.
 
-Most coding agents make you choose a model and rebuild context around it. Alloy
-separates the **harness** from the **model**: use one model directly, route a task
-by role, or combine independent proposals without changing terminals.
+```text
+1. Chat        One model, linear tools          (default — just type)
+2. Workflows   /fusion · /fission · /auto · /forge   (opt-in power)
+3. Policy      Mode (Plan/Build) × /permissions
+               + optional forceSandbox for implement
+```
+
+| Concern | Where it lives |
+|---|---|
+| Active chat model | `/model` (session only) |
+| Child workflow models | **`profiles.*`** (canonical); optional **`roles.*`** overrides for auto |
+| Approvals | `/permissions` — implement **inherits** these |
+| Force Docker for implement | `auto.forceSandbox` via `/auto setup` or `/setup` |
+| One-time multi-model config | **`/setup`** (or `/fusion` · `/fission` · `/auto` setup) |
+
+Alloy does **not** ask “sub-agent driven or linear?” for plain prompts. Chat stays
+simple unless you opt into a workflow or `/agent`.
 
 ## In-product help
 
-Everything below is also available **inside Alloy**. The menu is grouped for
-scanning (Start here → Workflows → Session → Daily tools → Reference), and
-every topic has a one-line summary.
-
 ```text
-/help                 # grouped topic picker
+/help                 # grouped picker (Start → Workflows → Session → Tools → Reference)
 /help start           # first five minutes
-/help workflows       # which multi-model path to pick
-/help fusion | fission | auto | forge | agents | packs | cli
-/help search docker   # free-text search (aliases: login, docker, quickstart, …)
-/help commands        # live registry of every slash command this session
+/help workflows       # which path + setup
+/help search docker   # free-text (aliases: login, docker, quickstart, …)
+/help commands        # live slash-command list
 ```
 
-After a topic, you can browse again, search, or done. Prefer `/help start` on a
-fresh install.
+After a topic: browse again, search, or done.
 
 ## What you see while it works
 
@@ -214,53 +220,54 @@ Effort level: `/effort` or `/thinking` (not Shift+Tab — that toggles Build/Pla
 
 ### Comparison
 
-| Workflow | Command | Writes code? | Model setup | Use it when |
-|---|---|---|---|---|
-| **Chat** | (prompt only) | Yes (if mode allows) | `/model` (session only) | Default path: one agent, linear tool loop |
-| **Sub-agent** | `/agent …` or model tool `alloy_task` | Yes (if tools allow) | profile / model override | Opt-in isolated child; not auto-prompted |
-| **Fusion** | `/fusion <objective>` | **No** (plan-only) | **`/fusion setup`** | Two independent technical perspectives → one attributed plan |
-| **Fission** | `/fission [N] <request>` | **No** | **`/fission setup`** | Adversarial multi-role review of current changes against a contract |
-| **Auto** | `/auto <request>` | **Yes** (worktree) | **`/auto setup`** (or `roles.*.model`) | Implement with scout/plan/build/diagnostics/review/fix loops |
-| **Forge** | `/forge <request>` | **Yes** | Fusion + fission + auto setups | Full spine: plan → adversarial review → implement → re-review |
+| Path | Command | Writes code? | When |
+|---|---|---|---|
+| **Chat** | (just type) | Yes if Build allows | Default — one agent, linear tools |
+| **Sub-agent** | `/agent …` | Yes if tools allow | Opt-in extra child |
+| **Fusion** | `/fusion <goal>` | No | Two plans → one synthesis |
+| **Fission** | `/fission [N] <contract>` | No | Adversarial review of dirty tree |
+| **Auto** | `/auto <task>` | Yes (worktree) | Scout → build → review → fix |
+| **Forge** | `/forge <task>` | Yes | fusion → fission → auto → fission |
 
-**Important:** Main chat `/model` does **not** set fusion, fission, or auto child models. Each workflow has its own routes.
+Main `/model` is **session chat only**. Child models come from setup/`profiles`.
 
-**Default for plain English tasks:** Alloy does **not** ask “sub-agent driven or linear?” the way some products do. A normal prompt (“build me X”, “plan me Y”) runs as a **single main agent** with a linear tool loop unless you (or the model, via `alloy_task`) explicitly spawn children, or you invoke `/auto` / `/forge` / `/fusion` / `/fission`.
+### Setup once
 
-### Setup checklist
+```text
+/login                 # each provider you will use
+/setup                 # fusion → (run /fission setup) → auto
+# or separately:
+/fusion setup
+/fission setup
+/auto setup            # models + forceSandbox yes/no
+/fusion status · /fission status · /auto status
+/trust                 # required before fission on this repo
+```
 
-Do this once (or whenever you change providers):
+Optional posture pack (does **not** set models):
 
-1. **`/login`** (and `/login xai`, etc.) for every provider you will use  
-2. **`/fusion setup`** — Architect, Builder, Synthesizer (models + effort)  
-3. **`/fission setup`** — default/max reviewer count, **role catalog** per slot, models, judge, severity  
-4. **`/auto setup`** — role models + optional **forceSandbox** for implement  
-   - Implement **inherits session** `/permissions` by default  
-   - `auto.forceSandbox: true` always sandboxes implement (fail closed without Docker)  
-5. Or one path: **`/setup`** (fusion → fission reminder → auto)  
-6. Optional: **`/pack apply ship|incident|economy`** — posture only (not models)  
-7. **`/fusion status`** · **`/fission status`** · **`/auto status`** to verify  
-8. **`/trust`** the project before Fission/Forge on that repo  
+```text
+/pack apply ship | incident | economy
+```
 
-Models: **`profiles.*`** (canonical). **`roles.*`** are optional auto overrides.
+**Models:** one map — `profiles.research|plan|code|review` (canonical).  
+**Auto shortcuts:** `roles.scout|planner|builder|fixer|reviewer` override profiles; `/auto setup` writes both.  
+**Implement safety:** inherits session `/permissions`. Set **forceSandbox** in `/auto setup` if builders must always use Docker (fail closed if Docker is missing).
 
-Example fusion/fission/auto blocks also live in [`config/alloy.example.json`](./config/alloy.example.json).
+Example config: [`config/alloy.example.json`](./config/alloy.example.json).
 
 ### Combinations
 
-| Goal | What to run |
+| Goal | Command |
 |---|---|
-| Single-model coding | Chat after `/model` |
-| Multi-model plan only | `/fusion <objective>` |
-| Review dirty tree only | `/fission <contract>` or `/fission 5 <contract>` |
-| Implement with fix loops only | `/auto <request>` |
-| **Full quality path** | **`/forge <request>`** |
-| Plan then implement yourself | `/fusion …` then `/auto …` |
-| Plan then review (needs a diff for Fission evidence) | `/fusion …` then edit or `/auto …` then `/fission …` |
-| Local preset pack | `/pack apply ship\|incident\|economy` |
-| Recent multi-agent runs | `/runs` or `alloy runs` |
-| CI fission (non-interactive) | `alloy fission --json "…"` |
-| Extra free-form child | `/agent name model=provider/id <task>` |
+| Everyday coding | Chat after `/model` |
+| Plan only | `/fusion <objective>` |
+| Review dirty tree | `/fission <contract>` |
+| Implement with fix loops | `/auto <request>` |
+| Full quality path | `/forge <request>` |
+| Preset posture | `/pack apply ship` |
+| CI review | `alloy fission --json "…"` |
+| Extra child | `/agent name profile=research <task>` |
 
 ### Chat (default path)
 
@@ -412,31 +419,20 @@ and only all six matched high/critical seeds plus three clean controls is
 ### Auto: build, check, review, repeat
 
 ```text
-/auto setup
-/auto status
+/setup                 # includes auto setup
+/auto setup · status
 /auto <request>
 ```
-
-Models come from **`profiles.*` / `roles.*`** via **`/auto setup`** (or
-**`/setup`**), not from main `/model`. Implement **inherits session
-`/permissions`** unless `auto.forceSandbox` is on (then Docker is required —
-fail closed, no silent host downgrade).
-
-Flow:
 
 ```text
 scout → plan → checkpoint → build (worktree)
      → diagnostics → review
-     ↺ fixer (FAIL / diag fail, up to maxFixRounds)
+     ↺ fixer (up to maxFixRounds)
 ```
 
-Checkpoint failure is recorded but does not stop the build. Diagnostics are
-host processes (not Docker-sandboxed). Artifacts under `~/.pi/alloy/runs/`.
-A local run index at `~/.pi/alloy/runs/index.jsonl` is listed with `/runs` or
-`alloy runs`. Optional local packs: `/pack list` · `/pack apply ship|incident|economy`.
-
-Auto is also the **implement phase** of `/forge`, with fusion synthesis and
-pre-build fission findings injected as context.
+- Models: `profiles` / `roles` — **not** main `/model`
+- Implement: **inherits** session `/permissions`, unless **forceSandbox**
+- Artifacts: `~/.pi/alloy/runs/` · index: `/runs` or `alloy runs`
 
 In-product: `/help auto`.
 
@@ -446,52 +442,26 @@ In-product: `/help auto`.
 /forge <request>
 ```
 
-End-to-end quality path with **one shared run id**:
-
 ```text
-fusion
-  → fission-plan   (NO_CHANGES OK if no code yet; FAIL blocks implement)
-  → auto           (seeded with fusion + fission context)
-  → fission-diff   (reviews worktree if present, else cwd)
+fusion → fission-plan → auto → fission-diff
 ```
 
-Layout:
+One run id under `~/.pi/alloy/runs/<project>/<runId>/`.  
+Needs `/setup` (or the three setups). Standalone `/fusion` · `/fission` · `/auto` remain available.
 
-```text
-~/.pi/alloy/runs/<project>/<runId>/
-  forge.json  summary.json  events.jsonl  request.md
-  fusion/
-  fission-plan/
-  auto/
-  fission-diff/
-  phases/
-```
+In-product: `/help forge`.
 
-Requires `/fusion setup`, `/fission setup`, and `/auto setup` (or equivalent config).
-Standalone `/fusion`, `/fission`, and `/auto` remain available for partial runs.
-
-In-product: `/help forge` · `/help workflows`.
-
-### Identity, CLI, and CI
-
-Attribute multi-agent runs with env only:
+### CLI and CI
 
 ```bash
-export ALLOY_AGENT_ID=sonny
-```
+export ALLOY_AGENT_ID=sonny          # optional run-index attribution (env only)
 
-Non-interactive CI (exit codes: `0` = PASS/NO_CHANGES, `1` = FAIL, `2` = incomplete/error):
-
-```bash
-alloy fission --json "Review PR auth changes"
-alloy forge --json "Implement and re-review the health endpoint"
+alloy fission --json "Review PR auth changes"   # exit 0 / 1 / 2
+alloy forge --json "Implement and re-review…"
 alloy runs --limit 20
 ```
 
-Copy the example workflow from [`docs/ci/github-actions-fission.yml`](./docs/ci/github-actions-fission.yml).
-Installer default channel is **stable** (latest GitHub release tag, falling
-back to `main` when no release exists). Override with `ALLOY_CHANNEL=main` or
-`ALLOY_REF=<tag|sha>`.
+Example GHA workflow: [`docs/ci/github-actions-fission.yml`](./docs/ci/github-actions-fission.yml).
 
 ## The product layer on Pi
 
@@ -561,12 +531,12 @@ repository diagnostics are host processes. Read the
 | `/effort` / `/thinking` | Reasoning effort (not Shift+Tab). |
 | `/checkpoint` / `/undo` | Capture and restore a recoverable Git snapshot. |
 | `/agent` / `/agents` / `/profiles` | Free-form sub-agents; `Ctrl+Shift+A` last transcript. |
-| `/fusion` · `/fission` · `/auto` · `/forge` | Multi-model workflows (+ `setup` / `status` / `help` where available). |
-| `/pack apply ship\|incident\|economy` | Local policy presets. |
-| `/runs` / `/panel` | Run index / clear live multi-agent panel. |
-| `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
+| `/setup` | One path: fusion → fission reminder → auto. |
+| `/fusion` · `/fission` · `/auto` · `/forge` | Workflows (+ `setup` / `status` / `help`). |
+| `/pack apply ship\|incident\|economy` | Posture packs (not models). |
+| `/runs` / `/panel` | Run index / clear multi-agent panel. |
 | `/login` / `/logout` / `/model` | Auth and active chat model. |
-| `/help` · `/help start` · `/help search <q>` | Grouped help; `/help commands` for the live registry. |
+| `/help` · `/help start` · `/help workflows` | Grouped help. |
 
 The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
 routes, permission profiles, configuration examples, filesystem layout, and
@@ -574,13 +544,11 @@ troubleshooting.
 
 ## Project status
 
-Alloy is an active `0.x` pre-release. The source currently targets Pi 0.82.1,
-Node.js 22.19 or newer, Bun 1.3.14, OpenTUI 0.4.5, and Solid 1.9.12. The default
-interactive path is the OpenCode-derived shell. `--legacy-pi-ui` or
-`ALLOY_LEGACY_PI_UI=1` selects the previous Pi renderer only as a temporary
-rollback. npm publication and package-consumer interactive installation remain
-disabled until an explicit Bun lifecycle design is approved and tested; the
-publication gate intentionally fails. See [RELEASING.md](docs/RELEASING.md).
+Alloy **1.0** is the current release line (installer **stable** channel → latest
+GitHub release). Runtime pins: Pi 0.82.1, Node.js ≥22.19, Bun 1.3.14, OpenTUI
+0.4.5, Solid 1.9.12. Default UI is the OpenCode-derived shell;
+`--legacy-pi-ui` is temporary rollback only. Install via `install.sh` or a
+clone — npm publication remains blocked. See [RELEASING.md](docs/RELEASING.md).
 
 GitHub Actions runs the unit and integration suites, installs the packed npm
 artifact in isolation, requires the Docker sandbox test, validates package and
