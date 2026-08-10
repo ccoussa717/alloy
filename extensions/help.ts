@@ -1,5 +1,5 @@
 /**
- * /help — searchable feature documentation.
+ * /help — searchable, grouped feature documentation.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,54 +16,42 @@ const {
   getTopic,
   searchHelp,
   formatTopic,
+  formatTopicIndex,
+  formatTopicPickerLines,
   formatCommandCatalog,
   getHelpArgumentCompletions,
 } = require(join(root, "lib", "help-catalog.mjs"));
 
+const PICKER_ACTIONS = new Set(["search", "commands"]);
+
 export function registerHelp(pi: ExtensionAPI) {
   pi.registerCommand("help", {
-    description: "Alloy help: /help [topic|search <query>]",
+    description: "Alloy help: /help [topic|search <query>|commands]",
     getArgumentCompletions: getHelpArgumentCompletions,
     handler: async (args, ctx) => {
       const raw = (args || "").trim();
 
-      // No args → topic picker
+      // No args → grouped topic picker
       if (!raw) {
-        const items = [
-          "search <query>  — search all help",
-          ...listTopics().map(
-            (t: { id: string; title: string }) => `${t.id.padEnd(14)} ${t.title}`,
-          ),
-        ];
-        const picked = await ctx.ui.select("Alloy help — pick a topic", items);
-        if (!picked) return;
-        if (picked.startsWith("search")) {
-          const q = await ctx.ui.input("Search help", "e.g. sandbox, memory, fusion");
-          if (!q) return;
-          await showSearch(q, ctx);
-          return;
-        }
-        const id = picked.split(/\s+/)[0];
-        if (id === "commands") {
-          await showCommands(pi.getCommands(), ctx);
-          return;
-        }
-        await showTopic(id, ctx);
+        await browseHelp(pi, ctx);
         return;
       }
 
       if (/^search\b/i.test(raw)) {
         const q = raw.replace(/^search\s+/i, "").trim();
         if (!q) {
-          ctx.ui.notify("Usage: /help search <query>", "warning");
+          const typed = await promptSearch(ctx);
+          if (!typed) return;
+          await showSearch(typed, pi, ctx);
           return;
         }
-        await showSearch(q, ctx);
+        await showSearch(q, pi, ctx);
         return;
       }
 
       if (raw.toLowerCase() === "commands") {
         await showCommands(pi.getCommands(), ctx);
+        await maybeContinue(pi, ctx);
         return;
       }
 
@@ -71,28 +59,32 @@ export function registerHelp(pi: ExtensionAPI) {
       const topic = getTopic(raw);
       if (topic) {
         await showTopic(topic.id, ctx);
+        await maybeContinue(pi, ctx);
         return;
       }
 
       const hits = searchHelp(raw, { limit: 8 });
       if (!hits.length) {
         ctx.ui.notify(
-          `No help matches for "${raw}". Try /help or /help commands`,
+          `No help matches for "${raw}". Try /help start or /help search <query>`,
           "warning",
         );
         return;
       }
       if (hits.length === 1 && hits[0].score >= 20) {
         await showTopic(hits[0].id, ctx);
+        await maybeContinue(pi, ctx);
         return;
       }
       const items = hits.map(
-        (h: { id: string; title: string; score: number }) =>
-          `${h.id.padEnd(14)} ${h.title}  (${h.score})`,
+        (h: { id: string; title: string; summary?: string }) =>
+          `${h.id.padEnd(20)} ${h.summary || h.title}`,
       );
-      const picked = await ctx.ui.select(`Help search: ${raw}`, items);
-      if (!picked) return;
-      await showTopic(picked.split(/\s+/)[0], ctx);
+      const picked = await ctx.ui.select(`Help matches for “${raw}”`, items);
+      if (!picked || isSectionHeader(picked)) return;
+      const id = firstToken(picked);
+      await showTopic(id, ctx);
+      await maybeContinue(pi, ctx);
     },
   });
 
@@ -100,7 +92,7 @@ export function registerHelp(pi: ExtensionAPI) {
     name: "alloy_help",
     label: "Alloy Help",
     description:
-      "Search Alloy documentation (commands, sandbox, auto, fusion, memory, MCP, etc.).",
+      "Search Alloy documentation (start, workflows, sandbox, auto, fusion, memory, MCP, CLI, etc.).",
     promptSnippet: "Search Alloy help docs",
     parameters: Type.Object({
       query: Type.Optional(Type.String({ description: "Search query or topic id" })),
@@ -123,11 +115,8 @@ export function registerHelp(pi: ExtensionAPI) {
       }
       const q = params.query || "";
       if (!q) {
-        const index = listTopics()
-          .map((t: { id: string; title: string }) => `- ${t.id}: ${t.title}`)
-          .join("\n");
         return {
-          content: [{ type: "text", text: `Alloy help topics:\n${index}` }],
+          content: [{ type: "text", text: formatTopicIndex() }],
           details: { topics: listTopics() },
         };
       }
@@ -148,19 +137,117 @@ export function registerHelp(pi: ExtensionAPI) {
       const hits = searchHelp(q, { limit: 5 });
       if (!hits.length) {
         return {
-          content: [{ type: "text", text: `No help matches for: ${q}` }],
+          content: [
+            {
+              type: "text",
+              text: `No help matches for: ${q}\n\nTry topic ids: start, workflows, auth, fusion, fission, auto, forge`,
+            },
+          ],
           details: { hits: [] },
         };
       }
       const text = hits
         .map(
-          (h: { id: string; title: string; body: string; score: number }) =>
-            `## ${h.title} (${h.id}, score ${h.score})\n${h.body.slice(0, 800)}`,
+          (h: {
+            id: string;
+            title: string;
+            summary?: string;
+            body: string;
+            score: number;
+          }) =>
+            `## ${h.title} (${h.id})\n${h.summary || ""}\n\n${h.body.slice(0, 900)}`,
         )
         .join("\n\n");
       return { content: [{ type: "text", text }], details: { hits } };
     },
   });
+}
+
+function firstToken(line: string) {
+  return String(line || "").trim().split(/\s+/)[0] || "";
+}
+
+function isSectionHeader(line: string) {
+  const t = String(line || "").trim();
+  return t.startsWith("──") || t.startsWith("Tip:") || t === "";
+}
+
+async function browseHelp(
+  pi: ExtensionAPI,
+  ctx: {
+    ui: {
+      select: (t: string, o: string[]) => Promise<string | undefined>;
+      input: (t: string, p?: string) => Promise<string | undefined>;
+      notify: (m: string, l?: string) => void;
+    };
+    hasUI?: boolean;
+  },
+) {
+  const items = formatTopicPickerLines();
+  const picked = await ctx.ui.select(
+    "Alloy help — pick a topic (or search)",
+    items,
+  );
+  if (!picked || isSectionHeader(picked)) return;
+
+  const id = firstToken(picked);
+  if (id === "search") {
+    const q = await promptSearch(ctx);
+    if (!q) return;
+    await showSearch(q, pi, ctx);
+    return;
+  }
+  if (id === "commands") {
+    await showCommands(pi.getCommands(), ctx);
+    await maybeContinue(pi, ctx);
+    return;
+  }
+  if (PICKER_ACTIONS.has(id)) return;
+
+  const topic = getTopic(id);
+  if (!topic) {
+    // User may have selected a tip line or malformed row
+    ctx.ui.notify("Pick a topic id from the list, or choose “search”.", "info");
+    return;
+  }
+  await showTopic(topic.id, ctx);
+  await maybeContinue(pi, ctx);
+}
+
+async function promptSearch(ctx: {
+  ui: { input: (t: string, p?: string) => Promise<string | undefined> };
+}) {
+  return ctx.ui.input(
+    "Search help",
+    "e.g. sandbox, fission, memory, docker, pack",
+  );
+}
+
+async function maybeContinue(
+  pi: ExtensionAPI,
+  ctx: {
+    ui: {
+      select: (t: string, o: string[]) => Promise<string | undefined>;
+      input: (t: string, p?: string) => Promise<string | undefined>;
+      notify: (m: string, l?: string) => void;
+    };
+    hasUI?: boolean;
+  },
+) {
+  if (ctx.hasUI === false) return;
+  const next = await ctx.ui.select("Help", [
+    "Browse all topics",
+    "Search…",
+    "Done",
+  ]);
+  if (!next || next === "Done") return;
+  if (next.startsWith("Search")) {
+    const q = await promptSearch(ctx);
+    if (!q) return;
+    await showSearch(q, pi, ctx);
+    return;
+  }
+  await browseHelp(pi, ctx);
 }
 
 async function showCommands(
@@ -203,25 +290,32 @@ async function showTopic(
 
 async function showSearch(
   q: string,
+  pi: ExtensionAPI,
   ctx: {
     ui: {
       select: (t: string, o: string[]) => Promise<string | undefined>;
+      input: (t: string, p?: string) => Promise<string | undefined>;
       notify: (m: string, l?: string) => void;
     };
+    hasUI?: boolean;
   },
 ) {
   const hits = searchHelp(q, { limit: 10 });
   if (!hits.length) {
-    ctx.ui.notify(`No matches for "${q}"`, "warning");
+    ctx.ui.notify(
+      `No matches for “${q}”. Try /help start or broader words.`,
+      "warning",
+    );
     return;
   }
   const items = hits.map(
-    (h: { id: string; title: string; score: number }) =>
-      `${h.id.padEnd(14)} ${h.title}`,
+    (h: { id: string; title: string; summary?: string }) =>
+      `${h.id.padEnd(20)} ${h.summary || h.title}`,
   );
   const picked = await ctx.ui.select(`Search: ${q}`, items);
-  if (!picked) return;
-  await showTopic(picked.split(/\s+/)[0], ctx);
+  if (!picked || isSectionHeader(picked)) return;
+  await showTopic(firstToken(picked), ctx);
+  await maybeContinue(pi, ctx);
 }
 
 // silence unused if tree-shaken
