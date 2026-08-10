@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, before, after } from "node:test";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -27,7 +27,7 @@ after(() => {
 
 const root = join(import.meta.dirname, "..", "..");
 
-test("identity resolves ALLOY_AGENT_ID then config then default", async () => {
+test("identity is env-only (ALLOY_AGENT_ID)", async () => {
   const { resolveAgentIdentity, sanitizeAgentId } = await import(
     pathToFileURL(join(root, "lib/identity.mjs")).href
   );
@@ -40,12 +40,13 @@ test("identity resolves ALLOY_AGENT_ID then config then default", async () => {
     }).id,
     "ava",
   );
+  // config.identity is ignored (env-only)
   assert.equal(
     resolveAgentIdentity({
       env: {},
       config: { identity: { id: "sonny", displayName: "Sonny" } },
-    }).displayName,
-    "Sonny",
+    }).id,
+    "default",
   );
 });
 
@@ -76,7 +77,7 @@ test("run index append and list", async () => {
   assert.ok(existsSync(getRunIndexPath()));
 });
 
-test("policy packs list and merge without wiping fission models", async () => {
+test("policy packs are model-agnostic and set forceSandbox", async () => {
   const { listPolicyPacks, getPolicyPack, mergePackOntoConfig } = await import(
     pathToFileURL(join(root, "lib/policy-packs.mjs")).href
   );
@@ -84,7 +85,7 @@ test("policy packs list and merge without wiping fission models", async () => {
   const pack = getPolicyPack("ship");
   const merged = mergePackOntoConfig(
     {
-      auto: { useWorktree: true, implementPermissionProfile: "sandbox" },
+      auto: { useWorktree: true, forceSandbox: true },
       fission: {
         models: ["a/b", "c/d"],
         judgeModel: "e/f",
@@ -94,19 +95,36 @@ test("policy packs list and merge without wiping fission models", async () => {
     },
     pack,
   );
-  assert.equal(merged.auto.implementPermissionProfile, "ask-dangerous");
+  assert.equal(merged.auto.forceSandbox, false);
   assert.equal(merged.fission.blockingSeverity, "high");
   assert.deepEqual(merged.fission.models, ["a/b", "c/d"]);
-  assert.equal(merged.roles.builder.model, "openai-codex/gpt-5.4");
+  // packs do not set role models
+  assert.equal(merged.roles?.builder?.model, undefined);
+
+  const incident = mergePackOntoConfig({}, getPolicyPack("incident"));
+  assert.equal(incident.auto.forceSandbox, true);
 });
 
-test("implement policy defaults to sandbox and rejects invalid", async () => {
+test("implement inherits session unless forceSandbox or override", async () => {
   const { resolveImplementPermissionProfile } = await import(
     pathToFileURL(join(root, "lib/implement-policy.mjs")).href
   );
-  // Isolate from ambient ALLOY_IMPLEMENT_PROFILE (unit suites may set it).
   assert.equal(
     resolveImplementPermissionProfile({}, { env: {} }).profile,
+    "ask-dangerous",
+  );
+  assert.equal(
+    resolveImplementPermissionProfile(
+      { permissionProfile: "ask-all" },
+      { env: {} },
+    ).profile,
+    "ask-all",
+  );
+  assert.equal(
+    resolveImplementPermissionProfile(
+      { auto: { forceSandbox: true }, permissionProfile: "ask-all" },
+      { env: {} },
+    ).profile,
     "sandbox",
   );
   assert.equal(
@@ -122,6 +140,34 @@ test("implement policy defaults to sandbox and rejects invalid", async () => {
       { env: {}, implementPermissionProfile: "nope" },
     ),
   );
+});
+
+test("model map resolves auto roles from one store", async () => {
+  const { resolveAutoRoleModel, applyAutoRolesToProfiles } = await import(
+    pathToFileURL(join(root, "lib/model-map.mjs")).href
+  );
+  assert.equal(
+    resolveAutoRoleModel(
+      {
+        roles: { scout: { model: "xai/from-roles" } },
+        profiles: { research: { model: "xai/from-profile" } },
+      },
+      "scout",
+    ),
+    "xai/from-roles",
+  );
+  assert.equal(
+    resolveAutoRoleModel(
+      { profiles: { research: { model: "xai/from-profile" } } },
+      "scout",
+    ),
+    "xai/from-profile",
+  );
+  const profiles = applyAutoRolesToProfiles(
+    { research: { model: "old" } },
+    { scout: { model: "xai/new" } },
+  );
+  assert.equal(profiles.research.model, "xai/new");
 });
 
 test("fission/forge exit codes", async () => {

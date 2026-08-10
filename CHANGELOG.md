@@ -7,6 +7,17 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Occam simplify:** one model map (`profiles.*` canonical; `roles.*` optional
+  auto overrides; orchestration primaries are legacy fallback).
+- **Implement permissions:** inherit session `/permissions` by default;
+  `auto.forceSandbox` forces Docker sandbox for implement (fail closed).
+  Legacy `auto.implementPermissionProfile` / `ALLOY_IMPLEMENT_PROFILE` still work.
+- **Policy packs** are model-agnostic (posture only: forceSandbox, budgets, counts).
+- **Identity** is env-only (`ALLOY_AGENT_ID`); no config.identity block required.
+- **`/setup`**: one path for fusion → fission reminder → auto setup.
+
 ## [1.0.0] - 2026-08-10
 
 ### Added

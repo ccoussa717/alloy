@@ -71,9 +71,12 @@ function getAutoArgumentCompletions(prefix = "") {
 
 function formatAutoStatus(cwd: string) {
   const cfg = loadConfig(cwd);
-  const implement = resolveImplementPermissionProfile(cfg);
+  const parent = resolveParentChildSpawnOpts({ mode: "build" });
+  const implement = resolveImplementPermissionProfile(cfg, {
+    permissionProfile: parent.permissionProfile,
+  });
   const lines = [
-    "Auto role models:",
+    "Models (one map: roles override → profiles → orchestration):",
     ...AUTO_ROLES.map((role) => {
       const configured = cfg.roles?.[role]?.model || null;
       const profileHint =
@@ -84,16 +87,17 @@ function formatAutoStatus(cwd: string) {
             : role === "reviewer"
               ? cfg.profiles?.review?.model
               : cfg.profiles?.code?.model;
-      return `${role}: ${configured || `(fallback ${profileHint || "orchestration"})`}`;
+      return `${role}: ${configured || profileHint || "(unset)"}`;
     }),
     "",
-    `Implement profile: ${implement.profile} (source: ${implement.source})`,
+    `Implement: ${implement.profile} (source: ${implement.source})`,
+    `forceSandbox: ${cfg.auto?.forceSandbox === true}`,
     `useWorktree: ${cfg.auto?.useWorktree !== false}`,
     `maxFixRounds: ${cfg.budgets?.maxFixRounds ?? 2}`,
     "",
     describeIdentity(),
     "",
-    "Use /auto setup to set role models. Use /pack apply ship|incident|economy for presets.",
+    "Use /auto setup or /setup. Packs: /pack apply ship|incident|economy (model-agnostic).",
   ];
   return lines;
 }
@@ -101,12 +105,13 @@ function formatAutoStatus(cwd: string) {
 function formatAutoHelp() {
   return [
     "/auto <request>     Implement pipeline with fix loops",
-    "/auto setup         Configure scout/planner/builder/fixer/reviewer models",
+    "/auto setup         Role models + force-sandbox toggle",
     "/auto status        Show effective auto settings",
     "/auto help          This help",
+    "/setup              Full setup: fusion → fission → auto",
     "",
-    "No models from main /model — only roles.*.model or profile fallbacks.",
-    "Implement default profile: sandbox (override auto.implementPermissionProfile).",
+    "Models: profiles.* (canonical) or roles.* overrides — not main /model.",
+    "Implement inherits session /permissions unless forceSandbox is on.",
     "Also: /pack list · /pack apply <ship|incident|economy>",
     "See /help workflows · /help auto",
   ];
@@ -155,20 +160,24 @@ async function setupAuto(ctx: ExtensionContext) {
     models[role] = `${provider.id}/${model}`;
   }
 
-  const profileChoice = await ctx.ui.select(
-    `Implement permission profile (current: ${global.auto?.implementPermissionProfile || "sandbox"})`,
-    ["sandbox", "ask-dangerous", "ask-all", "ask-some", "ask-none"],
+  const forceChoice = await ctx.ui.select(
+    `Force Docker sandbox for implement? (current forceSandbox=${global.auto?.forceSandbox === true})`,
+    [
+      "No — inherit session /permissions (recommended)",
+      "Yes — always sandbox implement (fail closed without Docker)",
+    ],
   );
-  if (!profileChoice) {
+  if (!forceChoice) {
     ctx.ui.notify("Auto setup cancelled; no settings changed.", "info");
     return;
   }
+  const forceSandbox = forceChoice.startsWith("Yes");
 
   saveGlobalAutoConfig({
     roles: Object.fromEntries(
       AUTO_ROLES.map((role) => [role, { model: models[role] }]),
     ),
-    auto: { implementPermissionProfile: profileChoice },
+    auto: { forceSandbox },
   });
   const lines = formatAutoStatus(ctx.cwd || process.cwd());
   if (ctx.hasUI) await ctx.ui.select("Auto setup saved", lines);
@@ -688,7 +697,7 @@ export function registerAuto(pi: ExtensionAPI) {
       if (ctx.hasUI) {
         const ok = await ctx.ui.confirm(
           "Start /auto?",
-          `Spawns child Pi agents (needs /login). Implement profile from auto.implementPermissionProfile (default sandbox).\n\n${request.slice(0, 300)}`,
+          `Spawns child Pi agents (needs /login). Implement inherits session permissions unless forceSandbox is on.\n\n${request.slice(0, 300)}`,
         );
         if (!ok) {
           ctx.ui.notify("Auto cancelled.", "info");
@@ -702,14 +711,18 @@ export function registerAuto(pi: ExtensionAPI) {
 
       try {
         const cfg = loadConfig(ctx.cwd || process.cwd());
-        const implement = resolveImplementPermissionProfile(cfg);
+        const parentBase = resolveParentChildSpawnOpts({ mode: "build" });
+        const implement = resolveImplementPermissionProfile(cfg, {
+          permissionProfile: parentBase.permissionProfile,
+          parentPermissionProfile: parentBase.parentPermissionProfile,
+        });
         const ready = assertImplementProfileReady(implement);
         if (!ready.ok) {
           ctx.ui.notify(ready.error, "error");
           return;
         }
         const parentOpts = {
-          ...resolveParentChildSpawnOpts({ mode: "build" }),
+          ...parentBase,
           permissionProfile: implement.profile,
           parentPermissionProfile: implement.profile,
           sandbox: implement.sandbox,
@@ -837,6 +850,53 @@ export function registerAuto(pi: ExtensionAPI) {
       ];
       if (ctx.hasUI) await ctx.ui.select("Recent runs", lines);
       else console.log(lines.join("\n"));
+    },
+  });
+
+  pi.registerCommand("setup", {
+    description:
+      "One path for multi-model setup: fusion → fission → auto",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) {
+        console.log(
+          "Interactive only. Run in order:\n  /fusion setup\n  /fission setup\n  /auto setup",
+        );
+        return;
+      }
+      const ok = await ctx.ui.confirm(
+        "Alloy setup",
+        "Configure multi-model workflows in one path?\n\n1) Fusion models\n2) Fission (you will run /fission setup)\n3) Auto roles + implement sandbox toggle",
+      );
+      if (!ok) {
+        ctx.ui.notify("Setup cancelled.", "info");
+        return;
+      }
+      try {
+        await setupFusion(ctx);
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+      await ctx.ui.select("Step 2 of 3 — Fission", [
+        "Run /fission setup in the next turn (roles, models, judge, severity)",
+        "Skip if fission is already configured",
+      ]);
+      try {
+        await setupAuto(ctx);
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+      const lines = [
+        "Setup path finished.",
+        "",
+        "Checklist:",
+        "  /fusion status",
+        "  /fission status   (run /fission setup if still empty)",
+        "  /auto status",
+        "  /login for every provider you use",
+        "",
+        ...formatAutoStatus(ctx.cwd || process.cwd()),
+      ];
+      await ctx.ui.select("Alloy setup", lines);
     },
   });
 
@@ -984,7 +1044,11 @@ export function registerAuto(pi: ExtensionAPI) {
     async execute(_id, params, signal, _onUpdate, ctx) {
       try {
         const cfg = loadConfig(process.cwd());
-        const implement = resolveImplementPermissionProfile(cfg);
+        const parentBase = resolveParentChildSpawnOpts({ mode: "build" });
+        const implement = resolveImplementPermissionProfile(cfg, {
+          permissionProfile: parentBase.permissionProfile,
+          parentPermissionProfile: parentBase.parentPermissionProfile,
+        });
         const ready = assertImplementProfileReady(implement);
         if (!ready.ok) {
           return {
@@ -993,7 +1057,7 @@ export function registerAuto(pi: ExtensionAPI) {
           };
         }
         const parentOpts = {
-          ...resolveParentChildSpawnOpts({ mode: "build" }),
+          ...parentBase,
           permissionProfile: implement.profile,
           parentPermissionProfile: implement.profile,
           sandbox: implement.sandbox,
