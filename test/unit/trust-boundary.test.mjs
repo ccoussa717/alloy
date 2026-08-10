@@ -24,7 +24,7 @@ process.env.HOME = home;
 process.env.ALLOY_HOME = join(home, ".pi", "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
-const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
+const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFissionConfig, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
   await import(pathToFileURL(join(root, "lib/config.mjs")).href);
 const { loadMcpConfig, listAutoConnectServers, listMcpServers } = await import(
   pathToFileURL(join(root, "lib/mcp-config.mjs")).href
@@ -131,6 +131,50 @@ describe("trust boundary", () => {
     } finally {
       writeFileSync(path, valid);
     }
+  });
+
+
+  it("saveGlobalFissionConfig enables orchestration and preserves unrelated operator settings", () => {
+    assert.equal(typeof saveGlobalFissionConfig, "function");
+    const path = join(home, ".pi", "alloy", "config.json");
+    const original = readFileSync(path, "utf8");
+    try {
+      saveGlobalFissionConfig({
+        models: ["anthropic/reviewer", "openai-codex/reviewer"],
+        judgeModel: "xai/judge",
+        modelFamilies: { "anthropic/reviewer": "claude" },
+        defaultReviewers: 2,
+        maxReviewers: 2,
+      });
+      const global = loadGlobalConfig();
+      assert.equal(global.permissionProfile, "ask-dangerous");
+      assert.equal(global.mcp.connectOnStart, false);
+      assert.equal(global.orchestration.enabled, true);
+      assert.equal(global.orchestration.maxConcurrency, 3);
+      assert.deepEqual(global.fission, {
+        models: ["anthropic/reviewer", "openai-codex/reviewer"],
+        judgeModel: "xai/judge",
+        modelFamilies: { "anthropic/reviewer": "claude" },
+        defaultReviewers: 2,
+        maxReviewers: 2,
+        blockingSeverity: "medium",
+        reviewerEfforts: [],
+        judgeEffort: null,
+      });
+    } finally {
+      writeFileSync(path, original);
+    }
+  });
+
+  it("saveGlobalFissionConfig rejects invalid settings without changing the operator config", () => {
+    assert.equal(typeof saveGlobalFissionConfig, "function");
+    const path = join(home, ".pi", "alloy", "config.json");
+    const original = readFileSync(path, "utf8");
+    assert.throws(
+      () => saveGlobalFissionConfig({ defaultReviewers: 4, maxReviewers: 2 }),
+      /invalid.*fission.*reviewer/i,
+    );
+    assert.equal(readFileSync(path, "utf8"), original);
   });
 
   it("isWeakerPermission detects ask-none weaker than ask-dangerous", () => {
@@ -431,6 +475,8 @@ describe("trust boundary", () => {
       defaultReviewers: 3,
       maxReviewers: 5,
       blockingSeverity: "medium",
+      reviewerEfforts: [],
+      judgeEffort: null,
     });
     const path = join(home, ".pi", "alloy", "config.json");
     const valid = readFileSync(path, "utf8");

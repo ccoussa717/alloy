@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -106,7 +106,13 @@ function makeDeps(options = {}) {
       providers: { allow: ["anthropic", "openai-codex", "xai", "google", "openrouter"] },
       budgets: { maxCostUsd: 20 },
       orchestration: { enabled: true, maxConcurrency: 2 },
-      fission: { models: reviewerModels, judgeModel, modelFamilies: options.modelFamilies || {} },
+      fission: {
+        models: reviewerModels,
+        judgeModel,
+        modelFamilies: options.modelFamilies || {},
+        reviewerEfforts: options.reviewerEfforts || [],
+        judgeEffort: options.judgeEffort ?? null,
+      },
     }),
     preflightFissionRepository: () => {
       calls.preflight++;
@@ -208,8 +214,20 @@ describe("Fission pure contracts", () => {
   });
 
   it("selects ordered unique global routes and rejects overrides or a missing judge", () => {
-    const cfg = { fission: { models: [reviewerModels[0], reviewerModels[1], reviewerModels[0], reviewerModels[2]], judgeModel } };
-    assert.deepEqual(resolveFissionModels(cfg, 3), { reviewerModels: reviewerModels.slice(0, 3), judgeModel });
+    const cfg = {
+      fission: {
+        models: [reviewerModels[0], reviewerModels[1], reviewerModels[0], reviewerModels[2]],
+        judgeModel,
+        reviewerEfforts: ["high", "low", "medium"],
+        judgeEffort: "max",
+      },
+    };
+    assert.deepEqual(resolveFissionModels(cfg, 3), {
+      reviewerModels: reviewerModels.slice(0, 3),
+      judgeModel,
+      reviewerEfforts: ["high", "low", "medium"],
+      judgeEffort: "max",
+    });
     assert.throws(() => resolveFissionModels(cfg, 4), /reviewer_models/);
     assert.throws(() => resolveFissionModels({ fission: { models: reviewerModels } }, 3), /judge_model/);
     assert.throws(() => resolveFissionModels(cfg, 2, { models: ["evil/override"] }), /override/);
@@ -262,6 +280,25 @@ describe("Fission coordinator", () => {
     assert.equal(calls.createRunDir, 0);
   });
 
+  it("returns pre-aborted calls without Git, run creation, or artifacts", async () => {
+    const caller = new AbortController();
+    caller.abort("operator_cancelled");
+    const { deps, calls } = makeDeps();
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      signal: caller.signal,
+    }, deps);
+
+    assert.equal(result.status, "ABORTED");
+    assert.equal(result.error, "aborted");
+    assert.equal(calls.preflight, 0);
+    assert.equal(calls.createRunDir, 0);
+    assert.equal(calls.capture, 0);
+  });
+
   it("uses the supplied effective default and direct runFission preserves explicit counts", async () => {
     for (const reviewers of [undefined, 1, 2, 3]) {
       const { deps } = makeDeps({ preflight: { state: "NO_CHANGES", repoRoot: "/repo" } });
@@ -299,7 +336,80 @@ describe("Fission coordinator", () => {
     assert.equal(calls.children.length, 0);
     assert.equal(result.status, "INCOMPLETE");
     assert.equal(result.error, "binary:asset.bin");
-    assert.equal(JSON.parse(readFileSync(join(runRoot, "result.json"), "utf8")).status, "INCOMPLETE");
+    assert.equal(JSON.parse(readFileSync(join(runRoot, "terminal", "result.json"), "utf8")).status, "INCOMPLETE");
+  });
+
+  it("returns a structured failure when run artifacts cannot be written", async () => {
+    const state = makeDeps({ deps: {
+      saveArtifact: () => { throw new Error("disk full"); },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "artifact_write_failed");
+    assert.equal(state.calls.children.length, 0);
+  });
+
+  it("returns a structured failure when the run directory cannot be created", async () => {
+    const state = makeDeps({ deps: {
+      createRunDir: () => { throw new Error("disk full"); },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "artifact_write_failed");
+    assert.equal(result.runDir, null);
+    assert.equal(state.calls.children.length, 0);
+  });
+
+  it("fails closed when mid-run or terminal artifact persistence fails", async () => {
+    for (const failedName of ["dispositions.json", "host-manifest.json", "report.md", "result.json"]) {
+      const state = makeDeps({ deps: {
+        saveArtifact: (runDir, name, value) => {
+          if (name === failedName) throw new Error("disk full");
+          const body = typeof value === "string" ? value : `${JSON.stringify(value, null, 2)}\n`;
+          writeFileSync(join(runDir, name), body);
+        },
+      } });
+      const result = await runFissionWithDependencies({
+        request: "review",
+        reviewers: 1,
+        defaultReviewers: 1,
+        maxReviewers: 5,
+      }, state.deps);
+
+      assert.equal(result.status, "INCOMPLETE", failedName);
+      assert.equal(result.error, "artifact_write_failed", failedName);
+      assert.equal(result.verdict, "INCOMPLETE", failedName);
+      assert.equal(existsSync(join(state.runRoot, "terminal")), false, failedName);
+    }
+  });
+
+  it("publishes no terminal artifacts when the atomic directory commit fails", async () => {
+    const state = makeDeps({ deps: {
+      commitTerminalArtifacts: () => { throw new Error("rename failed"); },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "artifact_write_failed");
+    assert.equal(existsSync(join(state.runRoot, "terminal")), false);
+    assert.equal(readdirSync(state.runRoot).some((name) => name.startsWith(".terminal-attempt-")), false);
   });
 
   it("fails closed on parent sandbox and route configuration after READY", async () => {
@@ -351,6 +461,7 @@ describe("Fission coordinator", () => {
       assert.deepEqual(child.tools, ["read", "grep", "find", "ls"]);
       assert.equal(child.mode, "review");
       assert.equal(child.maxOutputBytes, 256 * 1024);
+      assert.equal(child.thinkingLevel, null);
       assert.doesNotMatch(child.prompt, /anthropic\/opus|openai-codex\/gpt|reviewer-[1-5]/);
       assert.doesNotMatch(child.prompt, /R0[1-5]|fission-reviewer|sibling|peer/i);
       for (const required of [
@@ -362,6 +473,7 @@ describe("Fission coordinator", () => {
         'Concrete valid JSON example',
       ]) assert.equal(child.prompt.includes(required), true, required);
     }
+    assert.equal(state.calls.children.at(-1).thinkingLevel, null);
     const judgePrompt = state.calls.children.at(-1).prompt;
     assert.doesNotMatch(judgePrompt, /anthropic\/judge|R0[1-5]|fission-judge|sibling|peer/i);
     for (const required of [
@@ -371,6 +483,30 @@ describe("Fission coordinator", () => {
       'owned by at least one member finding affectedPath',
       'Concrete valid JSON example',
     ]) assert.equal(judgePrompt.includes(required), true, required);
+  });
+
+  it("forwards per-reviewer and judge effort as thinkingLevel", async () => {
+    const { deps, calls, runRoot } = makeDeps({
+      reviewerEfforts: ["high", "low"],
+      judgeEffort: "medium",
+    });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 2,
+      defaultReviewers: 2,
+      maxReviewers: 2,
+    }, deps);
+    assert.equal(result.status, "COMPLETE");
+    assert.equal(result.verdict, "PASS");
+    const reviewers = calls.children.filter((child) => child.role.startsWith("fission-reviewer-"));
+    assert.equal(reviewers.length, 2);
+    assert.equal(reviewers[0].thinkingLevel, "high");
+    assert.equal(reviewers[1].thinkingLevel, "low");
+    const judge = calls.children.find((child) => child.role === "fission-judge");
+    assert.equal(judge.thinkingLevel, "medium");
+    const manifest = JSON.parse(readFileSync(join(runRoot, "launch-manifest.json"), "utf8"));
+    assert.deepEqual(manifest.reviewerEfforts, ["high", "low"]);
+    assert.equal(manifest.judgeEffort, "medium");
   });
 
   it("fails reviewers closed for child, schema, attestation, diversity, usage, and budget failures", async () => {
@@ -502,8 +638,8 @@ describe("Fission coordinator", () => {
     assert.equal(state.calls.settle.filter(({ reserved }) => reserved.id === "r2").length, 1);
     assert.equal(state.calls.children.find((child) => child.role === "fission-judge").signal.aborted, true);
     assert.equal(JSON.parse(readFileSync(join(state.runRoot, "judge.json"), "utf8")).valid, false);
-    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "result.json"), "utf8")).error, "settlement_failed");
-    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "host-manifest.json"), "utf8")).error, "settlement_failed");
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "terminal", "result.json"), "utf8")).error, "settlement_failed");
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "terminal", "host-manifest.json"), "utf8")).error, "settlement_failed");
   });
 
   it("propagates caller cancellation through judge cleanup and settles judge exactly once", async () => {
@@ -539,7 +675,111 @@ describe("Fission coordinator", () => {
     assert.equal(result.judge.valid, false);
     assert.equal(result.judge.error, "aborted");
     assert.equal(state.calls.settle.filter(({ reserved }) => reserved.id === "r2").length, 1);
-    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "result.json"), "utf8")).status, "ABORTED");
+    assert.equal(JSON.parse(readFileSync(join(state.runRoot, "terminal", "result.json"), "utf8")).status, "ABORTED");
+  });
+
+  it("applies one workflow deadline across reviewer and judge work", async () => {
+    const state = makeDeps({ runChild: (input) => new Promise((resolve) => {
+      input.signal.addEventListener("abort", () => {
+        resolve(childResult(input.model, {}, { ok: false, error: "aborted" }));
+      }, { once: true });
+    }) });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      timeoutMs: 10,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "workflow_timeout");
+    assert.equal(state.calls.children.length, 1);
+    assert.equal(state.calls.settle.length, 1);
+  });
+
+  it("bounds a stalled exact-route preparation by the workflow deadline", { timeout: 1_000 }, async () => {
+    const state = makeDeps({ deps: {
+      prepareExactAgentLaunch: () => new Promise(() => {}),
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      timeoutMs: 10,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "workflow_timeout");
+    assert.equal(state.calls.children.length, 0);
+  });
+
+  it("rechecks caller cancellation immediately before deriving a verdict", async () => {
+    const caller = new AbortController();
+    const state = makeDeps({ deps: {
+      recaptureFissionSource: () => {
+        state.calls.recapture++;
+        if (state.calls.recapture === 2) caller.abort("operator_cancelled");
+        return { ok: true, digest: packet.sourceDigest };
+      },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      signal: caller.signal,
+    }, state.deps);
+
+    assert.equal(result.status, "ABORTED");
+    assert.equal(result.error, "aborted");
+    assert.equal(result.verdict, null);
+  });
+
+  it("rechecks caller cancellation after final packet verification", async () => {
+    const caller = new AbortController();
+    const state = makeDeps({ deps: {
+      verifyFissionArtifacts: () => {
+        state.calls.verify++;
+        if (state.calls.verify === 3) caller.abort("operator_cancelled");
+        return { ok: true, mismatches: [] };
+      },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      signal: caller.signal,
+    }, state.deps);
+
+    assert.equal(result.status, "ABORTED");
+    assert.equal(result.error, "aborted");
+  });
+
+  it("rechecks the deadline after synchronous final verification", async () => {
+    const state = makeDeps({ deps: {
+      recaptureFissionSource: () => {
+        state.calls.recapture++;
+        if (state.calls.recapture === 2) {
+          const until = Date.now() + 20;
+          while (Date.now() < until) {}
+        }
+        return { ok: true, digest: packet.sourceDigest };
+      },
+    } });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      timeoutMs: 10,
+    }, state.deps);
+
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "workflow_timeout");
+    assert.equal(result.verdict, "INCOMPLETE");
   });
 
   it("normalizes validated, rejected, needs-probe, human-decision, and duplicate members", async () => {
