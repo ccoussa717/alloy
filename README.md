@@ -20,15 +20,18 @@
 - [Quick start](#quick-start)
 - [Why Alloy](#why-alloy)
 - [In-product help](#in-product-help)
+- [What you see while it works](#what-you-see-while-it-works)
 - [Workflows](#workflows)
   - [Comparison](#comparison)
   - [Setup checklist](#setup-checklist)
   - [Combinations](#combinations)
-  - [Chat](#chat)
+  - [Chat (default path)](#chat-default-path)
+  - [Free-form sub-agents](#free-form-sub-agents)
   - [Fusion](#fusion-combine-perspectives-keep-provenance)
   - [Fission](#fission-adjudicate-the-current-change)
   - [Auto](#auto-build-check-review-repeat)
   - [Forge](#forge-full-multi-model-spine)
+  - [Identity, CLI, and CI](#identity-cli-and-ci)
 - [The product layer on Pi](#the-product-layer-on-pi)
 - [Safety that travels with the work](#safety-that-travels-with-the-work)
 - [Commands worth knowing](#commands-worth-knowing)
@@ -165,20 +168,43 @@ by role, or combine independent proposals without changing terminals.
 
 ## In-product help
 
-Everything below is also available **inside Alloy**:
+Everything below is also available **inside Alloy**. The menu is grouped for
+scanning (Start here → Workflows → Session → Daily tools → Reference), and
+every topic has a one-line summary.
 
 ```text
-/help                 # topic picker (includes workflows, fusion, fission, auto, forge)
-/help workflows       # comparison table, setup checklist, combinations
-/help fusion
-/help fission
-/help auto
-/help forge
-/help search forge
-/help commands        # live registry of every slash command
+/help                 # grouped topic picker
+/help start           # first five minutes
+/help workflows       # which multi-model path to pick
+/help fusion | fission | auto | forge | agents | packs | cli
+/help search docker   # free-text search (aliases: login, docker, quickstart, …)
+/help commands        # live registry of every slash command this session
 ```
 
-Use `/help` first when you are unsure which workflow or setup step to run.
+After a topic, you can browse again, search, or done. Prefer `/help start` on a
+fresh install.
+
+## What you see while it works
+
+Alloy’s interactive shell streams work in the transcript as it happens (OpenTUI
+over Pi RPC) — not only a final blob at the end:
+
+| You see | What it is |
+|---|---|
+| **Streaming assistant text** | Markdown as tokens arrive (code fences highlighted offline) |
+| **Thought / reasoning** | Labeled “Thought” blocks when the model emits thinking and effort is not `off` |
+| **Tool calls** | Live rows: running / completed / error + a short summary (e.g. read path, bash) |
+| **Tool output** | Preview of result (or partial result) under the call — truncated for readability |
+| **Activity scanner** | Footer cells for active work, compaction, retry vs idle Ready |
+| **Multi-agent panel** | Under the editor during `/fusion`, `/fission`, `/auto`, `/forge` (phase + roles) |
+| **Fusion live panes** | Architect/Builder side-by-side model output + read-tool activity during fusion |
+
+This is meant to be measurable without drowning you in raw JSON: you can see
+what the model is thinking (when provided), which tools it called, and what they
+returned, in real time. For a free-form sub-agent’s full child transcript use
+`/agents view <id>` or `Ctrl+Shift+A` (last agent).
+
+Effort level: `/effort` or `/thinking` (not Shift+Tab — that toggles Build/Plan).
 
 ## Workflows
 
@@ -190,13 +216,16 @@ Use `/help` first when you are unsure which workflow or setup step to run.
 
 | Workflow | Command | Writes code? | Model setup | Use it when |
 |---|---|---|---|---|
-| **Chat** | (prompt only) | Yes (if mode allows) | `/model` (session only) | Fast answer or direct work with one active model |
+| **Chat** | (prompt only) | Yes (if mode allows) | `/model` (session only) | Default path: one agent, linear tool loop |
+| **Sub-agent** | `/agent …` or model tool `alloy_task` | Yes (if tools allow) | profile / model override | Opt-in isolated child; not auto-prompted |
 | **Fusion** | `/fusion <objective>` | **No** (plan-only) | **`/fusion setup`** | Two independent technical perspectives → one attributed plan |
 | **Fission** | `/fission [N] <request>` | **No** | **`/fission setup`** | Adversarial multi-role review of current changes against a contract |
 | **Auto** | `/auto <request>` | **Yes** (worktree) | **`/auto setup`** (or `roles.*.model`) | Implement with scout/plan/build/diagnostics/review/fix loops |
 | **Forge** | `/forge <request>` | **Yes** | Fusion + fission + auto setups | Full spine: plan → adversarial review → implement → re-review |
 
 **Important:** Main chat `/model` does **not** set fusion, fission, or auto child models. Each workflow has its own routes.
+
+**Default for plain English tasks:** Alloy does **not** ask “sub-agent driven or linear?” the way some products do. A normal prompt (“build me X”, “plan me Y”) runs as a **single main agent** with a linear tool loop unless you (or the model, via `alloy_task`) explicitly spawn children, or you invoke `/auto` / `/forge` / `/fusion` / `/fission`.
 
 ### Setup checklist
 
@@ -232,10 +261,57 @@ Example fusion/fission/auto blocks also live in [`config/alloy.example.json`](./
 | CI fission (non-interactive) | `alloy fission --json "…"` |
 | Extra free-form child | `/agent name model=provider/id <task>` |
 
-### Chat
+### Chat (default path)
 
 Direct Pi agent loop behind Alloy’s OpenTUI shell: memory, skills, MCP, modes,
-and permissions. Fast path when one model is enough.
+and permissions. This is the path when you type a normal request without a
+workflow command:
+
+```text
+Plan a safe auth refactor for this repo
+Build me a health-check endpoint matching our patterns
+```
+
+What actually runs:
+
+1. **One main model** (whatever `/model` selected).
+2. **Linear agent loop** — the model thinks, calls tools (`read`, `write`,
+   `edit`, `bash`, …), gets results, continues until it answers.
+3. **No automatic multi-agent fan-out.** Alloy does not interrupt with
+   “run this as sub-agents or stay linear?”
+4. The model **may** call the `alloy_task` tool to spawn an isolated sub-agent
+   if it chooses; that is model-initiated, not a harness default. You can also
+   force children yourself with `/agent` (below).
+
+Plan mode (`Shift+Tab` or `/plan`) makes that same loop hard read-only (no
+write/edit/bash/MCP/child workflows). Build mode uses your approval profile
+(`/permissions`).
+
+In-product: `/help start` · `/help modes` · `/help permissions`.
+
+### Free-form sub-agents
+
+Opt-in isolated children — separate Pi processes with optional model/profile:
+
+```text
+/agent explorer Investigate how auth is wired
+/agent explorer profile=research Trace the login flow
+/agent coder model=openai-codex/gpt-5.4 Implement the health endpoint
+/agent bg researcher profile=research Map all env vars
+/agents
+/agents view <id|name>
+Ctrl+Shift+A                 # last sub-agent transcript
+/profiles                    # research / code / review / plan map
+```
+
+The main agent can also invoke tool **`alloy_task`** with the same idea.
+Children inherit policy axes from the parent (approval/sandbox) and use
+credential isolation rather than copying the whole host env.
+
+This is **not** OpenCode-style “always ask multi vs linear.” Sub-agents are
+explicit. For structured multi-role pipelines use `/auto` or `/forge` instead.
+
+In-product: `/help agents`.
 
 ### Fusion: combine perspectives, keep provenance
 
@@ -428,8 +504,9 @@ back to `main` when no release exists). Override with `ALLOY_CHANNEL=main` or
 | **Live MCP** | Connect reviewed stdio, Streamable HTTP, or SSE servers; MCP tools use the same capability gate. |
 | **Modes and permissions** | Build and Plan are separate from approval profiles, so model tool calls in read-only work stay mechanically read-only. |
 | **Recovery tools** | Authenticated Git checkpoints and isolated worktrees make agent changes easier to inspect and undo. |
-| **Multi-model agents** | `/agent`, `/fusion`, `/fission`, `/forge`, and `/auto` route roles without copying the host's complete credential store. |
-| **Searchable help** | `/help`, `/help <topic>`, and `/help commands` describe the active harness from inside the TUI. |
+| **Multi-model agents** | Opt-in `/agent` / `alloy_task`, plus `/fusion`, `/fission`, `/forge`, and `/auto` — credential isolation, not a full host env copy. |
+| **Live transcript** | Streaming text, thought blocks, tool call/result previews, activity scanner, multi-agent panel. |
+| **Searchable help** | Grouped `/help` with `/help start`, search, aliases, and `/help commands`. |
 
 ```mermaid
 flowchart LR
@@ -480,22 +557,17 @@ repository diagnostics are host processes. Read the
 |---|---|
 | `/doctor` | Check providers, models, versions, and paths without printing secrets. |
 | `/remember <fact>` | Save a durable project fact; prefix with `user:` for cross-project memory. |
-| `/mode plan` / `/mode build` | Switch between mechanical read-only and implementation modes. |
-| `/permissions` | Select approval behavior or the Docker Bash sandbox profile. |
+| `/mode plan` / `/mode build` / Shift+Tab | Mechanical read-only vs implementation; Shift+Tab toggles Build ↔ Plan. |
+| `/permissions` / `/permissions cycle` | Approval profiles; `/permissions sandbox` for Docker bash. |
+| `/effort` / `/thinking` | Reasoning effort (not Shift+Tab). |
 | `/checkpoint` / `/undo` | Capture and restore a recoverable Git snapshot. |
-| `/agent` / `/agents` | Launch and inspect a free-form routed child agent. |
-| `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
-| `/fusion setup` / `status` | Configure and inspect Architect / Builder / Synthesizer models and effort. |
-| `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
-| `/fission [1..5] <contract>` | Run bounded adversarial review of the trusted repository's current changes. |
-| `/fission setup` / `status` | Configure roles, models, judge, counts, effort, and severity. |
-| `/forge <request>` | Full spine: fusion → fission → auto → post-diff fission with shared artifacts. |
+| `/agent` / `/agents` / `/profiles` | Free-form sub-agents; `Ctrl+Shift+A` last transcript. |
+| `/fusion` · `/fission` · `/auto` · `/forge` | Multi-model workflows (+ `setup` / `status` / `help` where available). |
+| `/pack apply ship\|incident\|economy` | Local policy presets. |
+| `/runs` / `/panel` | Run index / clear live multi-agent panel. |
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
-| `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
-| `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
-| `/help` | Browse topics; use `/help workflows`, `/help search <query>`, or `/help commands`. |
-| `/help workflows` | Comparison, setup checklist, and combinations for fusion / fission / auto / forge. |
-| `/help commands` | Show the complete active OpenTUI and Alloy backend command registry. |
+| `/login` / `/logout` / `/model` | Auth and active chat model. |
+| `/help` · `/help start` · `/help search <q>` | Grouped help; `/help commands` for the live registry. |
 
 The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
 routes, permission profiles, configuration examples, filesystem layout, and
