@@ -82,20 +82,12 @@ function defaultFamilyForRoute(route: string): string {
   return FAMILY_BY_PROVIDER[provider] || provider;
 }
 
+const { formatFissionCommandHelp } = require(
+  join(root, "lib", "command-help.mjs"),
+);
+
 function formatFissionHelp() {
-  return [
-    "/fission <request>              Run with the configured default reviewers",
-    "/fission <reviewers> <request>  Override the reviewer count for one run (≤ max)",
-    "/fission setup                  Roles, models, counts, effort, severity",
-    "/fission status                 Roles, models, efforts, limits",
-    "/fission help                   Show this help",
-    "",
-    "Workflow: N specialist reviewers (parallel) → 1 independent judge.",
-    "Each reviewer picks a predefined role (security, cynical customer, adversarial review, …)",
-    "plus a distinct model. Reviewers run in parallel; the judge adjudicates findings.",
-    "Models must be distinct exact routes — no fallback. Run /fission setup first.",
-    "Configured count means reviewers + 1 judge. Effort uses the same levels as /fusion.",
-  ];
+  return formatFissionCommandHelp();
 }
 
 function formatFissionStatus(config: any) {

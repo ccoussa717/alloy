@@ -187,7 +187,9 @@ test("slash command exposes help and setup/status completions without starting a
     assert.match(view.title, /Fission help/i);
     assert.match(text, /\/fission setup/);
     assert.match(text, /\/fission status/);
-    assert.match(text, /reviewers \+ 1 judge/i);
+    assert.match(text, /reviewers \+ 1 judge|N reviewers \+ 1 judge/i);
+    assert.match(text, /Done/i);
+    assert.ok(view.lines.length >= 8, "help menu should show a full guide");
   }
 });
 

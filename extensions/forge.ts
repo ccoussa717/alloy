@@ -20,6 +20,7 @@ const {
   setPhase,
 } = require(join(root, "lib", "agent-panel.mjs"));
 const { resolveParentChildSpawnOpts } = require(join(root, "lib", "parent-policy.mjs"));
+const { formatForgeCommandHelp } = require(join(root, "lib", "command-help.mjs"));
 
 const FORGE_ARGUMENTS = [
   { value: "help", label: "help", description: "Show Forge usage" },
@@ -33,21 +34,7 @@ function getForgeArgumentCompletions(prefix = "") {
 }
 
 function formatForgeHelp() {
-  return [
-    "/forge <request>     Full multi-model spine: fusion → fission → auto → fission",
-    "/forge help          Show this help",
-    "",
-    "Standalone tools (still available):",
-    "  /fusion   multi-model plan only",
-    "  /fission  multi-model adversarial review only",
-    "  /auto     implement with scout/plan/build/review/fix only",
-    "",
-    "Forge shares one run directory under ~/.pi/alloy/runs/ with phase subfolders:",
-    "  fusion/  fission-plan/  auto/  fission-diff/",
-    "",
-    "Pre-build fission FAIL (blocking findings) stops before implementation.",
-    "Post-build fission reviews the worktree (or cwd) diff when present.",
-  ];
+  return formatForgeCommandHelp();
 }
 
 function formatForgeSummary(summary: any) {
