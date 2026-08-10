@@ -145,6 +145,34 @@ test("groupFusionModelRoutes gives unknown providers readable labels", () => {
   );
 });
 
+test("groupFusionModelRoutes labels local engines for setup pickers", () => {
+  assert.deepEqual(
+    fusion.groupFusionModelRoutes(
+      [
+        "ollama/llama3.2",
+        "lm-studio/qwen",
+        "llama.cpp-local/loaded",
+        "anthropic/claude-sonnet-4-6",
+      ],
+      ["anthropic", "ollama", "llama.cpp-local", "lm-studio"],
+    ),
+    [
+      {
+        id: "anthropic",
+        label: "Anthropic",
+        models: ["claude-sonnet-4-6"],
+      },
+      { id: "ollama", label: "Ollama", models: ["llama3.2"] },
+      {
+        id: "llama.cpp-local",
+        label: "llama.cpp",
+        models: ["loaded"],
+      },
+      { id: "lm-studio", label: "LM Studio", models: ["qwen"] },
+    ],
+  );
+});
+
 test("resolveFusionRoleModels supports legacy models without allowing duplicate roles", () => {
   assert.deepEqual(
     fusion.resolveFusionRoleModels({

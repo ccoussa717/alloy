@@ -164,9 +164,12 @@ Removing a local provider id from `providers.allow` disables its probe and hides
 its auto-discovered catalog. Alloy automatically recognizes its exact generated
 0.8.2 hosted-only allowlist and enables `ollama`, `llama.cpp-local`, and
 `lm-studio` after upgrade. Customized allowlists and configs with explicit
-`providers.local` settings remain authoritative. Local models are not eligible
-for Alloy child orchestration; that trust boundary remains restricted to pinned
-built-in cloud transports.
+`providers.local` settings remain authoritative. Discovered local engines
+(`ollama`, `llama.cpp-local`, `lm-studio`) are eligible for `/model` and for
+child orchestration (`/fission`, `/fusion`, `/auto`, `/agent`) when present in
+the session registry: session credential leases treat them as trusted `local`
+transports (OpenAI-compatible API, HTTP(S) base URL). Arbitrary custom
+providers and modified hosted-transport overrides remain excluded.
 Disabling discovery restores any provider and models defined manually in
 `~/.pi/agent/models.json`; Alloy does not erase operator-managed catalogs.
 

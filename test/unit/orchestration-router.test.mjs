@@ -207,6 +207,31 @@ describe("orchestration route selection", () => {
     ]);
   });
 
+  it("accepts Alloy local-engine transports as eligible", () => {
+    const decision = routeAgentTask({
+      task: "Review this change",
+      requestedRole: "review",
+      policy: {
+        enabled: true,
+        maxConcurrency: 2,
+        roles: {
+          review: {
+            primary: "ollama/llama3.2",
+            fallbacks: [],
+          },
+        },
+      },
+      providerAllow: ["ollama"],
+      candidates: [candidate("ollama/llama3.2", { transport: "local" })],
+      requiresTools: true,
+      remainingBudgetUsd: 5,
+    });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.model, "ollama/llama3.2");
+    assert.equal(decision.provider, "ollama");
+  });
+
   it("fails before selection when orchestration, concurrency, or budget gates close", () => {
     const base = {
       task: "Research the provider API",

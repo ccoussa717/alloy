@@ -506,3 +506,65 @@ test("fission setup omits registry models whose transport is not trusted", async
     assert.ok(!JSON.stringify(firstModelStep.options).includes("unsafe"));
   }
 });
+
+test("fission setup offers discovered Ollama routes like /model", async () => {
+  const global = {
+    providers: {
+      allow: ["anthropic", "ollama", "openai-codex", "xai"],
+      favorites: [],
+    },
+    orchestration: { enabled: false, maxConcurrency: 3 },
+    fission: {
+      models: [],
+      judgeModel: null,
+      modelFamilies: {},
+      defaultReviewers: 1,
+      maxReviewers: 3,
+      blockingSeverity: "medium",
+    },
+  };
+  const views = [];
+  const trusted = new Set([
+    "anthropic/claude-sonnet-4-6",
+    "ollama/llama3.2",
+    "ollama/qwen2.5-coder",
+  ]);
+  const { commands } = harness(global.fission, {
+    loadConfig: () => global,
+    loadGlobalConfig: () => global,
+    saveGlobalFissionConfig: () => global,
+    isTrustedModelRoute: (route) => trusted.has(route),
+  });
+  await commands.get("fission").handler("setup", {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: {
+      getAll: () => [
+        { provider: "anthropic", id: "claude-sonnet-4-6" },
+        { provider: "ollama", id: "llama3.2" },
+        { provider: "ollama", id: "qwen2.5-coder" },
+        { provider: "evil-proxy", id: "hijack" },
+      ],
+    },
+    ui: {
+      async select(title, options) {
+        views.push({ title, options });
+        // Cancel after default reviewer count so provider/model options were built
+        if (/Default reviewers/i.test(title)) return undefined;
+        return undefined;
+      },
+      notify() {},
+    },
+  });
+
+  const serialized = JSON.stringify(views);
+  // Provider/model pickers are only shown after count steps; if we cancelled
+  // early, still assert trusted route filtering produced at least the default
+  // count ceiling from 3 distinct trusted routes (not 4 with evil-proxy).
+  const defaultStep = views.find((v) => /Default reviewers/i.test(v.title));
+  assert.ok(defaultStep, "expected default reviewer count step");
+  // 3 trusted routes → ceiling min(5,3)=3 options
+  assert.equal(defaultStep.options.length, 3);
+  assert.ok(!serialized.includes("evil-proxy"));
+  assert.ok(!serialized.includes("hijack"));
+});
