@@ -189,7 +189,7 @@ function assertCompleteShape(result) {
 }
 
 describe("Fission pure contracts", () => {
-  it("exports exact frozen role arrays for counts one through five", () => {
+  it("exports exact frozen default role packs for counts one through five", () => {
     assert.deepEqual(FISSION_ROLES, {
       1: ["general_adversarial"],
       2: ["correctness_regressions", "security_trust_boundaries"],
@@ -199,6 +199,27 @@ describe("Fission pure contracts", () => {
     });
     assert.equal(Object.isFrozen(FISSION_ROLES), true);
     for (const roles of Object.values(FISSION_ROLES)) assert.equal(Object.isFrozen(roles), true);
+  });
+
+  it("resolveFissionRoles prefers configured catalog roles over default packs", async () => {
+    const { resolveFissionRoles, FISSION_ROLE_CATALOG } = await import("../../lib/fission-roles.mjs");
+    assert.ok(FISSION_ROLE_CATALOG.some((role) => role.id === "cynical_customer"));
+    assert.deepEqual(
+      resolveFissionRoles({
+        fission: {
+          roles: ["cynical_customer", "security_trust_boundaries", "adversarial_code_review"],
+        },
+      }, 2),
+      ["cynical_customer", "security_trust_boundaries"],
+    );
+    assert.deepEqual(resolveFissionRoles({ fission: { roles: [] } }, 2), [
+      "correctness_regressions",
+      "security_trust_boundaries",
+    ]);
+    assert.throws(
+      () => resolveFissionRoles({ fission: { roles: ["not_real"] } }, 1),
+      /reviewer_roles/,
+    );
   });
 
   it("parses effective defaults, explicit counts, UTF-8 byte bounds, and never clamps", () => {

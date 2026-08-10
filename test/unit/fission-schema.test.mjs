@@ -188,7 +188,12 @@ test("exported TypeBox contracts are strict and cover every union member", () =>
     "architecture_failure_handling",
     "test_quality_spec_coverage",
     "performance_concurrency_resources",
+    "adversarial_code_review",
+    "cynical_customer",
+    "privacy_data_handling",
+    "ops_reliability",
   ]) assert.equal(Value.Check(ReviewerRoleSchema, role), true);
+  assert.equal(Value.Check(ReviewerRoleSchema, "not_a_real_role"), false);
   for (const severity of ["critical", "high", "medium", "low"])
     assert.equal(Value.Check(SeveritySchema, severity), true);
   for (const kind of ["staged_diff", "unstaged_diff", "file"])

@@ -141,6 +141,7 @@ describe("trust boundary", () => {
     try {
       saveGlobalFissionConfig({
         models: ["anthropic/reviewer", "openai-codex/reviewer"],
+        roles: ["correctness_regressions", "security_trust_boundaries"],
         judgeModel: "xai/judge",
         modelFamilies: { "anthropic/reviewer": "claude" },
         defaultReviewers: 2,
@@ -160,6 +161,7 @@ describe("trust boundary", () => {
         blockingSeverity: "medium",
         reviewerEfforts: [],
         judgeEffort: null,
+        roles: ["correctness_regressions", "security_trust_boundaries"],
       });
     } finally {
       writeFileSync(path, original);
@@ -477,6 +479,7 @@ describe("trust boundary", () => {
       blockingSeverity: "medium",
       reviewerEfforts: [],
       judgeEffort: null,
+      roles: [],
     });
     const path = join(home, ".pi", "alloy", "config.json");
     const valid = readFileSync(path, "utf8");
