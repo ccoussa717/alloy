@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 
 import { runForgeWithDependencies } from "../../lib/forge-workflow.mjs";
 
+// Avoid requiring Docker for unit-level forge orchestration tests
+process.env.ALLOY_IMPLEMENT_PROFILE = "ask-all";
+
 function makeForgeDeps(overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), "alloy-forge-"));
   const calls = { fusion: 0, fission: 0, auto: 0 };

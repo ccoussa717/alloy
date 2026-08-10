@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 
 const tmp = mkdtempSync(join(tmpdir(), "alloy-auto-"));
 process.env.ALLOY_HOME = join(tmp, "alloy-home");
+// Unit tests do not require Docker; production default remains sandbox.
+process.env.ALLOY_IMPLEMENT_PROFILE = "ask-dangerous";
 
 const auto = await import(
   pathToFileURL(join(new URL("../..", import.meta.url).pathname, "lib", "auto-workflow.mjs")).href

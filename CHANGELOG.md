@@ -3,9 +3,32 @@
 All notable changes to Alloy will be documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and releases use semantic versioning during the 0.x development series.
+and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-08-10
+
+### Added
+
+- **`/auto setup`** and **`/auto status`** for implement role models and
+  implement permission profile (default **sandbox**).
+- Local policy packs: **`/pack list`** · **`/pack apply ship|incident|economy`**
+  (presets only; fission model routes are preserved).
+- Alloy-native agent identity: `ALLOY_AGENT_ID` or `identity.id` in config, plus
+  append-only run index at `~/.pi/alloy/runs/index.jsonl` (`/runs`, `alloy runs`).
+- Non-interactive CLI: `alloy fission`, `alloy forge`, `alloy runs` with exit
+  codes `0` / `1` / `2` for CI.
+- Example GitHub Actions fission gate: `docs/ci/github-actions-fission.yml`.
+- Installer **stable** channel (`ALLOY_CHANNEL=stable` default; falls back to
+  `main` when no GitHub release exists).
+
+### Changed
+
+- Implement phase for `/auto` and `/forge` defaults to **sandbox** permission
+  profile; Docker unavailability fails closed (no silent downgrade). Override
+  with `auto.implementPermissionProfile` or `ALLOY_IMPLEMENT_PROFILE`.
+- Package version **1.0.0** (root and TUI package versions stay aligned).
 
 ## [0.8.4] - 2026-07-31
 

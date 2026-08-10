@@ -88,21 +88,23 @@ Usage:
   alloy [pi-args...]
   alloy --version | -V
   alloy --help | -h
+  alloy fission [--json] [--reviewers N] <request>
+  alloy forge [--json] <request>
+  alloy runs [--limit N]
 
-Alloy injects its extension, theme, skills, and prompts into Pi.
-All other flags are forwarded to Pi (e.g. -c, -p, --mode).
-Interactive sessions use the Solid/OpenTUI frontend. Pass --legacy-pi-ui to
-temporarily use Pi's previous interactive renderer.
-
-Examples:
+Interactive session (default):
   alloy
-  alloy --version
   alloy -p "summarize this repo"
 
-Install CLI onto PATH:
-  curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+Non-interactive CI:
+  alloy fission --json "Review PR auth changes"
+  # exit 0=PASS/NO_CHANGES  1=FAIL  2=INCOMPLETE/error
 
-Doctor (inside a session): /doctor
+Install:
+  curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+  ALLOY_CHANNEL=stable bash install.sh   # pin to latest release tag when set
+
+Doctor (inside a session): /doctor · /help workflows
 `);
   process.exit(0);
 }
@@ -110,7 +112,29 @@ Doctor (inside a session): /doctor
 // Handle Alloy meta flags before resolving/spawning Pi
 const userArgv = stripLegacyUiFlag(process.argv.slice(2));
 if (userArgv.includes("--version") || userArgv.includes("-V")) {
-  printVersionAndExit();
+  const alloy = readAlloyVersion();
+  const pi = readPiVersion();
+  console.log(`Alloy ${alloy}`);
+  try {
+    const manifestPath = join(
+      process.env.HOME || process.env.USERPROFILE || "",
+      ".local/share/alloy/install-manifest.json",
+    );
+    if (exists(manifestPath)) {
+      const m = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (m.channel) console.log(`Channel ${m.channel}`);
+      if (m.commit) console.log(`Commit  ${m.commit}`);
+      if (m.version && m.version !== alloy) console.log(`Manifest ${m.version}`);
+    }
+  } catch {
+    // ignore
+  }
+  if (process.env.ALLOY_CHANNEL) {
+    console.log(`Channel ${process.env.ALLOY_CHANNEL}`);
+  }
+  console.log(`Pi    ${pi || "(not found in alloy node_modules)"}`);
+  console.log(`Node  ${process.version}`);
+  process.exit(0);
 }
 if (
   userArgv.includes("--help") ||
@@ -124,6 +148,66 @@ if (
     userArgv.every((a) => ["--help", "-h", "help"].includes(a))
   ) {
     printHelpAndExit();
+  }
+}
+
+// Non-interactive workflow commands
+if (userArgv[0] === "fission" || userArgv[0] === "forge" || userArgv[0] === "runs") {
+  const { cliFission, cliForge, cliRuns } = await import(
+    new URL("../lib/cli-run.mjs", import.meta.url).href
+  );
+  const cmd = userArgv[0];
+  const rest = userArgv.slice(1);
+  const json = rest.includes("--json");
+  const reviewersIdx = rest.indexOf("--reviewers");
+  let reviewers;
+  if (reviewersIdx >= 0) {
+    reviewers = Number.parseInt(rest[reviewersIdx + 1], 10);
+  }
+  const requestParts = rest.filter(
+    (a, i) =>
+      a !== "--json" &&
+      a !== "--reviewers" &&
+      !(reviewersIdx >= 0 && i === reviewersIdx + 1) &&
+      !a.startsWith("--limit"),
+  );
+  const limitIdx = rest.indexOf("--limit");
+  const limit =
+    limitIdx >= 0 ? Number.parseInt(rest[limitIdx + 1], 10) : 20;
+
+  if (cmd === "runs") {
+    const out = cliRuns({ limit });
+    if (json) console.log(JSON.stringify(out, null, 2));
+    else console.log(out.lines.join("\n"));
+    process.exit(0);
+  }
+  if (cmd === "fission") {
+    const request = requestParts.join(" ").trim();
+    const out = await cliFission({ request, reviewers });
+    if (json) console.log(JSON.stringify(out, null, 2));
+    else {
+      const r = out.result;
+      console.log(
+        `Fission ${r?.status || "?"} / ${r?.verdict || "—"} ${r?.error || ""}`.trim(),
+      );
+      if (r?.runDir) console.log(`Artifacts: ${r.runDir}`);
+      if (out.error) console.error(out.error);
+    }
+    process.exit(out.exitCode);
+  }
+  if (cmd === "forge") {
+    const request = requestParts.join(" ").trim();
+    const out = await cliForge({ request });
+    if (json) console.log(JSON.stringify(out, null, 2));
+    else {
+      const s = out.summary;
+      console.log(
+        `Forge ${s?.status || "?"} pass=${s?.pass} ${s?.error || ""}`.trim(),
+      );
+      if (s?.runDir) console.log(`Artifacts: ${s.runDir}`);
+      if (out.error) console.error(out.error);
+    }
+    process.exit(out.exitCode);
   }
 }
 

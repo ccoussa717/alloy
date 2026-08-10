@@ -43,15 +43,17 @@ test("workflows help maps fusion fission auto forge and setups", () => {
   const topic = help.getTopic("workflows");
   assert.match(topic.body, /\/fusion setup/);
   assert.match(topic.body, /\/fission setup/);
-  assert.match(topic.body, /roles\.\*\.model|roles\.scout/i);
+  assert.match(topic.body, /\/auto setup/);
+  assert.match(topic.body, /roles\.\*\.model|roles\.scout|\/auto setup/i);
   assert.match(topic.body, /\/forge/);
   assert.match(topic.body, /\/auto/);
   assert.match(topic.body, /main chat \/model/i);
 });
 
-test("auto help documents no setup wizard and roles config", () => {
+test("auto help documents setup, implement profile, and roles config", () => {
   const topic = help.getTopic("auto");
-  assert.match(topic.body, /no \/auto setup/i);
+  assert.match(topic.body, /\/auto setup/);
+  assert.match(topic.body, /implementPermissionProfile|Implement profile|sandbox/i);
   assert.match(topic.body, /roles/);
   assert.match(topic.body, /scout/);
   assert.match(topic.body, /builder/);
@@ -61,6 +63,7 @@ test("forge help lists setup checklist", () => {
   const topic = help.getTopic("forge");
   assert.match(topic.body, /\/fusion setup/);
   assert.match(topic.body, /\/fission setup/);
+  assert.match(topic.body, /\/auto setup/);
   assert.match(topic.body, /fusion.*fission.*auto/is);
 });
 

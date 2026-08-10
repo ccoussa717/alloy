@@ -6,7 +6,9 @@ ALLOY_NODE_MIN="22.19"
 ALLOY_NODE_VERSION="22.19.0"
 ALLOY_BUN_VERSION="1.3.14"
 ALLOY_PARSER_MANIFEST_SHA256="e6107d4bd3cd2e971a245b1bfd3091b29adcd4965210fec03ffb87eb9077e453"
-ALLOY_REF="${ALLOY_REF:-main}"
+# Channel: stable = latest GitHub release tag; main = tip of main (or ALLOY_REF override).
+ALLOY_CHANNEL="${ALLOY_CHANNEL:-stable}"
+ALLOY_REF="${ALLOY_REF:-}"
 ALLOY_PREFIX="${ALLOY_PREFIX:-$HOME/.local}"
 ALLOY_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/alloy"
 ALLOY_APP_ROOT="$ALLOY_DATA_HOME/app"
@@ -354,6 +356,32 @@ command -v unzip >/dev/null 2>&1 || err "unzip is required to install Alloy"
 reject_musl
 bun_artifact
 
+if [[ -z "$ALLOY_REF" ]]; then
+  if [[ "$ALLOY_CHANNEL" == "stable" ]]; then
+    log "Resolving Alloy stable channel to latest release tag"
+    ALLOY_REF="$(
+      curl -fsSL --retry 3 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'User-Agent: alloy-installer' \
+        "https://api.github.com/repos/${ALLOY_REPOSITORY}/releases/latest" </dev/null |
+        node -e '
+          const fs = require("node:fs");
+          let response = {};
+          try { response = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(2); }
+          const tag = response.tag_name || "";
+          if (!tag || response.message === "Not Found") process.exit(2);
+          process.stdout.write(tag);
+        '
+    )" || {
+      log "No GitHub release found; falling back to main tip"
+      ALLOY_CHANNEL="main"
+      ALLOY_REF="main"
+    }
+  else
+    ALLOY_REF="main"
+  fi
+fi
+
 if [[ "$ALLOY_REF" == "main" ]]; then
   log "Resolving Alloy main to one commit"
   ALLOY_REF="$(
@@ -370,6 +398,7 @@ if [[ "$ALLOY_REF" == "main" ]]; then
   )" || err "could not resolve Alloy main to a commit"
 fi
 ALLOY_SOURCE_URL="https://codeload.github.com/${ALLOY_REPOSITORY}/tar.gz/${ALLOY_REF}"
+ALLOY_RESOLVED_REF="$ALLOY_REF"
 
 SOURCE_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/alloy-source.XXXXXX")"
 SOURCE_ARCHIVE="$SOURCE_TEMP_DIR/alloy-source.tar.gz"
@@ -696,7 +725,31 @@ if [[ -f "$LEGACY_ENV" && ! -L "$LEGACY_ENV" ]] &&
   rm -f "$LEGACY_ENV"
 fi
 
+# Install manifest for channel / rollback visibility
+export ALLOY_CHANNEL ALLOY_RESOLVED_REF ALLOY_DATA_HOME ALLOY_REPOSITORY
+ALLOY_DATA_HOME="$ALLOY_DATA_HOME" ALLOY_CHANNEL="$ALLOY_CHANNEL" ALLOY_RESOLVED_REF="$ALLOY_RESOLVED_REF" ALLOY_REPOSITORY="$ALLOY_REPOSITORY" \
+node -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const home = process.env.ALLOY_DATA_HOME || path.join(process.env.HOME || "", ".local/share/alloy");
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  const pkgPath = path.join(home, "app", "package.json");
+  let version = "unknown";
+  try { version = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version || version; } catch {}
+  const manifest = {
+    version,
+    channel: process.env.ALLOY_CHANNEL || "unknown",
+    ref: process.env.ALLOY_RESOLVED_REF || process.env.ALLOY_REF || null,
+    commit: process.env.ALLOY_RESOLVED_REF || null,
+    installedAt: new Date().toISOString(),
+    repository: process.env.ALLOY_REPOSITORY || "ccoussa717/alloy",
+  };
+  fs.writeFileSync(path.join(home, "install-manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
+' || log "Warning: could not write install-manifest.json"
+
 printf '%s\n' "$FINAL_VERSION_OUTPUT"
+log "Channel: ${ALLOY_CHANNEL}  ref: ${ALLOY_RESOLVED_REF}"
+log "Rollback: ALLOY_REF=<previous-tag-or-sha> bash install.sh"
 
 log "Alloy is ready at $ALLOY_BIN"
 log "Bash/Zsh: restart your shell, then run: alloy"
