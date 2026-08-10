@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/ccoussa717/alloy/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/ccoussa717/alloy/ci.yml?branch=main&amp;style=flat-square&amp;label=verify"></a>
-  <img alt="Pre-release" src="https://img.shields.io/badge/status-pre--release-E8C547?style=flat-square">
+  <img alt="v1.0.0" src="https://img.shields.io/badge/version-1.0.0-1FE07A?style=flat-square">
   <img alt="Node 22.19 or newer" src="https://img.shields.io/badge/node-%3E%3D22.19-1FE07A?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1F2937?style=flat-square"></a>
 </p>
@@ -56,8 +56,9 @@ affiliated with or endorsed by OpenCode.
 </p>
 
 > [!IMPORTANT]
-> Alloy is pre-release source. The `alloy-agent` package is not published to
-> npm; do not install that registry name. Use the source setup below.
+> Alloy is distributed as source via the installer (or a clone). The
+> `alloy-agent` package is not published to npm; do not install that registry
+> name. Use the source setup below.
 
 ## Quick start
 
@@ -74,10 +75,15 @@ curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | 
 alloy
 ```
 
-For an install version-pinned to this release instead of moving `main`:
+The installer defaults to the **stable** channel (latest GitHub release tag).
+When no release exists yet, it falls back to the tip of `main`. Pin explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v0.8.4/install.sh | ALLOY_REF=v0.8.4 bash
+# Pin to a release tag
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v1.0.0/install.sh | ALLOY_REF=v1.0.0 bash
+
+# Always install tip of main
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | ALLOY_CHANNEL=main bash
 ```
 
 The installer writes only to your user directories, needs no `sudo`, and puts
@@ -125,8 +131,9 @@ Explain the authentication flow in this repository
 /forge Plan, review, implement, and re-review a feature end-to-end
 ```
 
-The convenience installer resolves `main` once and installs that exact commit.
-To pin both the installer and source snapshot, use the same full commit SHA:
+The convenience installer resolves the selected channel once and installs that
+exact commit (or release tag). To pin both the installer and source snapshot,
+use the same full commit SHA:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/<full-commit-sha>/install.sh \
@@ -186,8 +193,8 @@ Use `/help` first when you are unsure which workflow or setup step to run.
 | **Chat** | (prompt only) | Yes (if mode allows) | `/model` (session only) | Fast answer or direct work with one active model |
 | **Fusion** | `/fusion <objective>` | **No** (plan-only) | **`/fusion setup`** | Two independent technical perspectives → one attributed plan |
 | **Fission** | `/fission [N] <request>` | **No** | **`/fission setup`** | Adversarial multi-role review of current changes against a contract |
-| **Auto** | `/auto <request>` | **Yes** (worktree) | `roles.*.model` in config (no wizard) | Implement with scout/plan/build/diagnostics/review/fix loops |
-| **Forge** | `/forge <request>` | **Yes** | Fusion + fission setups + auto roles | Full spine: plan → adversarial review → implement → re-review |
+| **Auto** | `/auto <request>` | **Yes** (worktree) | **`/auto setup`** (or `roles.*.model`) | Implement with scout/plan/build/diagnostics/review/fix loops |
+| **Forge** | `/forge <request>` | **Yes** | Fusion + fission + auto setups | Full spine: plan → adversarial review → implement → re-review |
 
 **Important:** Main chat `/model` does **not** set fusion, fission, or auto child models. Each workflow has its own routes.
 
@@ -198,24 +205,16 @@ Do this once (or whenever you change providers):
 1. **`/login`** (and `/login xai`, etc.) for every provider you will use  
 2. **`/fusion setup`** — Architect, Builder, Synthesizer (models + effort)  
 3. **`/fission setup`** — default/max reviewer count, **role catalog** per slot, models, judge, severity  
-4. **Auto models** (optional but recommended) — edit `~/.pi/alloy/config.json`:
-
-```json
-"roles": {
-  "scout":    { "model": "xai/grok-4.5" },
-  "planner":  { "model": "anthropic/claude-sonnet-4-6" },
-  "builder":  { "model": "openai-codex/gpt-5.4" },
-  "fixer":    { "model": "openai-codex/gpt-5.4" },
-  "reviewer": { "model": "anthropic/claude-opus-4-6" }
-}
-```
+4. **`/auto setup`** — scout/planner/builder/fixer/reviewer models + implement permission profile  
+   - Default implement profile: **sandbox** (Docker required; no silent downgrade)  
+   - Override with setup, `auto.implementPermissionProfile`, or `ALLOY_IMPLEMENT_PROFILE`  
+5. Optional: **`/pack apply ship|incident|economy`** — local presets (does not wipe fission model routes)  
+6. **`/fusion status`** · **`/fission status`** · **`/auto status`** to verify  
+7. **`/trust`** the project before Fission/Forge on that repo  
 
 If `roles.*.model` is `null`, Auto routes via **profiles / orchestration.roles** (research → plan → code → review). See `/help agents` and `/profiles`.
 
-5. **`/fusion status`** and **`/fission status`** to verify  
-6. **`/trust`** the project before Fission/Forge on that repo  
-
-Example fusion/fission blocks also live in [`config/alloy.example.json`](./config/alloy.example.json).
+Example fusion/fission/auto blocks also live in [`config/alloy.example.json`](./config/alloy.example.json).
 
 ### Combinations
 
@@ -228,6 +227,9 @@ Example fusion/fission blocks also live in [`config/alloy.example.json`](./confi
 | **Full quality path** | **`/forge <request>`** |
 | Plan then implement yourself | `/fusion …` then `/auto …` |
 | Plan then review (needs a diff for Fission evidence) | `/fusion …` then edit or `/auto …` then `/fission …` |
+| Local preset pack | `/pack apply ship\|incident\|economy` |
+| Recent multi-agent runs | `/runs` or `alloy runs` |
+| CI fission (non-interactive) | `alloy fission --json "…"` |
 | Extra free-form child | `/agent name model=provider/id <task>` |
 
 ### Chat
@@ -333,11 +335,16 @@ and only all six matched high/critical seeds plus three clean controls is
 ### Auto: build, check, review, repeat
 
 ```text
+/auto setup
+/auto status
 /auto <request>
 ```
 
-There is **no `/auto setup`**. Models come from `roles.*.model` or profile
-routing (see [Setup checklist](#setup-checklist)), not from main `/model`.
+Models and implement profile come from **`/auto setup`** (or config), not from
+main `/model`. Default implement permission profile is **sandbox** (Docker
+required). Override with setup, `auto.implementPermissionProfile`, or
+`ALLOY_IMPLEMENT_PROFILE` (`ask-dangerous`, `ask-all`, …). There is **no silent
+Docker downgrade**.
 
 Flow:
 
@@ -349,6 +356,8 @@ scout → plan → checkpoint → build (worktree)
 
 Checkpoint failure is recorded but does not stop the build. Diagnostics are
 host processes (not Docker-sandboxed). Artifacts under `~/.pi/alloy/runs/`.
+A local run index at `~/.pi/alloy/runs/index.jsonl` is listed with `/runs` or
+`alloy runs`. Optional local packs: `/pack list` · `/pack apply ship|incident|economy`.
 
 Auto is also the **implement phase** of `/forge`, with fusion synthesis and
 pre-build fission findings injected as context.
@@ -382,10 +391,32 @@ Layout:
   phases/
 ```
 
-Requires `/fusion setup` and `/fission setup` (and ideally Auto `roles.*.model`).
+Requires `/fusion setup`, `/fission setup`, and `/auto setup` (or equivalent config).
 Standalone `/fusion`, `/fission`, and `/auto` remain available for partial runs.
 
 In-product: `/help forge` · `/help workflows`.
+
+### Identity, CLI, and CI
+
+Attribute multi-agent runs with `ALLOY_AGENT_ID` or `identity.id` in config
+(open-source harness identity — not tied to any fleet bus):
+
+```bash
+export ALLOY_AGENT_ID=sonny
+```
+
+Non-interactive CI (exit codes: `0` = PASS/NO_CHANGES, `1` = FAIL, `2` = incomplete/error):
+
+```bash
+alloy fission --json "Review PR auth changes"
+alloy forge --json "Implement and re-review the health endpoint"
+alloy runs --limit 20
+```
+
+Copy the example workflow from [`docs/ci/github-actions-fission.yml`](./docs/ci/github-actions-fission.yml).
+Installer default channel is **stable** (latest GitHub release tag, falling
+back to `main` when no release exists). Override with `ALLOY_CHANNEL=main` or
+`ALLOY_REF=<tag|sha>`.
 
 ## The product layer on Pi
 

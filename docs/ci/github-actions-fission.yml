@@ -1,0 +1,75 @@
+# Example GitHub Actions workflow: require Alloy Fission on pull requests.
+# Copy into a consuming repo as .github/workflows/alloy-fission.yml
+# and protect main with this check name.
+#
+# Pin Alloy with ALLOY_REF (tag or SHA). Prefer a release tag after v1.0.0.
+
+name: alloy-fission
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  fission:
+    name: alloy-fission
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Alloy (pinned)
+        env:
+          # Prefer a release tag: ALLOY_REF: v1.0.0
+          ALLOY_REF: ${{ vars.ALLOY_REF || 'v1.0.0' }}
+          ALLOY_CHANNEL: stable
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/ccoussa717/alloy/${ALLOY_REF}/install.sh" \
+            | ALLOY_REF="$ALLOY_REF" ALLOY_CHANNEL="$ALLOY_CHANNEL" bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          alloy --version
+
+      - name: Provider credentials
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: |
+          # Fission requires configured models in ~/.pi/alloy/config.json
+          # and authenticated providers. Wire secrets for your fleet.
+          mkdir -p "$HOME/.pi/alloy"
+          if [[ ! -f "$HOME/.pi/alloy/config.json" ]]; then
+            echo "Missing Alloy config with fission.models — copy from alloy.example.json and set secrets."
+            exit 2
+          fi
+
+      - name: Run Fission (JSON)
+        id: fission
+        run: |
+          set +e
+          alloy fission --json "CI adversarial review of pull request changes" | tee fission-result.json
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alloy-fission-${{ github.run_id }}
+          path: |
+            fission-result.json
+            ${{ env.HOME }}/.pi/alloy/runs/
+          if-no-files-found: warn
+
+# Exit codes from `alloy fission`:
+#   0 = PASS or NO_CHANGES
+#   1 = FAIL (blocking findings validated)
+#   2 = INCOMPLETE / configuration / runtime error

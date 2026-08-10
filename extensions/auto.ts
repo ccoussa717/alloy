@@ -31,6 +31,8 @@ const {
   loadConfig,
   loadGlobalConfig,
   saveGlobalFusionConfig,
+  saveGlobalAutoConfig,
+  applyGlobalPolicyPack,
 } = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
 const { createFusionLivePanel, renderFusionPaneLines, renderFusionWidgetLines, renderPanelThemed, renderPanelLines } = require(
@@ -39,6 +41,139 @@ const { createFusionLivePanel, renderFusionPaneLines, renderFusionWidgetLines, r
 const { resolveParentChildSpawnOpts } = require(
   join(root, "lib", "parent-policy.mjs"),
 );
+const {
+  resolveImplementPermissionProfile,
+  assertImplementProfileReady,
+} = require(join(root, "lib", "implement-policy.mjs"));
+const { listPolicyPacks, getPolicyPack } = require(
+  join(root, "lib", "policy-packs.mjs"),
+);
+const { listRuns, formatRunIndexLines } = require(
+  join(root, "lib", "run-index.mjs"),
+);
+const { resolveAgentIdentity, describeIdentity } = require(
+  join(root, "lib", "identity.mjs"),
+);
+
+const AUTO_ROLES = ["scout", "planner", "builder", "fixer", "reviewer"] as const;
+const AUTO_ARGUMENTS = [
+  { value: "setup", label: "setup", description: "Configure auto role models" },
+  { value: "status", label: "status", description: "Show effective auto models" },
+  { value: "help", label: "help", description: "Show auto help" },
+];
+
+function getAutoArgumentCompletions(prefix = "") {
+  const raw = String(prefix).trimStart().toLowerCase();
+  if (raw.includes(" ")) return null;
+  const matches = AUTO_ARGUMENTS.filter((item) => item.value.startsWith(raw));
+  return matches.length ? matches : null;
+}
+
+function formatAutoStatus(cwd: string) {
+  const cfg = loadConfig(cwd);
+  const implement = resolveImplementPermissionProfile(cfg);
+  const lines = [
+    "Auto role models:",
+    ...AUTO_ROLES.map((role) => {
+      const configured = cfg.roles?.[role]?.model || null;
+      const profileHint =
+        role === "scout"
+          ? cfg.profiles?.research?.model
+          : role === "planner"
+            ? cfg.profiles?.plan?.model
+            : role === "reviewer"
+              ? cfg.profiles?.review?.model
+              : cfg.profiles?.code?.model;
+      return `${role}: ${configured || `(fallback ${profileHint || "orchestration"})`}`;
+    }),
+    "",
+    `Implement profile: ${implement.profile} (source: ${implement.source})`,
+    `useWorktree: ${cfg.auto?.useWorktree !== false}`,
+    `maxFixRounds: ${cfg.budgets?.maxFixRounds ?? 2}`,
+    "",
+    describeIdentity(),
+    "",
+    "Use /auto setup to set role models. Use /pack apply ship|incident|economy for presets.",
+  ];
+  return lines;
+}
+
+function formatAutoHelp() {
+  return [
+    "/auto <request>     Implement pipeline with fix loops",
+    "/auto setup         Configure scout/planner/builder/fixer/reviewer models",
+    "/auto status        Show effective auto settings",
+    "/auto help          This help",
+    "",
+    "No models from main /model — only roles.*.model or profile fallbacks.",
+    "Implement default profile: sandbox (override auto.implementPermissionProfile).",
+    "Also: /pack list · /pack apply <ship|incident|economy>",
+    "See /help workflows · /help auto",
+  ];
+}
+
+async function setupAuto(ctx: ExtensionContext) {
+  if (!ctx.hasUI) {
+    console.log("/auto setup requires the interactive TUI.");
+    return;
+  }
+  const global = loadGlobalConfig();
+  const allowed = (global.providers?.allow || []).filter(Boolean);
+  const routes = ctx.modelRegistry
+    .getAll()
+    .map((model: any) => `${model.provider}/${model.id}`);
+  const groups = groupFusionModelRoutes(routes, allowed);
+  if (!groups.length) {
+    ctx.ui.notify("No allowed models available for Auto setup.", "warning");
+    return;
+  }
+
+  const models: Record<string, string> = {};
+  for (const role of AUTO_ROLES) {
+    const current = global.roles?.[role]?.model || "not configured";
+    const providerLabel = await ctx.ui.select(
+      `Auto ${role} provider (current: ${current})`,
+      groups.map((g: any) => g.label),
+    );
+    if (!providerLabel) {
+      ctx.ui.notify("Auto setup cancelled; no settings changed.", "info");
+      return;
+    }
+    const provider = groups.find((g: any) => g.label === providerLabel);
+    if (!provider) {
+      ctx.ui.notify("Auto setup cancelled; no settings changed.", "info");
+      return;
+    }
+    const model = await ctx.ui.select(
+      `Auto ${role} ${provider.label} model (current: ${current})`,
+      provider.models,
+    );
+    if (!model) {
+      ctx.ui.notify("Auto setup cancelled; no settings changed.", "info");
+      return;
+    }
+    models[role] = `${provider.id}/${model}`;
+  }
+
+  const profileChoice = await ctx.ui.select(
+    `Implement permission profile (current: ${global.auto?.implementPermissionProfile || "sandbox"})`,
+    ["sandbox", "ask-dangerous", "ask-all", "ask-some", "ask-none"],
+  );
+  if (!profileChoice) {
+    ctx.ui.notify("Auto setup cancelled; no settings changed.", "info");
+    return;
+  }
+
+  saveGlobalAutoConfig({
+    roles: Object.fromEntries(
+      AUTO_ROLES.map((role) => [role, { model: models[role] }]),
+    ),
+    auto: { implementPermissionProfile: profileChoice },
+  });
+  const lines = formatAutoStatus(ctx.cwd || process.cwd());
+  if (ctx.hasUI) await ctx.ui.select("Auto setup saved", lines);
+  else console.log(lines.join("\n"));
+}
 
 /** Keep last UI ctx for panel refresh during long runs */
 let panelUi: ExtensionContext["ui"] | null = null;
@@ -525,21 +660,35 @@ export function registerAuto(pi: ExtensionAPI) {
 
   pi.registerCommand("auto", {
     description:
-      "Auto pipeline with fix loops: scout → plan → build → check → review ↺ fix. /auto <request>",
+      "Auto pipeline: /auto <request|setup|status|help>",
+    getArgumentCompletions: getAutoArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request) {
-        ctx.ui.notify(
-          "Usage: /auto <request>\nExample: /auto add a --version flag to the CLI",
-          "warning",
-        );
+      if (!request || request.toLowerCase() === "help") {
+        const lines = formatAutoHelp();
+        if (ctx.hasUI) await ctx.ui.select("Auto help", lines);
+        else console.log(lines.join("\n"));
+        return;
+      }
+      if (request.toLowerCase() === "status") {
+        const lines = formatAutoStatus(ctx.cwd || process.cwd());
+        if (ctx.hasUI) await ctx.ui.select("Auto status", lines);
+        else console.log(lines.join("\n"));
+        return;
+      }
+      if (request.toLowerCase() === "setup") {
+        try {
+          await setupAuto(ctx);
+        } catch (error) {
+          ctx.ui.notify(String((error as Error).message || error), "warning");
+        }
         return;
       }
 
       if (ctx.hasUI) {
         const ok = await ctx.ui.confirm(
           "Start /auto?",
-          `Spawns child Pi agents (needs /login). May use a worktree and fix rounds on FAIL.\n\n${request.slice(0, 300)}`,
+          `Spawns child Pi agents (needs /login). Implement profile from auto.implementPermissionProfile (default sandbox).\n\n${request.slice(0, 300)}`,
         );
         if (!ok) {
           ctx.ui.notify("Auto cancelled.", "info");
@@ -552,7 +701,21 @@ export function registerAuto(pi: ExtensionAPI) {
       ctx.ui.setWorkingMessage?.("Alloy auto running…");
 
       try {
-        const parentOpts = resolveParentChildSpawnOpts();
+        const cfg = loadConfig(ctx.cwd || process.cwd());
+        const implement = resolveImplementPermissionProfile(cfg);
+        const ready = assertImplementProfileReady(implement);
+        if (!ready.ok) {
+          ctx.ui.notify(ready.error, "error");
+          return;
+        }
+        const parentOpts = {
+          ...resolveParentChildSpawnOpts({ mode: "build" }),
+          permissionProfile: implement.profile,
+          parentPermissionProfile: implement.profile,
+          sandbox: implement.sandbox,
+          parentSandbox: implement.sandbox,
+          implementPermissionProfile: implement.profile,
+        };
         const summary = await runAutoWorkflow({
           request,
           cwd: process.cwd(),
@@ -608,6 +771,72 @@ export function registerAuto(pi: ExtensionAPI) {
         ctx.ui.setWorkingMessage?.();
         // Keep panel visible so user can read final state; clear on next session_start
       }
+    },
+  });
+
+  pi.registerCommand("pack", {
+    description: "Policy packs: /pack list | /pack apply <ship|incident|economy>",
+    handler: async (args, ctx) => {
+      const raw = (args || "").trim();
+      const [cmd, packId] = raw.split(/\s+/);
+      if (!cmd || cmd === "list" || cmd === "help") {
+        const lines = [
+          "Local policy packs (open-source presets):",
+          ...listPolicyPacks().map(
+            (p: any) => `  ${p.id.padEnd(10)} ${p.label} — ${p.description}`,
+          ),
+          "",
+          "Apply: /pack apply ship | incident | economy",
+          "Does not overwrite fission model routes (setup those with /fission setup).",
+        ];
+        if (ctx.hasUI) await ctx.ui.select("Policy packs", lines);
+        else console.log(lines.join("\n"));
+        return;
+      }
+      if (cmd === "apply") {
+        const pack = getPolicyPack(packId);
+        if (!pack) {
+          ctx.ui.notify("Unknown pack. Use: ship | incident | economy", "warning");
+          return;
+        }
+        if (ctx.hasUI) {
+          const ok = await ctx.ui.confirm(
+            `Apply pack "${pack.id}"?`,
+            pack.description,
+          );
+          if (!ok) {
+            ctx.ui.notify("Pack apply cancelled.", "info");
+            return;
+          }
+        }
+        try {
+          applyGlobalPolicyPack(pack.apply);
+          ctx.ui.notify(`Applied pack: ${pack.id}`, "info");
+          const lines = formatAutoStatus(ctx.cwd || process.cwd());
+          if (ctx.hasUI) await ctx.ui.select(`Pack ${pack.id} applied`, lines);
+        } catch (error) {
+          ctx.ui.notify(String((error as Error).message || error), "error");
+        }
+        return;
+      }
+      ctx.ui.notify("Usage: /pack list | /pack apply <ship|incident|economy>", "warning");
+    },
+  });
+
+  pi.registerCommand("runs", {
+    description: "List recent multi-agent runs from the local index",
+    handler: async (args, ctx) => {
+      const limit = Number.parseInt(String(args || "").trim(), 10) || 20;
+      const rows = listRuns({ limit });
+      const lines = [
+        describeIdentity(),
+        "",
+        ...formatRunIndexLines(rows),
+        "",
+        `Index: ${require(join(root, "lib", "run-index.mjs")).getRunIndexPath()}`,
+      ];
+      if (ctx.hasUI) await ctx.ui.select("Recent runs", lines);
+      else console.log(lines.join("\n"));
     },
   });
 
@@ -735,13 +964,6 @@ export function registerAuto(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("runs", {
-    description: "Show Alloy runs directory path",
-    handler: async (_args, ctx) => {
-      ctx.ui.notify(`Runs: ${getRunsDir()}`, "info");
-    },
-  });
-
   pi.on("session_start", () => {
     // fresh session — clear stale panel
     clearPanel();
@@ -761,7 +983,23 @@ export function registerAuto(pi: ExtensionAPI) {
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       try {
-        const parentOpts = resolveParentChildSpawnOpts();
+        const cfg = loadConfig(process.cwd());
+        const implement = resolveImplementPermissionProfile(cfg);
+        const ready = assertImplementProfileReady(implement);
+        if (!ready.ok) {
+          return {
+            content: [{ type: "text", text: ready.error }],
+            details: { error: ready.error },
+          };
+        }
+        const parentOpts = {
+          ...resolveParentChildSpawnOpts({ mode: "build" }),
+          permissionProfile: implement.profile,
+          parentPermissionProfile: implement.profile,
+          sandbox: implement.sandbox,
+          parentSandbox: implement.sandbox,
+          implementPermissionProfile: implement.profile,
+        };
         const summary = await runAutoWorkflow({
           request: params.request,
           cwd: process.cwd(),

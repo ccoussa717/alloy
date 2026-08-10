@@ -68,5 +68,24 @@
     "defaultReviewers": 3,
     "maxReviewers": 5,
     "blockingSeverity": "high"
+  },
+  "roles": {
+    "scout": { "model": "xai/grok-4.5" },
+    "planner": { "model": "anthropic/claude-sonnet-4-6" },
+    "builder": { "model": "openai-codex/gpt-5.4" },
+    "fixer": { "model": "openai-codex/gpt-5.4" },
+    "reviewer": { "model": "anthropic/claude-opus-4-6" }
+  },
+  "auto": {
+    "useWorktree": true,
+    "implementPermissionProfile": "sandbox"
+  },
+  "identity": {
+    "id": null,
+    "displayName": null,
+    "org": null
+  },
+  "budgets": {
+    "maxFixRounds": 2
   }
 }
