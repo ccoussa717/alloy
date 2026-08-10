@@ -687,8 +687,12 @@ export function AlloyApp(props: AlloyAppProps) {
       : 0;
     setSelected(selection);
     setDialogText(dialog?.method === "editor" ? dialog.prefill ?? "" : "");
-    if (key && key !== previousDialogKey) {
+    // Only arm extension *select* panels (help/status lists). Local model pickers
+    // and confirm/input must accept Enter immediately for PTY + snappy UX.
+    if (key && key !== previousDialogKey && dialog?.method === "select") {
       setDialogEnterArmedAt(Date.now() + 280);
+    } else if (key && key !== previousDialogKey) {
+      setDialogEnterArmedAt(0);
     }
     if (previousDialogKey && !key) setTimeout(() => composer?.focus(), 0);
     previousDialogKey = key;
