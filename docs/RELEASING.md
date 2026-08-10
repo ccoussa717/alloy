@@ -2,6 +2,63 @@
 
 Only maintainers may publish a release.
 
+## Continuous stable shipping (default)
+
+**Policy (operator request):** every meaningful ship that lands on `main` —
+features, fixes, docs that change operator behavior, security patches — gets a
+**new semver tag and GitHub Release** so the default install command always
+pulls the newest line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+```
+
+That script defaults to `ALLOY_CHANNEL=stable`, which resolves
+`/repos/…/releases/latest`. If we merge to `main` without tagging, first-time
+installers stay on the last tag and miss the work.
+
+### When to cut a release
+
+| Change | Bump | Tag |
+|--------|------|-----|
+| Bugfix, docs/help clarity, small UX, security patch | patch (`1.0.x`) | yes |
+| New workflow capability, behavior change, config shape | minor (`1.x.0`) | yes |
+| Breaking config/CLI/compat | major (`x.0.0`) | yes |
+| Internal-only refactor with **zero** user-visible change | optional | skip only if truly invisible |
+
+Default bias: **when in doubt, tag a patch.** Prefer many small stable releases
+over a long `main`-only delta.
+
+### Release checklist (every ship)
+
+1. On a PR (or stacked release PR): bump **root** `package.json`, **`tui/package.json`**,
+   and **`npm-shrinkwrap.json`** root + `packages[""]` to the same version.
+2. Move notes from `CHANGELOG.md` `[Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD`.
+3. Merge to `main` with green CI (`verify` + platform checks).
+4. Tag the exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
+   `git push origin vX.Y.Z`.
+5. Create the GitHub Release for that tag (source archives only; not npm).
+6. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
+
+Helper (from a clean `main` at the release commit):
+
+```bash
+# after version bump is on main
+git tag -a "v$(node -p "require('./package.json').version")" \
+  -m "Alloy $(node -p "require('./package.json').version")"
+git push origin "v$(node -p "require('./package.json').version")"
+gh release create "v$(node -p "require('./package.json').version")" \
+  --title "Alloy $(node -p "require('./package.json').version")" \
+  --generate-notes
+```
+
+Tip-of-tree without a release (developers only):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh \
+  | ALLOY_CHANNEL=main bash
+```
+
 ## Public source launch
 
 Making the canonical GitHub repository public is separate from publishing an

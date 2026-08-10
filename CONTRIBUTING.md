@@ -39,6 +39,18 @@ Alloy's supply-chain contract.
 npm run ci:local
 ```
 
+### Shipping (maintainers)
+
+User-visible fixes and features must land as a **new GitHub Release tag** after
+merge so the default installer (`ALLOY_CHANNEL=stable`) picks them up:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
+```
+
+Do not leave meaningful work on `main` untagged. Checklist and version rules:
+[docs/RELEASING.md](./docs/RELEASING.md) (**Continuous stable shipping**).
+
 Docker tests skip locally when Docker is absent. Say so in the pull request;
 GitHub Actions requires them.
 
