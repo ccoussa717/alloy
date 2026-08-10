@@ -54,6 +54,13 @@ const { listRuns, formatRunIndexLines } = require(
 const { resolveAgentIdentity, describeIdentity } = require(
   join(root, "lib", "identity.mjs"),
 );
+const {
+  formatAutoCommandHelp,
+  formatFusionCommandHelp,
+  formatPackCommandHelp,
+  formatSetupCommandHelp,
+  helpMenuLines,
+} = require(join(root, "lib", "command-help.mjs"));
 
 const AUTO_ROLES = ["scout", "planner", "builder", "fixer", "reviewer"] as const;
 const AUTO_ARGUMENTS = [
@@ -103,18 +110,7 @@ function formatAutoStatus(cwd: string) {
 }
 
 function formatAutoHelp() {
-  return [
-    "/auto <request>     Implement pipeline with fix loops",
-    "/auto setup         Role models + force-sandbox toggle",
-    "/auto status        Show effective auto settings",
-    "/auto help          This help",
-    "/setup              Full setup: fusion → fission → auto",
-    "",
-    "Models: profiles.* (canonical) or roles.* overrides — not main /model.",
-    "Implement inherits session /permissions unless forceSandbox is on.",
-    "Also: /pack list · /pack apply <ship|incident|economy>",
-    "See /help workflows · /help auto",
-  ];
+  return formatAutoCommandHelp();
 }
 
 async function setupAuto(ctx: ExtensionContext) {
@@ -793,15 +789,22 @@ export function registerAuto(pi: ExtensionAPI) {
       const raw = (args || "").trim();
       const [cmd, packId] = raw.split(/\s+/);
       if (!cmd || cmd === "list" || cmd === "help") {
-        const lines = [
-          "Local policy packs (open-source presets):",
+        if (cmd === "help") {
+          const lines = formatPackCommandHelp();
+          if (ctx.hasUI) await ctx.ui.select("Pack help", lines);
+          else console.log(lines.join("\n"));
+          return;
+        }
+        const lines = helpMenuLines([
+          "Local policy packs (posture only — not models):",
+          " ",
           ...listPolicyPacks().map(
             (p: any) => `  ${p.id.padEnd(10)} ${p.label} — ${p.description}`,
           ),
-          "",
+          " ",
           "Apply: /pack apply ship | incident | economy",
-          "Does not overwrite fission model routes (setup those with /fission setup).",
-        ];
+          "Models: /setup or /fission setup · /auto setup",
+        ]);
         if (ctx.hasUI) await ctx.ui.select("Policy packs", lines);
         else console.log(lines.join("\n"));
         return;
@@ -856,7 +859,14 @@ export function registerAuto(pi: ExtensionAPI) {
   pi.registerCommand("setup", {
     description:
       "One path for multi-model setup: fusion → fission → auto",
-    handler: async (_args, ctx) => {
+    handler: async (args, ctx) => {
+      const sub = String(args || "").trim().toLowerCase();
+      if (sub === "help" || sub === "-h" || sub === "--help") {
+        const lines = formatSetupCommandHelp();
+        if (ctx.hasUI) await ctx.ui.select("Setup help", lines);
+        else console.log(lines.join("\n"));
+        return;
+      }
       if (!ctx.hasUI) {
         console.log(
           "Interactive only. Run in order:\n  /fusion setup\n  /fission setup\n  /auto setup",
@@ -906,21 +916,8 @@ export function registerAuto(pi: ExtensionAPI) {
     getArgumentCompletions: getFusionArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request) {
-        ctx.ui.notify(
-          "Usage: /fusion <objective|setup|status|help>",
-          "warning",
-        );
-        return;
-      }
-
-      if (request.toLowerCase() === "help") {
-        await showFusionLines(ctx, "Fusion help", [
-          "/fusion <objective>  Run read-only Architect + Builder + Synthesizer",
-          "                     Stream each role in the native live dashboard",
-          "/fusion setup        Select persistent role models and effort",
-          "/fusion status       Show effective role settings",
-        ]);
+      if (!request || request.toLowerCase() === "help") {
+        await showFusionLines(ctx, "Fusion help", formatFusionCommandHelp());
         return;
       }
       if (request.toLowerCase() === "status") {

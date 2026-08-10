@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-10
+
+### Fixed
+
+- Slash-command help panels (`/fission help`, `/fusion help`, `/auto help`,
+  `/forge help`, `/pack help`, `/setup help`) no longer flash closed from the
+  same Enter that submitted the command; richer help menus with a clear Done row.
+
+
 ## [1.0.2] - 2026-08-10
 
 ### Fixed
