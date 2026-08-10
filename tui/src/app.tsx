@@ -1289,13 +1289,23 @@ export function AlloyApp(props: AlloyAppProps) {
             flexGrow={0}
             flexShrink={0}
           >
-            {/* Compact header — never steals the list viewport */}
+            {/* Compact title — never steals the list/input viewport */}
             <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
               <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
-              <Show when={extensionDialog()?.message}>
-                <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
-              </Show>
             </box>
+            <Show when={extensionDialog()?.message}>
+              {/* Long OAuth/help messages scroll; cap so input stays visible on 40x10 */}
+              <scrollbox
+                flexShrink={1}
+                maxHeight={Math.max(1, Math.min(8, Math.floor(layout().modalHeight / 3)))}
+                paddingLeft={2}
+                paddingRight={2}
+                paddingBottom={1}
+                scrollbarOptions={{ visible: false }}
+              >
+                <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+              </scrollbox>
+            </Show>
             <Show when={options().length > 0}>
               <scrollbox
                 flexGrow={1}
@@ -1333,7 +1343,18 @@ export function AlloyApp(props: AlloyAppProps) {
               </box>
             </Show>
             <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
-              <box flexGrow={1} marginLeft={2} marginRight={2} border={["left"]} borderColor={theme.accent} backgroundColor={theme.panel} paddingLeft={1}>
+              {/* Reserve input at bottom of panel so placeholders stay on-screen */}
+              <box
+                flexGrow={0}
+                flexShrink={0}
+                marginLeft={2}
+                marginRight={2}
+                marginTop={1}
+                border={["left"]}
+                borderColor={theme.accent}
+                backgroundColor={theme.panel}
+                paddingLeft={1}
+              >
                 <textarea
                   ref={(value) => {
                     modalInput = value;
@@ -1341,7 +1362,11 @@ export function AlloyApp(props: AlloyAppProps) {
                   }}
                   initialValue={dialogText()}
                   minHeight={1}
-                  maxHeight={Math.max(3, layout().modalHeight - 6)}
+                  maxHeight={
+                    extensionDialog()?.method === "editor"
+                      ? Math.max(2, Math.min(8, layout().modalHeight - 5))
+                      : Math.max(1, Math.min(3, layout().modalHeight - 4))
+                  }
                   placeholder={extensionDialog()?.placeholder}
                   textColor={theme.text}
                   focusedTextColor={theme.text}
