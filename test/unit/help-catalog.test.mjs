@@ -24,17 +24,44 @@ test("catalog has core topics", () => {
   const ids = help.listTopics().map((t) => t.id);
   for (const need of [
     "overview",
+    "workflows",
     "auth",
     "sandbox",
     "auto",
     "fusion",
     "fission",
+    "forge",
     "commands",
     "mcp",
     "memory",
   ]) {
     assert.ok(ids.includes(need), `missing topic ${need}`);
   }
+});
+
+test("workflows help maps fusion fission auto forge and setups", () => {
+  const topic = help.getTopic("workflows");
+  assert.match(topic.body, /\/fusion setup/);
+  assert.match(topic.body, /\/fission setup/);
+  assert.match(topic.body, /roles\.\*\.model|roles\.scout/i);
+  assert.match(topic.body, /\/forge/);
+  assert.match(topic.body, /\/auto/);
+  assert.match(topic.body, /main chat \/model/i);
+});
+
+test("auto help documents no setup wizard and roles config", () => {
+  const topic = help.getTopic("auto");
+  assert.match(topic.body, /no \/auto setup/i);
+  assert.match(topic.body, /roles/);
+  assert.match(topic.body, /scout/);
+  assert.match(topic.body, /builder/);
+});
+
+test("forge help lists setup checklist", () => {
+  const topic = help.getTopic("forge");
+  assert.match(topic.body, /\/fusion setup/);
+  assert.match(topic.body, /\/fission setup/);
+  assert.match(topic.body, /fusion.*fission.*auto/is);
 });
 
 test("getTopic by id", () => {

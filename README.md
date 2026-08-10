@@ -15,13 +15,29 @@
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1F2937?style=flat-square"></a>
 </p>
 
-<p align="center">
-  <a href="#quick-start">Quick start</a> &middot;
-  <a href="#three-ways-to-work">Workflows</a> &middot;
-  <a href="#safety-that-travels-with-the-work">Safety</a> &middot;
-  <a href="docs/REFERENCE.md">Reference</a> &middot;
-  <a href="docs/ARCHITECTURE.md">Architecture</a>
-</p>
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Why Alloy](#why-alloy)
+- [In-product help](#in-product-help)
+- [Workflows](#workflows)
+  - [Comparison](#comparison)
+  - [Setup checklist](#setup-checklist)
+  - [Combinations](#combinations)
+  - [Chat](#chat)
+  - [Fusion](#fusion-combine-perspectives-keep-provenance)
+  - [Fission](#fission-adjudicate-the-current-change)
+  - [Auto](#auto-build-check-review-repeat)
+  - [Forge](#forge-full-multi-model-spine)
+- [The product layer on Pi](#the-product-layer-on-pi)
+- [Safety that travels with the work](#safety-that-travels-with-the-work)
+- [Commands worth knowing](#commands-worth-knowing)
+- [Project status](#project-status)
+- [Documentation](#documentation)
+- [Acknowledgments](#acknowledgments)
+- [Contributing](#contributing)
+
+Also: [Reference](docs/REFERENCE.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md)
 
 Alloy is a multi-provider coding agent harness built on
 [Pi](https://pi.dev). It brings Claude, ChatGPT/Codex, and Grok into one daily
@@ -140,47 +156,105 @@ Most coding agents make you choose a model and rebuild context around it. Alloy
 separates the **harness** from the **model**: use one model directly, route a task
 by role, or combine independent proposals without changing terminals.
 
-## Four ways to work
+## In-product help
+
+Everything below is also available **inside Alloy**:
+
+```text
+/help                 # topic picker (includes workflows, fusion, fission, auto, forge)
+/help workflows       # comparison table, setup checklist, combinations
+/help fusion
+/help fission
+/help auto
+/help forge
+/help search forge
+/help commands        # live registry of every slash command
+```
+
+Use `/help` first when you are unsure which workflow or setup step to run.
+
+## Workflows
 
 <p align="center">
   <img src="docs/assets/alloy-workflows.svg" alt="Alloy Chat, Fusion, and Auto workflow diagrams" width="1000">
 </p>
 
-| Workflow | Use it when | What Alloy does |
-|---|---|---|
-| **Chat** | You want a fast answer or direct implementation from the active model. | Runs the Pi agent loop behind Alloy's Solid/OpenTUI shell, with Alloy memory, skills, MCP, and policy. |
-| **Fusion** | The decision benefits from two independent technical perspectives. | Runs read-only Architect and Builder proposals concurrently, then gives a fresh Synthesizer both validated outputs. |
-| **Auto** | The work has an accepted implementation boundary and should be checked as it progresses. | Runs Scout, Planner, Builder, diagnostics, independent review, and bounded fix rounds with artifacts. |
-| **Fission** | Current uncommitted changes need adversarial review against a contract. | Freezes bounded evidence for blind read-only specialists, then gives a fresh Judge their structured findings. |
+### Comparison
+
+| Workflow | Command | Writes code? | Model setup | Use it when |
+|---|---|---|---|---|
+| **Chat** | (prompt only) | Yes (if mode allows) | `/model` (session only) | Fast answer or direct work with one active model |
+| **Fusion** | `/fusion <objective>` | **No** (plan-only) | **`/fusion setup`** | Two independent technical perspectives → one attributed plan |
+| **Fission** | `/fission [N] <request>` | **No** | **`/fission setup`** | Adversarial multi-role review of current changes against a contract |
+| **Auto** | `/auto <request>` | **Yes** (worktree) | `roles.*.model` in config (no wizard) | Implement with scout/plan/build/diagnostics/review/fix loops |
+| **Forge** | `/forge <request>` | **Yes** | Fusion + fission setups + auto roles | Full spine: plan → adversarial review → implement → re-review |
+
+**Important:** Main chat `/model` does **not** set fusion, fission, or auto child models. Each workflow has its own routes.
+
+### Setup checklist
+
+Do this once (or whenever you change providers):
+
+1. **`/login`** (and `/login xai`, etc.) for every provider you will use  
+2. **`/fusion setup`** — Architect, Builder, Synthesizer (models + effort)  
+3. **`/fission setup`** — default/max reviewer count, **role catalog** per slot, models, judge, severity  
+4. **Auto models** (optional but recommended) — edit `~/.pi/alloy/config.json`:
+
+```json
+"roles": {
+  "scout":    { "model": "xai/grok-4.5" },
+  "planner":  { "model": "anthropic/claude-sonnet-4-6" },
+  "builder":  { "model": "openai-codex/gpt-5.4" },
+  "fixer":    { "model": "openai-codex/gpt-5.4" },
+  "reviewer": { "model": "anthropic/claude-opus-4-6" }
+}
+```
+
+If `roles.*.model` is `null`, Auto routes via **profiles / orchestration.roles** (research → plan → code → review). See `/help agents` and `/profiles`.
+
+5. **`/fusion status`** and **`/fission status`** to verify  
+6. **`/trust`** the project before Fission/Forge on that repo  
+
+Example fusion/fission blocks also live in [`config/alloy.example.json`](./config/alloy.example.json).
+
+### Combinations
+
+| Goal | What to run |
+|---|---|
+| Single-model coding | Chat after `/model` |
+| Multi-model plan only | `/fusion <objective>` |
+| Review dirty tree only | `/fission <contract>` or `/fission 5 <contract>` |
+| Implement with fix loops only | `/auto <request>` |
+| **Full quality path** | **`/forge <request>`** |
+| Plan then implement yourself | `/fusion …` then `/auto …` |
+| Plan then review (needs a diff for Fission evidence) | `/fusion …` then edit or `/auto …` then `/fission …` |
+| Extra free-form child | `/agent name model=provider/id <task>` |
+
+### Chat
+
+Direct Pi agent loop behind Alloy’s OpenTUI shell: memory, skills, MCP, modes,
+and permissions. Fast path when one model is enough.
 
 ### Fusion: combine perspectives, keep provenance
 
-`/fusion <objective>` is a plan-only coordinator. Architect and Builder inspect
-the same repository independently with repository-confined read tools. A
-Synthesizer runs only after both proposal contracts validate and returns one
-attributed recommendation. While the run is active, the native dashboard shows
-Architect and Builder side by side with visible model output and tool activity,
-then adds the Synthesizer below them. Compact terminals use a four-row summary
-that keeps the composer available. The completed attributed result remains in
-transcript scrollback.
+`/fusion <objective>` is a **plan-only** coordinator.
+
+```text
+/fusion setup          # required before first useful run
+/fusion status
+/fusion <objective>
+```
+
+Architect and Builder inspect the repository independently with read-only tools
+and **distinct** model routes. A Synthesizer runs only after both proposal
+contracts validate and returns one attributed recommendation. Fusion never
+writes or merges project code.
 
 An eligible successful run launches exactly three routed child-agent roles.
-Each role may take multiple model turns while using read tools. Auth, abort,
-validation, or budget failures stop earlier. Fusion never writes or merges
-project code.
+Auth, abort, validation, or budget failures stop earlier. Artifacts land under
+`~/.pi/alloy/runs/` (or `…/<forgeRunId>/fusion/` when launched by Forge).
 
-### Auto: build, check, review, repeat
-
-`/auto <request>` attempts a checkpoint in Git repositories, prefers an isolated
-worktree, delegates bounded roles, runs project diagnostics, and asks an
-independent Reviewer for a verdict. A checkpoint failure is recorded but does
-not stop the build. Diagnostic or review failures can trigger a limited Fixer
-loop.
-
-Every run records routing and usage metadata, raw check output, patches, and
-status under `~/.pi/alloy/runs/`. Treat these artifacts as operator data because
-repository diagnostics control what they print. Auto fails closed when Docker
-sandbox isolation is required because its diagnostics execute as host processes.
+In-product: `/help fusion`.
 
 ### Fission: adjudicate the current change
 
@@ -188,6 +262,13 @@ sandbox isolation is required because its diagnostics execute as host processes.
 > Repository Git config/attributes may execute under normal Git behavior.
 > Do not run it on hostile/untrusted repositories.
 > This is a product boundary, not a hidden implementation caveat.
+
+```text
+/fission setup                 # roles, models, judge, severity
+/fission status
+/fission <contract>            # default reviewer count
+/fission 5 <contract>          # explicit count (≤ max)
+```
 
 Fission freezes the current dirty Git state, sends only the bounded packet to
 blind read-only reviewers, and has a fresh Judge adjudicate their structured
@@ -197,13 +278,12 @@ tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are integers from
 1 through the effective maximum of five and are rejected, never clamped, above
 that limit.
 
-Reviewer roles expand with the count: general adversarial at one; correctness
-and security at two; architecture/failure handling at three; test/spec coverage
-at four; and performance/concurrency/resources at five. Reviewer routes, the
-Judge route, and optional family labels are owned by global operator config. A
-five-reviewer run requires five distinct configured reviewer routes. Fission
-admits each exact route with no fallback and attests the actual provider/model
-emitted by every child.
+Reviewers use **predefined roles** from `/fission setup` (security, adversarial
+code review, cynical customer, correctness, architecture, tests, performance,
+privacy, ops, general). Default packs by N still apply if `fission.roles` is
+empty. A five-reviewer run requires five distinct configured reviewer routes.
+Fission admits each exact route with **no fallback** and attests the actual
+provider/model emitted by every child.
 
 Capture uses normal bounded Git commands. Review children receive only `read`,
 `grep`, `find`, and `ls`, with `cwd` and `readRoot` confined to the immutable
@@ -248,8 +328,64 @@ trusted, run `/fission 5 <contract contents>`, and save each `result.json`.
 Evaluate the nine saved paths with `node scripts/fission-dogfood.mjs evaluate`.
 Missing paths are `UNEXECUTED`, malformed or incomplete artifacts are `FAILED`,
 and only all six matched high/critical seeds plus three clean controls is
-`PASSED`. Integrating Fission into `/auto` remains follow-up work until this
-manual authenticated dogfood gate passes.
+`PASSED`.
+
+### Auto: build, check, review, repeat
+
+```text
+/auto <request>
+```
+
+There is **no `/auto setup`**. Models come from `roles.*.model` or profile
+routing (see [Setup checklist](#setup-checklist)), not from main `/model`.
+
+Flow:
+
+```text
+scout → plan → checkpoint → build (worktree)
+     → diagnostics → review
+     ↺ fixer (FAIL / diag fail, up to maxFixRounds)
+```
+
+Checkpoint failure is recorded but does not stop the build. Diagnostics are
+host processes (not Docker-sandboxed). Artifacts under `~/.pi/alloy/runs/`.
+
+Auto is also the **implement phase** of `/forge`, with fusion synthesis and
+pre-build fission findings injected as context.
+
+In-product: `/help auto`.
+
+### Forge: full multi-model spine
+
+```text
+/forge <request>
+```
+
+End-to-end quality path with **one shared run id**:
+
+```text
+fusion
+  → fission-plan   (NO_CHANGES OK if no code yet; FAIL blocks implement)
+  → auto           (seeded with fusion + fission context)
+  → fission-diff   (reviews worktree if present, else cwd)
+```
+
+Layout:
+
+```text
+~/.pi/alloy/runs/<project>/<runId>/
+  forge.json  summary.json  events.jsonl  request.md
+  fusion/
+  fission-plan/
+  auto/
+  fission-diff/
+  phases/
+```
+
+Requires `/fusion setup` and `/fission setup` (and ideally Auto `roles.*.model`).
+Standalone `/fusion`, `/fission`, and `/auto` remain available for partial runs.
+
+In-product: `/help forge` · `/help workflows`.
 
 ## The product layer on Pi
 
@@ -318,13 +454,16 @@ repository diagnostics are host processes. Read the
 | `/checkpoint` / `/undo` | Capture and restore a recoverable Git snapshot. |
 | `/agent` / `/agents` | Launch and inspect a free-form routed child agent. |
 | `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
+| `/fusion setup` / `status` | Configure and inspect Architect / Builder / Synthesizer models and effort. |
 | `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
 | `/fission [1..5] <contract>` | Run bounded adversarial review of the trusted repository's current changes. |
+| `/fission setup` / `status` | Configure roles, models, judge, counts, effort, and severity. |
 | `/forge <request>` | Full spine: fusion → fission → auto → post-diff fission with shared artifacts. |
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
 | `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
 | `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
-| `/help` | Browse topics; use `/help search <query>` or `/help commands` for discovery. |
+| `/help` | Browse topics; use `/help workflows`, `/help search <query>`, or `/help commands`. |
+| `/help workflows` | Comparison, setup checklist, and combinations for fusion / fission / auto / forge. |
 | `/help commands` | Show the complete active OpenTUI and Alloy backend command registry. |
 
 The [reference guide](docs/REFERENCE.md) includes every Alloy command, provider
