@@ -258,12 +258,15 @@ test("fission setup saves default≠max, efforts, severity, and distinct routes"
   const answers = [
     "Default 2: 2 reviewers + 1 judge = 3 agents",
     "Max 3: allows /fission 3 … (3 reviewers + 1 judge = 4 agents)",
+    "Security & trust boundaries",
     "Anthropic",
     "claude-new",
     "high",
+    "Cynical customer",
     "Codex",
     "gpt-new",
     "default (model/provider default)",
+    "Adversarial code review",
     "xAI",
     "grok-new",
     "low",
@@ -321,14 +324,24 @@ test("fission setup saves default≠max, efforts, severity, and distinct routes"
   assert.equal(saves[0].defaultReviewers, 2);
   assert.equal(saves[0].maxReviewers, 3);
   assert.deepEqual(saves[0].reviewerEfforts, ["high", null, "low"]);
+  assert.deepEqual(saves[0].roles, [
+    "security_trust_boundaries",
+    "cynical_customer",
+    "adversarial_code_review",
+  ]);
   assert.equal(saves[0].judgeEffort, "medium");
   assert.equal(saves[0].blockingSeverity, "high");
   assert.equal(saves[0].modelFamilies["anthropic/claude-new"], "claude");
   assert.equal(saves[0].modelFamilies["openai-codex/gpt-new"], "gpt");
   assert.match(selections[0].options[0], /Default 1:/);
   assert.match(selections[1].options[0], /Max 2:/);
-  // Specialty visible in reviewer prompts
-  assert.ok(selections.some((s) => /Correctness|Security|Architecture/i.test(s.title)));
+  // Role picker offers catalog labels
+  assert.ok(
+    selections.some((s) =>
+      (s.options || []).includes("Cynical customer"),
+    ),
+  );
+  assert.ok(selections.some((s) => /pick role|Security|Cynical|Adversarial/i.test(s.title)));
   assert.deepEqual(notifications, []);
   assert.match(selections.at(-1).options.join("\n"), /Default run:/i);
 });
@@ -355,6 +368,7 @@ test("fission setup reports project-effective restrictions after saving global s
   const answers = [
     "Default 1: 1 reviewer + 1 judge = 2 agents",
     "Max 1: allows /fission 1 … (1 reviewer + 1 judge = 2 agents)",
+    "General adversarial",
     "Anthropic",
     "reviewer",
     "default (model/provider default)",

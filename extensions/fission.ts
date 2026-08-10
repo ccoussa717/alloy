@@ -18,6 +18,8 @@ const {
   FISSION_ROLES,
   formatFissionRoleLabel,
   fissionConfigHint,
+  fissionRoleSelectOptions,
+  fissionRoleIdFromLabel,
 } = require(join(root, "lib", "fission.mjs"));
 const { groupFusionModelRoutes: groupModelRoutes } = require(
   join(root, "lib", "fusion.mjs"),
@@ -40,7 +42,11 @@ type Dependencies = {
 };
 
 const FISSION_ARGUMENTS = [
-  { value: "setup", label: "setup", description: "Configure reviewers, judge, effort, severity" },
+  {
+    value: "setup",
+    label: "setup",
+    description: "Configure roles, models, effort, severity",
+  },
   { value: "status", label: "status", description: "Show effective Fission settings" },
   { value: "help", label: "help", description: "Show Fission usage" },
 ];
@@ -80,12 +86,13 @@ function formatFissionHelp() {
   return [
     "/fission <request>              Run with the configured default reviewers",
     "/fission <reviewers> <request>  Override the reviewer count for one run (≤ max)",
-    "/fission setup                  Configure models, counts, effort, severity",
-    "/fission status                 Show effective models, specialties, limits",
+    "/fission setup                  Roles, models, counts, effort, severity",
+    "/fission status                 Roles, models, efforts, limits",
     "/fission help                   Show this help",
     "",
     "Workflow: N specialist reviewers (parallel) → 1 independent judge.",
-    "Specialties are fixed by N (correctness, security, architecture, tests, performance).",
+    "Each reviewer picks a predefined role (security, cynical customer, adversarial review, …)",
+    "plus a distinct model. Reviewers run in parallel; the judge adjudicates findings.",
     "Models must be distinct exact routes — no fallback. Run /fission setup first.",
     "Configured count means reviewers + 1 judge. Effort uses the same levels as /fusion.",
   ];
@@ -99,8 +106,9 @@ function formatFissionStatus(config: any) {
     ? fission.models.slice(0, maxReviewers)
     : [];
   const efforts = Array.isArray(fission.reviewerEfforts) ? fission.reviewerEfforts : [];
-  const defaultRoles = FISSION_ROLES[reviewers] || [];
-  const maxRoles = FISSION_ROLES[maxReviewers] || [];
+  const configuredRoles = Array.isArray(fission.roles) ? fission.roles : [];
+  const fallbackRoles =
+    FISSION_ROLES[models.length || maxReviewers || reviewers] || [];
   const lines = [
     "Fission settings:",
     `Default run: ${formatAgentCount(reviewers)}`,
@@ -110,14 +118,14 @@ function formatFissionStatus(config: any) {
     `Blocking severity: ${fission.blockingSeverity || "not configured"}`,
     `Judge effort: ${formatEffort(fission.judgeEffort)}`,
     "",
-    "Reviewer models (slot → specialty at max N → route | effort):",
+    "Reviewers (slot → role → route | effort):",
   ];
   if (!models.length) {
     lines.push("None configured — run /fission setup.");
   } else {
     for (let i = 0; i < models.length; i++) {
-      const specialty =
-        formatFissionRoleLabel(maxRoles[i] || defaultRoles[i] || "reviewer");
+      const roleId = configuredRoles[i] || fallbackRoles[i] || "reviewer";
+      const specialty = formatFissionRoleLabel(roleId);
       lines.push(
         `  R${i + 1} [${specialty}]: ${models[i]} | effort ${formatEffort(efforts[i])}`,
       );
@@ -361,13 +369,33 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       return;
     }
 
-    const maxRoles = FISSION_ROLES[maxReviewers] || [];
+    const defaultPack = FISSION_ROLES[maxReviewers] || [];
+    const currentRoles = Array.isArray(current.roles) ? current.roles : [];
     const selectedModels: string[] = [];
+    const selectedRoles: string[] = [];
     const reviewerEfforts: (string | null)[] = [];
+    const roleOptions = fissionRoleSelectOptions();
 
-    // 3) One distinct model (+ effort) per max reviewer slot
+    // 3) Role + distinct model (+ effort) per max reviewer slot
     for (let index = 0; index < maxReviewers; index += 1) {
-      const specialty = formatFissionRoleLabel(maxRoles[index]);
+      const priorRole = currentRoles[index] || defaultPack[index];
+      const priorLabel = formatFissionRoleLabel(priorRole);
+      const roleLabel = await ctx.ui.select(
+        `Reviewer ${index + 1}/${maxReviewers} — pick role (current: ${priorLabel})`,
+        roleOptions,
+      );
+      if (!roleLabel) {
+        cancelSetup(ctx);
+        return;
+      }
+      const roleId = fissionRoleIdFromLabel(roleLabel);
+      if (!roleId) {
+        cancelSetup(ctx);
+        return;
+      }
+      selectedRoles.push(roleId);
+      const specialty = formatFissionRoleLabel(roleId);
+
       const availableGroups = groups
         .map((group: any) => ({
           ...group,
@@ -477,6 +505,7 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
 
     const saved = saveFissionConfig({
       models: selectedModels,
+      roles: selectedRoles,
       judgeModel: judgeRoute,
       modelFamilies,
       defaultReviewers,
