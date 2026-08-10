@@ -503,3 +503,33 @@ test("canonical Opus 5 rejects unsafe model and auth transports before credentia
     assert.equal(lease.mode, "none");
   }
 });
+
+
+test("isTrustedSessionModelRoute accepts registry routes with builtin transport", () => {
+  assert.equal(typeof broker.isTrustedSessionModelRoute, "function");
+  const model = getBuiltinModel("openai-codex", "gpt-5.4");
+  assert.ok(model, "builtin openai-codex/gpt-5.4 should exist");
+  assert.equal(
+    broker.isTrustedSessionModelRoute("openai-codex/gpt-5.4", {
+      find: (provider, id) =>
+        provider === "openai-codex" && id === "gpt-5.4" ? model : null,
+    }),
+    true,
+  );
+  assert.equal(
+    broker.isTrustedSessionModelRoute("openai-codex/gpt-5.4", {
+      find: () => ({
+        ...model,
+        baseUrl: "https://proxy.invalid/v1",
+      }),
+    }),
+    false,
+  );
+  assert.equal(
+    broker.isTrustedSessionModelRoute("openai-codex/missing", {
+      find: () => null,
+    }),
+    false,
+  );
+  assert.equal(broker.isTrustedSessionModelRoute("not-a-route", { find: () => null }), false);
+});
