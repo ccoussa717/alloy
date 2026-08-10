@@ -23,6 +23,7 @@ const piSlashCommands = await import(
 test("catalog has core topics", () => {
   const ids = help.listTopics().map((t) => t.id);
   for (const need of [
+    "start",
     "overview",
     "workflows",
     "auth",
@@ -31,12 +32,30 @@ test("catalog has core topics", () => {
     "fusion",
     "fission",
     "forge",
+    "packs",
+    "cli",
     "commands",
     "mcp",
     "memory",
   ]) {
     assert.ok(ids.includes(need), `missing topic ${need}`);
   }
+});
+
+test("topics expose summary and group for the picker", () => {
+  const topics = help.listTopics();
+  assert.ok(topics.every((t) => t.summary && t.group));
+  assert.equal(topics[0].id, "start");
+  const lines = help.formatTopicPickerLines();
+  assert.ok(lines.some((l) => l.includes("Start here")));
+  assert.ok(lines.some((l) => l.startsWith("start")));
+  assert.ok(lines.some((l) => l.startsWith("search")));
+});
+
+test("getTopic resolves aliases", () => {
+  assert.equal(help.getTopic("quickstart")?.id, "start");
+  assert.equal(help.getTopic("docker")?.id, "sandbox");
+  assert.equal(help.getTopic("login")?.id, "auth");
 });
 
 test("workflows help maps fusion fission auto forge and setups", () => {
@@ -97,10 +116,15 @@ test("searchHelp memory", () => {
   assert.ok(hits.some((h) => h.id === "memory"));
 });
 
-test("formatTopic", () => {
+test("formatTopic is user-friendly with related and navigate", () => {
   const text = help.formatTopic(help.getTopic("commands"));
   assert.match(text, /\/help commands/);
-  assert.match(text, /active command registry/);
+  assert.match(text, /active command registry/i);
+  assert.match(text, /Related|Navigate/i);
+  const start = help.formatTopic(help.getTopic("start"));
+  assert.match(start, /First 5 minutes|first 5 minutes|Welcome/i);
+  assert.doesNotMatch(start, /^id:\s/m);
+  assert.doesNotMatch(start, /^tags:\s/m);
 });
 
 test("fusion help documents the plan-only three-role workflow", () => {
