@@ -261,6 +261,7 @@ In-product: `/help fusion`.
 > **Trust boundary:** Fission is for projects the operator has marked trusted.
 > Repository Git config/attributes may execute under normal Git behavior.
 > Do not run it on hostile/untrusted repositories.
+> This is a product boundary, not a hidden implementation caveat.
 
 ```text
 /fission setup                 # roles, models, judge, severity
@@ -269,20 +270,52 @@ In-product: `/help fusion`.
 /fission 5 <contract>          # explicit count (≤ max)
 ```
 
-Fission freezes dirty Git evidence, runs **N specialist reviewers** in parallel
-(each with a **predefined role** + model), then a **Judge** validates/rejects
-findings. It does **not** synthesize one product plan (that is Fusion).
+Fission freezes the current dirty Git state, sends only the bounded packet to
+blind read-only reviewers, and has a fresh Judge adjudicate their structured
+findings. Use `/fission <contract>` for the configured default count or
+`/fission 5 <contract>` for an explicit count. The equivalent `alloy_fission`
+tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are integers from
+1 through the effective maximum of five and are rejected, never clamped, above
+that limit.
 
-Roles (setup catalog) include security, adversarial code review, cynical
-customer, correctness, architecture, tests, performance, privacy, ops, and
-general adversarial. Default packs by N still apply if `fission.roles` is empty.
+Reviewers use **predefined roles** from `/fission setup` (security, adversarial
+code review, cynical customer, correctness, architecture, tests, performance,
+privacy, ops, general). Default packs by N still apply if `fission.roles` is
+empty. A five-reviewer run requires five distinct configured reviewer routes.
+Fission admits each exact route with **no fallback** and attests the actual
+provider/model emitted by every child.
 
-`PASS` means only: no submitted **blocking** finding validated — not “safe to merge.”
-`NO_CHANGES` means a clean tree (no review packet). Exact routes, no model fallback.
+Capture uses normal bounded Git commands. Review children receive only `read`,
+`grep`, `find`, and `ls`, with `cwd` and `readRoot` confined to the immutable
+packet root. Reservations and observed usage live only in the current process's
+in-process registry; a restart cannot resume a run. Source and packet digests
+are checked before review, before judgment, and before the verdict. These checks
+detect ordinary drift, not malicious same-UID mutation or byte-identical ABA
+restoration.
 
-Tool: `alloy_fission`. Caps and statuses are documented in `/help fission`.
+Exact capture and output caps are fail-closed: request: 16 KiB; status: 1 MiB;
+staged plus unstaged patches: 2 MiB; each retained file: 256 KiB;
+all retained files: 2 MiB; changed entries: 10,000;
+assistant output per reviewer or judge: 256 KiB cumulative serialized
+completed-assistant messages. Crossing a cap produces `INCOMPLETE`; accepted
+evidence is never truncated.
+
+`NO_CHANGES` means the repository was clean and no run was created.
+`INCOMPLETE` means evidence, route admission, a child, adjudication, settlement,
+or a drift check failed; it is never a pass. `FAIL` requires a Judge-validated
+finding at the configured blocking severity. `PASS` means only:
+`no submitted blocking finding validated.` It does not mean tests ran, the code
+is correct, or the change is safe to merge or deploy.
+
+The example in [`config/alloy.example.json`](./config/alloy.example.json) uses
+routes from the pinned Pi catalogs. Confirm they are authenticated in the live
+catalog; five-reviewer runs need five distinct eligible reviewer routes in
+addition to the Judge.
 
 #### Offline dogfood and authenticated gate
+
+The corpus utility prepares repositories and evaluates saved normalized results.
+It does not load Alloy, credentials, or models and cannot make model calls:
 
 ```bash
 node scripts/fission-dogfood.mjs materialize \
@@ -290,9 +323,12 @@ node scripts/fission-dogfood.mjs materialize \
   --out /tmp/alloy-fission-dogfood
 ```
 
-In an authenticated Alloy session, trust each generated repo, run
-`/fission 5 <contract>`, save each `result.json`, then
-`node scripts/fission-dogfood.mjs evaluate`.
+In a separate authenticated Alloy session, mark each generated repository
+trusted, run `/fission 5 <contract contents>`, and save each `result.json`.
+Evaluate the nine saved paths with `node scripts/fission-dogfood.mjs evaluate`.
+Missing paths are `UNEXECUTED`, malformed or incomplete artifacts are `FAILED`,
+and only all six matched high/critical seeds plus three clean controls is
+`PASSED`.
 
 ### Auto: build, check, review, repeat
 
