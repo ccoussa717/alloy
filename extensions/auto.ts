@@ -60,6 +60,11 @@ const {
   formatPackCommandHelp,
   formatSetupCommandHelp,
   helpMenuLines,
+  subcommandMenuOptions,
+  resolveSubcommandChoice,
+  FUSION_SUBCOMMANDS,
+  AUTO_SUBCOMMANDS,
+  PACK_SUBCOMMANDS,
 } = require(join(root, "lib", "command-help.mjs"));
 
 const AUTO_ROLES = ["scout", "planner", "builder", "fixer", "reviewer"] as const;
@@ -663,30 +668,49 @@ export function registerAuto(pi: ExtensionAPI) {
     return new Text(text, outputPad, 1, (value) => theme.bg("customMessageBg", value));
   });
 
+  async function runAutoSubcommand(id: string, ctx: ExtensionContext) {
+    if (id === "help") {
+      const lines = formatAutoHelp();
+      if (ctx.hasUI) await ctx.ui.select("Auto help", lines);
+      else console.log(lines.join("\n"));
+      return;
+    }
+    if (id === "status") {
+      const lines = helpMenuLines(formatAutoStatus(ctx.cwd || process.cwd()));
+      if (ctx.hasUI) await ctx.ui.select("Auto status", lines);
+      else console.log(lines.join("\n"));
+      return;
+    }
+    if (id === "setup") {
+      try {
+        await setupAuto(ctx);
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+    }
+  }
+
   pi.registerCommand("auto", {
     description:
       "Auto pipeline: /auto <request|setup|status|help>",
     getArgumentCompletions: getAutoArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request || request.toLowerCase() === "help") {
-        const lines = formatAutoHelp();
-        if (ctx.hasUI) await ctx.ui.select("Auto help", lines);
-        else console.log(lines.join("\n"));
-        return;
-      }
-      if (request.toLowerCase() === "status") {
-        const lines = formatAutoStatus(ctx.cwd || process.cwd());
-        if (ctx.hasUI) await ctx.ui.select("Auto status", lines);
-        else console.log(lines.join("\n"));
-        return;
-      }
-      if (request.toLowerCase() === "setup") {
-        try {
-          await setupAuto(ctx);
-        } catch (error) {
-          ctx.ui.notify(String((error as Error).message || error), "warning");
+      if (!request) {
+        if (!ctx.hasUI) {
+          console.log(formatAutoHelp().join("\n"));
+          return;
         }
+        const options = subcommandMenuOptions(AUTO_SUBCOMMANDS);
+        const picked = await ctx.ui.select("Auto — pick an action", options);
+        const id = resolveSubcommandChoice(picked, AUTO_SUBCOMMANDS);
+        if (!id) return;
+        await runAutoSubcommand(id, ctx);
+        return;
+      }
+      const lower = request.toLowerCase();
+      if (lower === "help" || lower === "status" || lower === "setup") {
+        await runAutoSubcommand(lower, ctx);
         return;
       }
 
@@ -783,56 +807,89 @@ export function registerAuto(pi: ExtensionAPI) {
     },
   });
 
+  async function showPackList(ctx: ExtensionContext) {
+    const lines = helpMenuLines([
+      "Local policy packs (posture only — not models):",
+      " ",
+      ...listPolicyPacks().map(
+        (p: any) => `  ${p.id.padEnd(10)} ${p.label} — ${p.description}`,
+      ),
+      " ",
+      "Apply: /pack apply ship | incident | economy",
+      "Models: /setup or /fission setup · /auto setup",
+    ]);
+    if (ctx.hasUI) await ctx.ui.select("Policy packs", lines);
+    else console.log(lines.join("\n"));
+  }
+
+  async function applyPackById(packId: string, ctx: ExtensionContext) {
+    const pack = getPolicyPack(packId);
+    if (!pack) {
+      ctx.ui.notify("Unknown pack. Use: ship | incident | economy", "warning");
+      return;
+    }
+    if (ctx.hasUI) {
+      const ok = await ctx.ui.confirm(
+        `Apply pack "${pack.id}"?`,
+        pack.description,
+      );
+      if (!ok) {
+        ctx.ui.notify("Pack apply cancelled.", "info");
+        return;
+      }
+    }
+    try {
+      applyGlobalPolicyPack(pack.apply);
+      ctx.ui.notify(`Applied pack: ${pack.id}`, "info");
+      const lines = helpMenuLines(formatAutoStatus(ctx.cwd || process.cwd()));
+      if (ctx.hasUI) await ctx.ui.select(`Pack ${pack.id} applied`, lines);
+    } catch (error) {
+      ctx.ui.notify(String((error as Error).message || error), "error");
+    }
+  }
+
   pi.registerCommand("pack", {
     description: "Policy packs: /pack list | /pack apply <ship|incident|economy>",
     handler: async (args, ctx) => {
       const raw = (args || "").trim();
       const [cmd, packId] = raw.split(/\s+/);
-      if (!cmd || cmd === "list" || cmd === "help") {
-        if (cmd === "help") {
-          const lines = formatPackCommandHelp();
-          if (ctx.hasUI) await ctx.ui.select("Pack help", lines);
-          else console.log(lines.join("\n"));
+
+      if (!cmd) {
+        if (!ctx.hasUI) {
+          console.log(formatPackCommandHelp().join("\n"));
           return;
         }
-        const lines = helpMenuLines([
-          "Local policy packs (posture only — not models):",
-          " ",
-          ...listPolicyPacks().map(
-            (p: any) => `  ${p.id.padEnd(10)} ${p.label} — ${p.description}`,
-          ),
-          " ",
-          "Apply: /pack apply ship | incident | economy",
-          "Models: /setup or /fission setup · /auto setup",
-        ]);
-        if (ctx.hasUI) await ctx.ui.select("Policy packs", lines);
+        const options = subcommandMenuOptions(PACK_SUBCOMMANDS);
+        const picked = await ctx.ui.select("Pack — pick an action", options);
+        const id = resolveSubcommandChoice(picked, PACK_SUBCOMMANDS);
+        if (!id) return;
+        if (id === "help") {
+          await ctx.ui.select("Pack help", formatPackCommandHelp());
+          return;
+        }
+        if (id === "list") {
+          await showPackList(ctx);
+          return;
+        }
+        if (id.startsWith("apply ")) {
+          await applyPackById(id.slice("apply ".length), ctx);
+          return;
+        }
+        return;
+      }
+
+      if (cmd === "list") {
+        await showPackList(ctx);
+        return;
+      }
+      if (cmd === "help") {
+        const lines = formatPackCommandHelp();
+        if (ctx.hasUI) await ctx.ui.select("Pack help", lines);
         else console.log(lines.join("\n"));
         return;
       }
       if (cmd === "apply") {
-        const pack = getPolicyPack(packId);
-        if (!pack) {
-          ctx.ui.notify("Unknown pack. Use: ship | incident | economy", "warning");
-          return;
-        }
-        if (ctx.hasUI) {
-          const ok = await ctx.ui.confirm(
-            `Apply pack "${pack.id}"?`,
-            pack.description,
-          );
-          if (!ok) {
-            ctx.ui.notify("Pack apply cancelled.", "info");
-            return;
-          }
-        }
-        try {
-          applyGlobalPolicyPack(pack.apply);
-          ctx.ui.notify(`Applied pack: ${pack.id}`, "info");
-          const lines = formatAutoStatus(ctx.cwd || process.cwd());
-          if (ctx.hasUI) await ctx.ui.select(`Pack ${pack.id} applied`, lines);
-        } catch (error) {
-          ctx.ui.notify(String((error as Error).message || error), "error");
-        }
+        await applyPackById(packId, ctx);
         return;
       }
       ctx.ui.notify("Usage: /pack list | /pack apply <ship|incident|economy>", "warning");
@@ -910,36 +967,55 @@ export function registerAuto(pi: ExtensionAPI) {
     },
   });
 
+  async function runFusionSubcommand(id: string, ctx: ExtensionContext) {
+    if (id === "help") {
+      await showFusionLines(ctx, "Fusion help", formatFusionCommandHelp());
+      return;
+    }
+    if (id === "status") {
+      try {
+        await showFusionLines(
+          ctx,
+          "Fusion status",
+          helpMenuLines(formatFusionStatus(ctx.cwd)),
+        );
+      } catch (err) {
+        const message = String((err as Error).message || err);
+        if (ctx.hasUI) ctx.ui.notify(message, "warning");
+        else console.error(message);
+      }
+      return;
+    }
+    if (id === "setup") {
+      try {
+        await setupFusion(ctx);
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+    }
+  }
+
   pi.registerCommand("fusion", {
     description:
       "Plan-only fusion: /fusion <objective|setup|status|help>",
     getArgumentCompletions: getFusionArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request || request.toLowerCase() === "help") {
-        await showFusionLines(ctx, "Fusion help", formatFusionCommandHelp());
+      if (!request) {
+        if (!ctx.hasUI) {
+          console.log(formatFusionCommandHelp().join("\n"));
+          return;
+        }
+        const options = subcommandMenuOptions(FUSION_SUBCOMMANDS);
+        const picked = await ctx.ui.select("Fusion — pick an action", options);
+        const id = resolveSubcommandChoice(picked, FUSION_SUBCOMMANDS);
+        if (!id) return;
+        await runFusionSubcommand(id, ctx);
         return;
       }
-      if (request.toLowerCase() === "status") {
-        try {
-          await showFusionLines(
-            ctx,
-            "Fusion status",
-            formatFusionStatus(ctx.cwd),
-          );
-        } catch (err) {
-          const message = String((err as Error).message || err);
-          if (ctx.hasUI) ctx.ui.notify(message, "warning");
-          else console.error(message);
-        }
-        return;
-      }
-      if (request.toLowerCase() === "setup") {
-        try {
-          await setupFusion(ctx);
-        } catch (err) {
-          ctx.ui.notify(String((err as Error).message || err), "warning");
-        }
+      const lower = request.toLowerCase();
+      if (lower === "help" || lower === "status" || lower === "setup") {
+        await runFusionSubcommand(lower, ctx);
         return;
       }
 

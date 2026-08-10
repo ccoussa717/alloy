@@ -82,9 +82,13 @@ function defaultFamilyForRoute(route: string): string {
   return FAMILY_BY_PROVIDER[provider] || provider;
 }
 
-const { formatFissionCommandHelp } = require(
-  join(root, "lib", "command-help.mjs"),
-);
+const {
+  formatFissionCommandHelp,
+  FISSION_SUBCOMMANDS,
+  subcommandMenuOptions,
+  resolveSubcommandChoice,
+  helpMenuLines,
+} = require(join(root, "lib", "command-help.mjs"));
 
 function formatFissionHelp() {
   return formatFissionCommandHelp();
@@ -527,36 +531,62 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
     ]);
   };
 
+  async function runFissionSubcommand(id: string, ctx: ExtensionContext) {
+    if (id === "help") {
+      await showFissionLines(ctx, "Fission help", formatFissionHelp());
+      return;
+    }
+    if (id === "status") {
+      try {
+        await showFissionLines(
+          ctx,
+          "Fission status",
+          helpMenuLines(formatFissionStatus(loadEffectiveConfig(ctx.cwd))),
+        );
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+      return;
+    }
+    if (id === "setup") {
+      try {
+        await setup(ctx);
+      } catch (error) {
+        ctx.ui.notify(String((error as Error).message || error), "warning");
+      }
+    }
+  }
+
   pi.registerCommand("fission", {
     description:
       "Adversarial review: /fission <request|setup|status|help>",
     getArgumentCompletions: getFissionArgumentCompletions,
     handler: async (args, ctx) => {
       const request = (args || "").trim();
-      if (!request || request.toLowerCase() === "help") {
-        await showFissionLines(ctx, "Fission help", formatFissionHelp());
-        return;
-      }
-      if (request.toLowerCase() === "status") {
-        try {
-          await showFissionLines(
-            ctx,
-            "Fission status",
-            formatFissionStatus(loadEffectiveConfig(ctx.cwd)),
-          );
-        } catch (error) {
-          ctx.ui.notify(String((error as Error).message || error), "warning");
+
+      // Bare /fission → actionable menu (not a fake list of command strings)
+      if (!request) {
+        if (!ctx.hasUI) {
+          console.log(formatFissionHelp().join("\n"));
+          return;
         }
+        const options = subcommandMenuOptions(FISSION_SUBCOMMANDS);
+        const picked = await ctx.ui.select(
+          "Fission — pick an action",
+          options,
+        );
+        const id = resolveSubcommandChoice(picked, FISSION_SUBCOMMANDS);
+        if (!id) return;
+        await runFissionSubcommand(id, ctx);
         return;
       }
-      if (request.toLowerCase() === "setup") {
-        try {
-          await setup(ctx);
-        } catch (error) {
-          ctx.ui.notify(String((error as Error).message || error), "warning");
-        }
+
+      const lower = request.toLowerCase();
+      if (lower === "help" || lower === "status" || lower === "setup") {
+        await runFissionSubcommand(lower, ctx);
         return;
       }
+
       try {
         const result = await invoke({
           request,
@@ -565,7 +595,12 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
         const lines = formatFissionLines(result);
         const hint = result.error ? fissionConfigHint(result.error) : null;
         if (hint) lines.push("", hint);
-        await ctx.ui.select(`Fission ${result.status}`, lines);
+        await ctx.ui.select(
+          `Fission ${result.status}`,
+          helpMenuLines(lines, {
+            doneLabel: "✓  Done — press Enter or Esc to close",
+          }),
+        );
       } catch (error) {
         const message = String((error as Error).message || error);
         const hint = fissionConfigHint(message);

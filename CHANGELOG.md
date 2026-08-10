@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-10
+
+### Fixed
+
+- Bare `/fission`, `/fusion`, `/auto`, `/forge`, `/pack` open an **action menu**
+  that runs the chosen subcommand (help/status/setup/apply) instead of a
+  decorative list that dismissed on Enter.
+
+
 ## [1.0.3] - 2026-08-10
 
 ### Fixed

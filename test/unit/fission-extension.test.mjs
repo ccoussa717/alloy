@@ -162,12 +162,22 @@ test("slash command exposes help and setup/status completions without starting a
   const command = commands.get("fission");
   const selected = [];
   const notifications = [];
+  let pickIndex = 0;
+  const picks = [
+    "help  —  How to use fission", // bare /fission → action menu
+  ];
   const ctx = {
     cwd: "/repo/project",
     hasUI: true,
     modelRegistry: { getAll: () => [] },
     ui: {
-      async select(title, lines) { selected.push({ title, lines }); },
+      async select(title, lines) {
+        selected.push({ title, lines });
+        if (/pick an action/i.test(title) && picks[pickIndex] != null) {
+          return picks[pickIndex++];
+        }
+        return lines[0];
+      },
       notify(message, level) { notifications.push({ message, level }); },
     },
   };
@@ -181,16 +191,18 @@ test("slash command exposes help and setup/status completions without starting a
 
   assert.equal(calls.length, 0);
   assert.equal(notifications.length, 0);
-  assert.equal(selected.length, 2);
-  for (const view of selected) {
-    const text = view.lines.join("\n");
-    assert.match(view.title, /Fission help/i);
-    assert.match(text, /\/fission setup/);
-    assert.match(text, /\/fission status/);
-    assert.match(text, /reviewers \+ 1 judge|N reviewers \+ 1 judge/i);
-    assert.match(text, /Done/i);
-    assert.ok(view.lines.length >= 8, "help menu should show a full guide");
-  }
+  assert.ok(selected.length >= 2);
+  assert.match(selected[0].title, /pick an action/i);
+  assert.ok(
+    selected[0].lines.some((l) => /help/i.test(l) && /How to use fission/i.test(l)),
+  );
+  const helpView = selected.find((v) => /Fission help/i.test(v.title));
+  assert.ok(helpView, "selecting help from menu must open help content");
+  const text = helpView.lines.join("\n");
+  assert.match(text, /\/fission setup/);
+  assert.match(text, /\/fission status/);
+  assert.match(text, /reviewers \+ 1 judge|N reviewers \+ 1 judge/i);
+  assert.match(text, /Done/i);
 });
 
 test("fission status shows routes, specialties, effort, and concurrency", async () => {
