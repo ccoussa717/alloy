@@ -7,6 +7,8 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-10
+
 ### Changed
 
 - **Occam simplify:** one model map (`profiles.*` canonical; `roles.*` optional
@@ -17,6 +19,8 @@ and releases use [semantic versioning](https://semver.org/).
 - **Policy packs** are model-agnostic (posture only: forceSandbox, budgets, counts).
 - **Identity** is env-only (`ALLOY_AGENT_ID`); no config.identity block required.
 - **`/setup`**: one path for fusion → fission reminder → auto setup.
+- README and `/help` rewritten around the three-layer operator model (Chat ·
+  Workflows · Policy).
 
 ## [1.0.0] - 2026-08-10
 
