@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-10
+
+### Fixed
+
+- Slash-command dialogs (`/help`, setup, doctor, …) use nearly the full
+  terminal: list content starts at the top of the panel instead of leaving a
+  large empty upper half.
+
+
 ## [1.0.1] - 2026-08-10
 
 ### Changed
