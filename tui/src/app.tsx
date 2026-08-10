@@ -1314,7 +1314,7 @@ export function AlloyApp(props: AlloyAppProps) {
                 flexShrink={1}
                 minHeight={2}
                 stickyScroll={true}
-                stickyStart="bottom"
+                stickyStart="top"
                 paddingLeft={2}
                 paddingRight={2}
                 paddingBottom={1}
