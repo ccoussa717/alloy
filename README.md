@@ -234,14 +234,15 @@ Do this once (or whenever you change providers):
 1. **`/login`** (and `/login xai`, etc.) for every provider you will use  
 2. **`/fusion setup`** — Architect, Builder, Synthesizer (models + effort)  
 3. **`/fission setup`** — default/max reviewer count, **role catalog** per slot, models, judge, severity  
-4. **`/auto setup`** — scout/planner/builder/fixer/reviewer models + implement permission profile  
-   - Default implement profile: **sandbox** (Docker required; no silent downgrade)  
-   - Override with setup, `auto.implementPermissionProfile`, or `ALLOY_IMPLEMENT_PROFILE`  
-5. Optional: **`/pack apply ship|incident|economy`** — local presets (does not wipe fission model routes)  
-6. **`/fusion status`** · **`/fission status`** · **`/auto status`** to verify  
-7. **`/trust`** the project before Fission/Forge on that repo  
+4. **`/auto setup`** — role models + optional **forceSandbox** for implement  
+   - Implement **inherits session** `/permissions` by default  
+   - `auto.forceSandbox: true` always sandboxes implement (fail closed without Docker)  
+5. Or one path: **`/setup`** (fusion → fission reminder → auto)  
+6. Optional: **`/pack apply ship|incident|economy`** — posture only (not models)  
+7. **`/fusion status`** · **`/fission status`** · **`/auto status`** to verify  
+8. **`/trust`** the project before Fission/Forge on that repo  
 
-If `roles.*.model` is `null`, Auto routes via **profiles / orchestration.roles** (research → plan → code → review). See `/help agents` and `/profiles`.
+Models: **`profiles.*`** (canonical). **`roles.*`** are optional auto overrides.
 
 Example fusion/fission/auto blocks also live in [`config/alloy.example.json`](./config/alloy.example.json).
 
@@ -416,11 +417,10 @@ and only all six matched high/critical seeds plus three clean controls is
 /auto <request>
 ```
 
-Models and implement profile come from **`/auto setup`** (or config), not from
-main `/model`. Default implement permission profile is **sandbox** (Docker
-required). Override with setup, `auto.implementPermissionProfile`, or
-`ALLOY_IMPLEMENT_PROFILE` (`ask-dangerous`, `ask-all`, …). There is **no silent
-Docker downgrade**.
+Models come from **`profiles.*` / `roles.*`** via **`/auto setup`** (or
+**`/setup`**), not from main `/model`. Implement **inherits session
+`/permissions`** unless `auto.forceSandbox` is on (then Docker is required —
+fail closed, no silent host downgrade).
 
 Flow:
 
@@ -474,8 +474,7 @@ In-product: `/help forge` · `/help workflows`.
 
 ### Identity, CLI, and CI
 
-Attribute multi-agent runs with `ALLOY_AGENT_ID` or `identity.id` in config
-(open-source harness identity — not tied to any fleet bus):
+Attribute multi-agent runs with env only:
 
 ```bash
 export ALLOY_AGENT_ID=sonny
