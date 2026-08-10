@@ -240,6 +240,11 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
     dependencies.saveGlobalFissionConfig || saveGlobalFissionConfig;
   const isTrustedModelRoute =
     dependencies.isTrustedModelRoute || isTrustedSessionModelRoute;
+  if (typeof isTrustedModelRoute !== "function") {
+    throw new Error(
+      "isTrustedSessionModelRoute is missing from credential-broker; reinstall/update Alloy",
+    );
+  }
   const executeFission = dependencies.runFission || runFission;
   const resolveParentPolicy =
     dependencies.resolveParentChildSpawnOpts || resolveParentChildSpawnOpts;
