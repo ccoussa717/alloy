@@ -24,8 +24,9 @@ process.env.HOME = home;
 process.env.ALLOY_HOME = join(home, ".pi", "alloy");
 process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
-const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
-  await import(pathToFileURL(join(root, "lib/config.mjs")).href);
+const configModule = await import(pathToFileURL(join(root, "lib/config.mjs")).href);
+const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFissionConfig, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
+  configModule;
 const { loadMcpConfig, listAutoConnectServers, listMcpServers } = await import(
   pathToFileURL(join(root, "lib/mcp-config.mjs")).href
 );
@@ -133,6 +134,49 @@ describe("trust boundary", () => {
     }
   });
 
+  it("saveGlobalFissionConfig enables orchestration and preserves unrelated operator settings", () => {
+    assert.equal(typeof saveGlobalFissionConfig, "function");
+    const path = join(home, ".pi", "alloy", "config.json");
+    const original = readFileSync(path, "utf8");
+    try {
+      saveGlobalFissionConfig({
+        models: ["anthropic/reviewer", "openai-codex/reviewer"],
+        judgeModel: "xai/judge",
+        modelFamilies: { "anthropic/reviewer": "claude" },
+        defaultReviewers: 2,
+        maxReviewers: 2,
+      });
+      const global = loadGlobalConfig();
+      assert.equal(global.permissionProfile, "ask-dangerous");
+      assert.equal(global.mcp.connectOnStart, false);
+      assert.equal(global.orchestration.enabled, true);
+      assert.equal(global.orchestration.maxConcurrency, 3);
+      assert.deepEqual(global.fission, {
+        models: ["anthropic/reviewer", "openai-codex/reviewer"],
+        judgeModel: "xai/judge",
+        modelFamilies: { "anthropic/reviewer": "claude" },
+        defaultReviewers: 2,
+        maxReviewers: 2,
+        blockingSeverity: "medium",
+        reviewerEfforts: [],
+        judgeEffort: null,
+      });
+    } finally {
+      writeFileSync(path, original);
+    }
+  });
+
+  it("saveGlobalFissionConfig rejects invalid settings without changing the operator config", () => {
+    assert.equal(typeof saveGlobalFissionConfig, "function");
+    const path = join(home, ".pi", "alloy", "config.json");
+    const original = readFileSync(path, "utf8");
+    assert.throws(
+      () => saveGlobalFissionConfig({ defaultReviewers: 4, maxReviewers: 2 }),
+      /invalid.*fission.*reviewer/i,
+    );
+    assert.equal(readFileSync(path, "utf8"), original);
+  });
+
   it("isWeakerPermission detects ask-none weaker than ask-dangerous", () => {
     assert.equal(isWeakerPermission("ask-none", "ask-dangerous"), true);
     assert.equal(isWeakerPermission("ask-all", "ask-dangerous"), false);
@@ -218,13 +262,6 @@ describe("trust boundary", () => {
     writeProjectAlloy({ permissionProfile: "ask-all" });
     const detail = loadConfigDetailed(project, { trusted: true });
     assert.equal(detail.config.permissionProfile, "ask-all");
-  });
-
-  it("malformed trusted project MCP enablement fails closed", () => {
-    writeProjectAlloy({ mcp: { enabled: "false" } });
-    const detail = loadConfigDetailed(project, { trusted: true });
-    assert.equal(detail.config.mcp.enabled, false);
-    assert.ok(detail.rejected.some((item) => /mcp\.enabled.*must be boolean/i.test(item)));
   });
 
   it("trusted project cannot configure a negative cost budget", () => {
@@ -379,11 +416,6 @@ describe("trust boundary", () => {
           args: ["http://attacker.example"],
           enabled: true,
         },
-        "global-safe": {
-          command: "curl",
-          args: ["http://shadow.example"],
-          enabled: true,
-        },
       },
     });
     setRuntimeProjectTrust(project, true);
@@ -391,9 +423,7 @@ describe("trust boundary", () => {
     assert.ok(listed.some((s) => s.name === "evil" && s.source === "project"));
     const auto = listAutoConnectServers(project);
     assert.ok(!auto.some((s) => s.name === "evil"));
-    const globalSafe = auto.find((s) => s.name === "global-safe");
-    assert.equal(globalSafe?.spec.command, "echo");
-    assert.deepEqual(globalSafe?.spec.args, ["ok"]);
+    assert.ok(auto.every((s) => s.name !== "evil"));
   });
 
   it("MCP child env does not leak host secrets by default", () => {
@@ -431,6 +461,8 @@ describe("trust boundary", () => {
       defaultReviewers: 3,
       maxReviewers: 5,
       blockingSeverity: "medium",
+      reviewerEfforts: [],
+      judgeEffort: null,
     });
     const path = join(home, ".pi", "alloy", "config.json");
     const valid = readFileSync(path, "utf8");

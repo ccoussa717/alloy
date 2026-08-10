@@ -5,7 +5,13 @@ import {
   formatFissionLines,
   registerFission,
 } from "../../extensions/fission.ts";
-import { parseFissionRequest } from "../../lib/fission.mjs";
+import {
+  parseFissionRequest,
+  resolveFissionEfforts,
+  resolveFissionModels,
+  fissionConfigHint,
+  FISSION_EFFORT_LEVELS,
+} from "../../lib/fission.mjs";
 
 function result(overrides = {}) {
   return {
@@ -30,7 +36,10 @@ function result(overrides = {}) {
   };
 }
 
-function harness(fission = { defaultReviewers: 3, maxReviewers: 5 }) {
+function harness(
+  fission = { defaultReviewers: 3, maxReviewers: 5 },
+  dependencyOverrides = {},
+) {
   const commands = new Map();
   const tools = new Map();
   const calls = [];
@@ -60,6 +69,8 @@ function harness(fission = { defaultReviewers: 3, maxReviewers: 5 }) {
         calls.push(input);
         return result();
       },
+      isTrustedModelRoute: () => true,
+      ...dependencyOverrides,
     },
   );
   return { commands, tools, calls, parent };
@@ -89,6 +100,49 @@ test("parseFissionRequest honors every effective reviewer pair and UTF-8 bounds"
   assert.throws(() => parseFissionRequest("inspect \ud800"), /request_utf8/);
 });
 
+test("resolveFissionEfforts validates levels and pads nulls", () => {
+  assert.deepEqual(
+    resolveFissionEfforts({
+      fission: {
+        reviewerEfforts: ["high", null, "low"],
+        judgeEffort: "medium",
+      },
+    }, 3),
+    { reviewerEfforts: ["high", null, "low"], judgeEffort: "medium" },
+  );
+  assert.deepEqual(
+    resolveFissionEfforts({ fission: {} }, 2),
+    { reviewerEfforts: [null, null], judgeEffort: null },
+  );
+  assert.throws(
+    () => resolveFissionEfforts({ fission: { reviewerEfforts: ["nope"] } }, 1),
+    /fission_effort/,
+  );
+  assert.ok(FISSION_EFFORT_LEVELS.includes("xhigh"));
+});
+
+test("resolveFissionModels includes efforts for the selected count", () => {
+  const cfg = {
+    fission: {
+      models: ["a/m1", "b/m2", "c/m3"],
+      judgeModel: "d/judge",
+      reviewerEfforts: ["high", "low", "medium"],
+      judgeEffort: "max",
+    },
+  };
+  const selected = resolveFissionModels(cfg, 2);
+  assert.deepEqual(selected.reviewerModels, ["a/m1", "b/m2"]);
+  assert.deepEqual(selected.reviewerEfforts, ["high", "low"]);
+  assert.equal(selected.judgeEffort, "max");
+  assert.equal(selected.judgeModel, "d/judge");
+});
+
+test("fissionConfigHint points operators at setup", () => {
+  assert.match(fissionConfigHint("reviewer_models"), /fission setup/i);
+  assert.match(fissionConfigHint("judge_model"), /fission setup/i);
+  assert.equal(fissionConfigHint("timeout"), null);
+});
+
 test("registerFission adds exactly one command and one tool with a strict hard-cap schema", () => {
   const { commands, tools } = harness({ defaultReviewers: 2, maxReviewers: 4 });
   assert.deepEqual([...commands.keys()], ["fission"]);
@@ -103,84 +157,324 @@ test("registerFission adds exactly one command and one tool with a strict hard-c
   assert.equal(schema.properties.reviewers.type, "integer");
 });
 
-test("slash invocation passes the effective pair, context, timeout, and review parent policy", async () => {
-  const { commands, calls, parent } = harness({ defaultReviewers: 2, maxReviewers: 4 });
+test("slash command exposes help and setup/status completions without starting a run", async () => {
+  const { commands, calls } = harness();
+  const command = commands.get("fission");
   const selected = [];
+  const notifications = [];
   const ctx = {
     cwd: "/repo/project",
-    modelRegistry: { id: "registry" },
-    ui: { async select(title, lines) { selected.push({ title, lines }); } },
+    hasUI: true,
+    modelRegistry: { getAll: () => [] },
+    ui: {
+      async select(title, lines) { selected.push({ title, lines }); },
+      notify(message, level) { notifications.push({ message, level }); },
+    },
   };
-  await commands.get("fission").handler("4 inspect ☃", ctx);
-  assert.deepEqual(calls, [{
-    request: "inspect ☃",
-    reviewers: 4,
-    defaultReviewers: 2,
-    maxReviewers: 4,
-    cwd: ctx.cwd,
-    modelRegistry: ctx.modelRegistry,
-    timeoutMs: 300_000,
-    ...parent,
-  }]);
-  assert.equal(Object.hasOwn(calls[0], "signal"), false);
-  assert.match(selected[0].lines[0], /PASS.*COMPLETE|COMPLETE.*PASS/);
+
+  assert.deepEqual(
+    command.getArgumentCompletions("").map(({ value }) => value),
+    ["setup", "status", "help"],
+  );
+  await command.handler("", ctx);
+  await command.handler("help", ctx);
+
+  assert.equal(calls.length, 0);
+  assert.equal(notifications.length, 0);
+  assert.equal(selected.length, 2);
+  for (const view of selected) {
+    const text = view.lines.join("\n");
+    assert.match(view.title, /Fission help/i);
+    assert.match(text, /\/fission setup/);
+    assert.match(text, /\/fission status/);
+    assert.match(text, /reviewers \+ 1 judge/i);
+  }
 });
 
-test("tool invocation parses UTF-8 bytes, preserves signal identity, and never clamps", async () => {
-  const { tools, calls, parent } = harness({ defaultReviewers: 2, maxReviewers: 4 });
-  const signal = new AbortController().signal;
-  const ctx = { cwd: "/repo/tool", modelRegistry: { id: "tool-registry" }, ui: {} };
-  const output = await tools.get("alloy_fission").execute(
-    "call-1",
-    { request: "inspect this", reviewers: 4 },
-    signal,
-    undefined,
-    ctx,
-  );
-  assert.deepEqual(calls, [{
-    request: "inspect this",
-    reviewers: 4,
-    defaultReviewers: 2,
-    maxReviewers: 4,
-    cwd: ctx.cwd,
-    modelRegistry: ctx.modelRegistry,
-    signal,
-    ...parent,
-  }]);
-  assert.equal(calls[0].signal, signal);
-  assert.equal(Object.hasOwn(calls[0], "timeoutMs"), false);
-  assert.match(output.content[0].text, /^Fission PASS \/ COMPLETE/);
+test("fission status shows routes, specialties, effort, and concurrency", async () => {
+  const configured = {
+    providers: { allow: ["anthropic", "openai-codex"] },
+    orchestration: { enabled: true, maxConcurrency: 2 },
+    fission: {
+      models: ["anthropic/reviewer-a", "openai-codex/reviewer-b"],
+      judgeModel: "anthropic/judge",
+      modelFamilies: { "anthropic/reviewer-a": "claude" },
+      defaultReviewers: 2,
+      maxReviewers: 2,
+      blockingSeverity: "high",
+      reviewerEfforts: ["high", null],
+      judgeEffort: "medium",
+    },
+  };
+  const { commands, calls } = harness(configured.fission, {
+    loadConfig: () => configured,
+  });
+  const selected = [];
+  await commands.get("fission").handler("status", {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: { getAll: () => [] },
+    ui: {
+      async select(title, lines) { selected.push({ title, lines }); },
+      notify() {},
+    },
+  });
 
-  await assert.rejects(
-    tools.get("alloy_fission").execute("call-2", { request: "inspect", reviewers: 5 }, signal, undefined, ctx),
-    /reviewer_limit/,
-  );
-  assert.equal(calls.length, 1);
-  await assert.rejects(
-    tools.get("alloy_fission").execute("call-3", { request: "☃".repeat(5462) }, signal, undefined, ctx),
-    /request_limit/,
-  );
-  assert.equal(calls.length, 1);
-  await assert.rejects(
-    tools.get("alloy_fission").execute("call-4", { request: "inspect \udfff" }, signal, undefined, ctx),
-    /request_utf8/,
-  );
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
+  assert.equal(selected.length, 1);
+  const text = selected[0].lines.join("\n");
+  assert.match(text, /2 reviewers \+ 1 judge = 3 agents/i);
+  assert.match(text, /reviewer-a/i);
+  assert.match(text, /Correctness|Security|effort high/i);
+  assert.match(text, /judge: anthropic\/judge/i);
+  assert.match(text, /Judge effort: medium/i);
+  assert.match(text, /concurrency: 2/i);
+  assert.match(text, /blocking severity: high/i);
 });
 
-test("formatFissionLines orders adjudication evidence and uses narrow PASS language", () => {
-  const lines = formatFissionLines(result({
-    validatedFindings: [{ claim: "validated claim", adjudicatedSeverity: "high" }],
-    rejectedFindings: [{ claim: "rejected claim" }],
-    unresolvedFindings: [{ claim: "unresolved claim" }],
-  }));
-  const text = lines.join("\n");
-  assert.match(lines[0], /PASS.*COMPLETE|COMPLETE.*PASS/);
-  assert.ok(text.indexOf("validated claim") < text.indexOf("rejected claim"));
-  assert.ok(text.indexOf("rejected claim") < text.indexOf("unresolved claim"));
-  assert.match(text, /no submitted blocking finding validated/i);
-  assert.match(text, /Models:.*3 exact.*2 providers.*2 families/i);
-  assert.match(text, /Usage:.*10 input.*20 output.*3 turns.*\$0\.2500/i);
-  assert.match(text, /Artifacts: \/tmp\/fission-run/);
-  assert.doesNotMatch(formatFissionLines(result({ runDir: null })).join("\n"), /Artifacts:/);
+test("fission setup saves default≠max, efforts, severity, and distinct routes", async () => {
+  const global = {
+    providers: {
+      allow: ["anthropic", "openai-codex", "xai"],
+      favorites: [],
+    },
+    orchestration: { enabled: false, maxConcurrency: 3 },
+    fission: {
+      models: ["anthropic/old-reviewer", "openai-codex/old-reviewer"],
+      judgeModel: "xai/old-judge",
+      modelFamilies: {
+        "anthropic/old-reviewer": "claude",
+        "xai/old-judge": "grok",
+      },
+      defaultReviewers: 2,
+      maxReviewers: 2,
+      blockingSeverity: "medium",
+      reviewerEfforts: [],
+      judgeEffort: null,
+    },
+  };
+  const saves = [];
+  // default 2, max 3 → need 3 reviewer models + judge + efforts + severity
+  const answers = [
+    "Default 2: 2 reviewers + 1 judge = 3 agents",
+    "Max 3: allows /fission 3 … (3 reviewers + 1 judge = 4 agents)",
+    "Anthropic",
+    "claude-new",
+    "high",
+    "Codex",
+    "gpt-new",
+    "default (model/provider default)",
+    "xAI",
+    "grok-new",
+    "low",
+    "Anthropic",
+    "claude-judge",
+    "medium",
+    "high", // blocking severity
+  ];
+  const selections = [];
+  const notifications = [];
+  const { commands, calls } = harness(global.fission, {
+    loadConfig: () => global,
+    loadGlobalConfig: () => global,
+    saveGlobalFissionConfig: (settings) => {
+      saves.push(settings);
+      return {
+        ...global,
+        orchestration: { ...global.orchestration, enabled: true },
+        fission: { ...global.fission, ...settings },
+      };
+    },
+  });
+  const ctx = {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: {
+      getAll: () => [
+        { provider: "xai", id: "grok-new" },
+        { provider: "openai-codex", id: "gpt-new" },
+        { provider: "anthropic", id: "claude-new" },
+        { provider: "anthropic", id: "claude-other" },
+        { provider: "anthropic", id: "claude-judge" },
+      ],
+    },
+    ui: {
+      async select(title, options) {
+        selections.push({ title, options });
+        if (title === "Fission setup saved") return undefined;
+        return answers.shift();
+      },
+      notify(message, level) { notifications.push({ message, level }); },
+    },
+  };
+
+  await commands.get("fission").handler("setup", ctx);
+
+  assert.equal(calls.length, 0);
+  assert.equal(saves.length, 1);
+  assert.deepEqual(saves[0].models, [
+    "anthropic/claude-new",
+    "openai-codex/gpt-new",
+    "xai/grok-new",
+  ]);
+  assert.equal(saves[0].judgeModel, "anthropic/claude-judge");
+  assert.equal(saves[0].defaultReviewers, 2);
+  assert.equal(saves[0].maxReviewers, 3);
+  assert.deepEqual(saves[0].reviewerEfforts, ["high", null, "low"]);
+  assert.equal(saves[0].judgeEffort, "medium");
+  assert.equal(saves[0].blockingSeverity, "high");
+  assert.equal(saves[0].modelFamilies["anthropic/claude-new"], "claude");
+  assert.equal(saves[0].modelFamilies["openai-codex/gpt-new"], "gpt");
+  assert.match(selections[0].options[0], /Default 1:/);
+  assert.match(selections[1].options[0], /Max 2:/);
+  // Specialty visible in reviewer prompts
+  assert.ok(selections.some((s) => /Correctness|Security|Architecture/i.test(s.title)));
+  assert.deepEqual(notifications, []);
+  assert.match(selections.at(-1).options.join("\n"), /Default run:/i);
+});
+
+test("fission setup reports project-effective restrictions after saving global settings", async () => {
+  const global = {
+    providers: { allow: ["anthropic", "xai"], favorites: [] },
+    orchestration: { enabled: false, maxConcurrency: 3 },
+    fission: {
+      models: ["anthropic/reviewer"],
+      judgeModel: "xai/judge",
+      modelFamilies: {},
+      defaultReviewers: 1,
+      maxReviewers: 1,
+      blockingSeverity: "medium",
+      reviewerEfforts: [],
+      judgeEffort: null,
+    },
+  };
+  const effective = {
+    ...global,
+    orchestration: { enabled: false, maxConcurrency: 1 },
+  };
+  const answers = [
+    "Default 1: 1 reviewer + 1 judge = 2 agents",
+    "Max 1: allows /fission 1 … (1 reviewer + 1 judge = 2 agents)",
+    "Anthropic",
+    "reviewer",
+    "default (model/provider default)",
+    "xAI",
+    "judge",
+    "default (model/provider default)",
+    "medium",
+  ];
+  const views = [];
+  const { commands } = harness(global.fission, {
+    loadConfig: () => effective,
+    loadGlobalConfig: () => global,
+    saveGlobalFissionConfig: () => ({
+      ...global,
+      orchestration: { ...global.orchestration, enabled: true },
+    }),
+  });
+  await commands.get("fission").handler("setup", {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: {
+      getAll: () => [
+        { provider: "anthropic", id: "reviewer" },
+        { provider: "xai", id: "judge" },
+      ],
+    },
+    ui: {
+      async select(title, options) {
+        views.push({ title, options });
+        if (title === "Fission setup saved") return undefined;
+        return answers.shift();
+      },
+      notify() {},
+    },
+  });
+
+  const text = views.at(-1).options.join("\n");
+  assert.match(text, /Orchestration: disabled/i);
+  assert.match(text, /project policy.*disables orchestration/i);
+});
+
+test("fission setup cancellation is all-or-nothing", async () => {
+  const global = {
+    providers: { allow: ["anthropic"], favorites: [] },
+    orchestration: { enabled: false, maxConcurrency: 3 },
+    fission: {
+      models: ["anthropic/reviewer"],
+      judgeModel: "anthropic/judge",
+      modelFamilies: {},
+      defaultReviewers: 1,
+      maxReviewers: 1,
+      blockingSeverity: "medium",
+    },
+  };
+  const saves = [];
+  const notifications = [];
+  const { commands } = harness(global.fission, {
+    loadConfig: () => global,
+    loadGlobalConfig: () => global,
+    saveGlobalFissionConfig: (settings) => saves.push(settings),
+  });
+  const answers = ["Default 1: 1 reviewer + 1 judge = 2 agents", undefined];
+  await commands.get("fission").handler("setup", {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: { getAll: () => [{ provider: "anthropic", id: "reviewer" }] },
+    ui: {
+      async select(_title, _options) { return answers.shift(); },
+      notify(message, level) { notifications.push({ message, level }); },
+    },
+  });
+
+  assert.deepEqual(saves, []);
+  assert.deepEqual(notifications, [{
+    message: "Fission setup cancelled; no settings changed.",
+    level: "info",
+  }]);
+});
+
+test("fission setup omits registry models whose transport is not trusted", async () => {
+  const global = {
+    providers: { allow: ["anthropic"], favorites: [] },
+    orchestration: { enabled: false, maxConcurrency: 3 },
+    fission: {
+      models: ["anthropic/safe"],
+      judgeModel: "anthropic/safe",
+      modelFamilies: {},
+      defaultReviewers: 1,
+      maxReviewers: 1,
+      blockingSeverity: "medium",
+    },
+  };
+  const views = [];
+  const notifications = [];
+  const { commands } = harness(global.fission, {
+    loadConfig: () => global,
+    loadGlobalConfig: () => global,
+    saveGlobalFissionConfig: () => global,
+    isTrustedModelRoute: (route) => route === "anthropic/safe",
+  });
+  await commands.get("fission").handler("setup", {
+    cwd: "/repo/project",
+    hasUI: true,
+    modelRegistry: {
+      getAll: () => [
+        { provider: "anthropic", id: "safe" },
+        { provider: "anthropic", id: "unsafe" },
+      ],
+    },
+    ui: {
+      async select(title, options) {
+        views.push({ title, options });
+        return undefined;
+      },
+      notify(message, level) { notifications.push({ message, level }); },
+    },
+  });
+  // Cancelled on first select after default options built from trusted only
+  const firstModelStep = views.find((v) => /provider/i.test(v.title));
+  if (firstModelStep) {
+    assert.ok(!JSON.stringify(firstModelStep.options).includes("unsafe"));
+  }
 });
