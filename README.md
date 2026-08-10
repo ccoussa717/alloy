@@ -106,6 +106,7 @@ Explain the authentication flow in this repository
 /fusion Plan a safe authentication refactor
 /auto Add the approved health-check endpoint
 /fission Review these changes against the authentication contract
+/forge Plan, review, implement, and re-review a feature end-to-end
 ```
 
 The convenience installer resolves `main` once and installs that exact commit.
@@ -260,7 +261,7 @@ manual authenticated dogfood gate passes.
 | **Live MCP** | Connect reviewed stdio, Streamable HTTP, or SSE servers; MCP tools use the same capability gate. |
 | **Modes and permissions** | Build and Plan are separate from approval profiles, so model tool calls in read-only work stay mechanically read-only. |
 | **Recovery tools** | Authenticated Git checkpoints and isolated worktrees make agent changes easier to inspect and undo. |
-| **Multi-model agents** | `/agent`, `/fusion`, `/fission`, and `/auto` route roles without copying the host's complete credential store. |
+| **Multi-model agents** | `/agent`, `/fusion`, `/fission`, `/forge`, and `/auto` route roles without copying the host's complete credential store. |
 | **Searchable help** | `/help`, `/help <topic>`, and `/help commands` describe the active harness from inside the TUI. |
 
 ```mermaid
@@ -319,6 +320,7 @@ repository diagnostics are host processes. Read the
 | `/fusion <objective>` | Produce two independent read-only proposals and attributed synthesis. |
 | `/auto <request>` | Run the bounded build, diagnostics, review, and fix workflow. |
 | `/fission [1..5] <contract>` | Run bounded adversarial review of the trusted repository's current changes. |
+| `/forge <request>` | Full spine: fusion → fission → auto → post-diff fission with shared artifacts. |
 | `/mcp` | Connect, list, reload, and inspect configured MCP servers. |
 | `/resume` / `/tree` / `/fork` | Navigate Pi sessions through RPC-compatible OpenTUI dialogs. |
 | `/login` / `/logout` | Add or remove stored OAuth credentials through Pi's model runtime. |
