@@ -1275,7 +1275,9 @@ export function AlloyApp(props: AlloyAppProps) {
           width={layout().width}
           height={layout().height}
           alignItems="center"
-          justifyContent="center"
+          // Top-align so title/input are never clipped off the top of a full-height panel
+          justifyContent="flex-start"
+          paddingTop={layout().height <= 10 ? 0 : 1}
           backgroundColor={RGBA.fromInts(0, 0, 0, 170)}
         >
           <box
@@ -1283,70 +1285,45 @@ export function AlloyApp(props: AlloyAppProps) {
             height={layout().modalHeight}
             maxHeight={layout().modalHeight}
             backgroundColor={theme.panelRaised}
-            paddingTop={1}
-            paddingBottom={1}
+            paddingTop={layout().height <= 10 ? 0 : 1}
+            paddingBottom={layout().height <= 10 ? 0 : 1}
             flexDirection="column"
             flexGrow={0}
             flexShrink={0}
+            overflow="hidden"
           >
-            {/* Compact title */}
-            <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
-              <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
-            </box>
             {/*
-              Input/editor first (right under title) so OAuth/login placeholders stay
-              on-screen at 40x10. Select lists get the remaining full height below.
+              Title:
+              - Select lists: one-line header, list fills the panel (user screenshot fix)
+              - Input/editor: multi-line title often holds OAuth URL + "Paste the authorization
+                code" — scroll with sticky bottom so the prompt stays on-screen at 40x10
             */}
-            <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
-              <box
-                flexShrink={0}
-                marginLeft={2}
-                marginRight={2}
-                marginBottom={1}
-                border={["left"]}
-                borderColor={theme.accent}
-                backgroundColor={theme.panel}
-                paddingLeft={1}
-              >
-                <textarea
-                  ref={(value) => {
-                    modalInput = value;
-                    setTimeout(() => value.focus(), 0);
-                  }}
-                  initialValue={dialogText()}
-                  minHeight={1}
-                  maxHeight={
-                    extensionDialog()?.method === "editor"
-                      ? Math.max(2, Math.min(8, layout().modalHeight - 4))
-                      : 2
-                  }
-                  placeholder={extensionDialog()?.placeholder}
-                  textColor={theme.text}
-                  focusedTextColor={theme.text}
-                  backgroundColor={theme.panel}
-                  focusedBackgroundColor={theme.panel}
-                  cursorColor={theme.textStrong}
-                  onContentChange={() => setDialogText(modalInput?.plainText ?? "")}
-                  onSubmit={() => void acceptDialog()}
-                />
-              </box>
-            </Show>
-            <Show when={extensionDialog()?.message}>
+            <Show
+              when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}
+              fallback={
+                <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+                  <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
+                  <Show when={extensionDialog()?.message}>
+                    <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+                  </Show>
+                </box>
+              }
+            >
               <scrollbox
-                flexGrow={options().length > 0 ? 0 : 1}
+                flexGrow={1}
                 flexShrink={1}
-                minHeight={1}
-                maxHeight={
-                  options().length > 0
-                    ? Math.max(1, Math.min(6, Math.floor(layout().modalHeight / 4)))
-                    : undefined
-                }
+                minHeight={2}
+                stickyScroll={true}
+                stickyStart="bottom"
                 paddingLeft={2}
                 paddingRight={2}
                 paddingBottom={1}
                 scrollbarOptions={{ visible: true }}
               >
-                <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+                <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
+                <Show when={extensionDialog()?.message}>
+                  <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+                </Show>
               </scrollbox>
             </Show>
             <Show when={options().length > 0}>
@@ -1383,6 +1360,39 @@ export function AlloyApp(props: AlloyAppProps) {
             <Show when={(localDialog() === "model-provider" || localDialog() === "model") && options().length === 0}>
               <box flexGrow={1} paddingLeft={2} paddingRight={2}>
                 <text fg={theme.warning} wrapMode="word">{localDialog() === "model-provider" ? "No authenticated providers available. Finish /login or run /doctor." : `No models available for ${modelProvider() ?? "this provider"}.`}</text>
+              </box>
+            </Show>
+            <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
+              <box
+                flexShrink={0}
+                marginLeft={2}
+                marginRight={2}
+                border={["left"]}
+                borderColor={theme.accent}
+                backgroundColor={theme.panel}
+                paddingLeft={1}
+              >
+                <textarea
+                  ref={(value) => {
+                    modalInput = value;
+                    setTimeout(() => value.focus(), 0);
+                  }}
+                  initialValue={dialogText()}
+                  minHeight={1}
+                  maxHeight={
+                    extensionDialog()?.method === "editor"
+                      ? Math.max(2, Math.min(6, layout().modalHeight - 3))
+                      : 2
+                  }
+                  placeholder={extensionDialog()?.placeholder}
+                  textColor={theme.text}
+                  focusedTextColor={theme.text}
+                  backgroundColor={theme.panel}
+                  focusedBackgroundColor={theme.panel}
+                  cursorColor={theme.textStrong}
+                  onContentChange={() => setDialogText(modalInput?.plainText ?? "")}
+                  onSubmit={() => void acceptDialog()}
+                />
               </box>
             </Show>
             <Show when={localDialog() === "session"}>
