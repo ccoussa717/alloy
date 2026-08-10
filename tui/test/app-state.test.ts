@@ -195,15 +195,26 @@ describe("integrated app state", () => {
       showIdentity: false,
       showComposerMeta: false,
       composerMaxHeight: 1,
-      modalWidth: 38,
+      modalWidth: 40,
+      modalHeight: 10,
     });
     expect(appLayout(80, 24)).toMatchObject({
       horizontalPadding: 2,
       showIdentity: true,
       showComposerMeta: true,
       composerMaxHeight: 6,
-      modalWidth: 60,
+      // Nearly full terminal — not a half-empty 60-col panel
+      modalWidth: 73,
+      modalHeight: 22,
     });
+  });
+
+  it("sizes slash-command dialogs to use most of the terminal", () => {
+    const large = appLayout(120, 40);
+    expect(large.modalWidth).toBeGreaterThanOrEqual(Math.floor(120 * 0.9));
+    expect(large.modalHeight).toBeGreaterThanOrEqual(38);
+    // Options list must not be forced into the bottom half via top padding math
+    expect(large.modalHeight).toBe(large.height - 2);
   });
 
   it("budgets retained panel rows without suppressing slash autocomplete", () => {

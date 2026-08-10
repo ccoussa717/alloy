@@ -126,6 +126,10 @@ export function copySelectionToClipboard(
 export function appLayout(width: number, height: number) {
   const compact = width <= 40 || height <= 10;
   const horizontalPadding = compact ? 1 : 2;
+  // Slash-command dialogs use nearly full terminal real estate so long lists
+  // (/help, /doctor, setup) stay readable instead of a half-empty panel.
+  const modalWidth = Math.max(1, Math.min(width - (compact ? 0 : 2), Math.max(compact ? width : 48, Math.floor(width * 0.92))));
+  const modalHeight = Math.max(3, height - (compact ? 0 : 2));
   return {
     width,
     height,
@@ -133,7 +137,8 @@ export function appLayout(width: number, height: number) {
     showIdentity: !compact,
     showComposerMeta: height > 10,
     composerMaxHeight: height <= 10 ? 1 : Math.min(6, Math.max(1, Math.floor(height / 3))),
-    modalWidth: Math.min(60, Math.max(1, width - 2)),
+    modalWidth,
+    modalHeight,
   };
 }
 
@@ -1262,16 +1267,74 @@ export function AlloyApp(props: AlloyAppProps) {
       </Show>
 
       <Show when={hasDialog()}>
-        <box position="absolute" zIndex={3000} left={0} top={0} width={layout().width} height={layout().height} alignItems="center" paddingTop={Math.max(0, Math.floor(layout().height / 4))} backgroundColor={RGBA.fromInts(0, 0, 0, 170)}>
-          <box width={layout().modalWidth} maxHeight={Math.max(3, layout().height - 2)} backgroundColor={theme.panelRaised} paddingTop={1} paddingBottom={1} flexShrink={1}>
-            <scrollbox maxHeight={Math.max(1, layout().height - 7)} flexShrink={1} paddingLeft={2} paddingRight={2} paddingBottom={1} scrollbarOptions={{ visible: false }}>
-              <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
-              <Show when={extensionDialog()?.message}>
-                <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
-              </Show>
-            </scrollbox>
+        <box
+          position="absolute"
+          zIndex={3000}
+          left={0}
+          top={0}
+          width={layout().width}
+          height={layout().height}
+          alignItems="center"
+          // Top-align so title/input are never clipped off the top of a full-height panel
+          justifyContent="flex-start"
+          paddingTop={layout().height <= 10 ? 0 : 1}
+          backgroundColor={RGBA.fromInts(0, 0, 0, 170)}
+        >
+          <box
+            width={layout().modalWidth}
+            height={layout().modalHeight}
+            maxHeight={layout().modalHeight}
+            backgroundColor={theme.panelRaised}
+            paddingTop={layout().height <= 10 ? 0 : 1}
+            paddingBottom={layout().height <= 10 ? 0 : 1}
+            flexDirection="column"
+            flexGrow={0}
+            flexShrink={0}
+            overflow="hidden"
+          >
+            {/*
+              Title:
+              - Select lists: one-line header, list fills the panel (user screenshot fix)
+              - Input/editor: multi-line title often holds OAuth URL + "Paste the authorization
+                code" — scroll with sticky bottom so the prompt stays on-screen at 40x10
+            */}
+            <Show
+              when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}
+              fallback={
+                <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+                  <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
+                  <Show when={extensionDialog()?.message}>
+                    <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+                  </Show>
+                </box>
+              }
+            >
+              <scrollbox
+                flexGrow={1}
+                flexShrink={1}
+                minHeight={2}
+                stickyScroll={true}
+                stickyStart="top"
+                paddingLeft={2}
+                paddingRight={2}
+                paddingBottom={1}
+                scrollbarOptions={{ visible: true }}
+              >
+                <text fg={theme.textStrong} wrapMode="char">{dialogTitle()}</text>
+                <Show when={extensionDialog()?.message}>
+                  <text fg={theme.muted} wrapMode="char">{extensionDialog()!.message}</text>
+                </Show>
+              </scrollbox>
+            </Show>
             <Show when={options().length > 0}>
-              <scrollbox maxHeight={Math.max(1, layout().height - 6)} scrollbarOptions={{ visible: false }}>
+              <scrollbox
+                flexGrow={1}
+                flexShrink={1}
+                minHeight={1}
+                stickyScroll={true}
+                stickyStart="top"
+                scrollbarOptions={{ visible: true }}
+              >
                 <For each={options()}>
                   {(option, index) => {
                     const presentation = extensionDialogOptionPresentation(option);
@@ -1295,12 +1358,20 @@ export function AlloyApp(props: AlloyAppProps) {
               </scrollbox>
             </Show>
             <Show when={(localDialog() === "model-provider" || localDialog() === "model") && options().length === 0}>
-              <box paddingLeft={2} paddingRight={2}>
+              <box flexGrow={1} paddingLeft={2} paddingRight={2}>
                 <text fg={theme.warning} wrapMode="word">{localDialog() === "model-provider" ? "No authenticated providers available. Finish /login or run /doctor." : `No models available for ${modelProvider() ?? "this provider"}.`}</text>
               </box>
             </Show>
             <Show when={extensionDialog()?.method === "input" || extensionDialog()?.method === "editor"}>
-              <box marginLeft={2} marginRight={2} border={["left"]} borderColor={theme.accent} backgroundColor={theme.panel} paddingLeft={1}>
+              <box
+                flexShrink={0}
+                marginLeft={2}
+                marginRight={2}
+                border={["left"]}
+                borderColor={theme.accent}
+                backgroundColor={theme.panel}
+                paddingLeft={1}
+              >
                 <textarea
                   ref={(value) => {
                     modalInput = value;
@@ -1308,7 +1379,11 @@ export function AlloyApp(props: AlloyAppProps) {
                   }}
                   initialValue={dialogText()}
                   minHeight={1}
-                  maxHeight={Math.max(1, Math.min(5, layout().height - 6))}
+                  maxHeight={
+                    extensionDialog()?.method === "editor"
+                      ? Math.max(2, Math.min(6, layout().modalHeight - 3))
+                      : 2
+                  }
                   placeholder={extensionDialog()?.placeholder}
                   textColor={theme.text}
                   focusedTextColor={theme.text}
@@ -1321,12 +1396,16 @@ export function AlloyApp(props: AlloyAppProps) {
               </box>
             </Show>
             <Show when={localDialog() === "session"}>
-              <scrollbox maxHeight={Math.max(1, layout().height - 6)} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: false }}><text fg={theme.muted}>{displayText(session().sessionStats ?? dialogResult())}</text></scrollbox>
+              <scrollbox flexGrow={1} minHeight={1} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: true }}>
+                <text fg={theme.muted}>{displayText(session().sessionStats ?? dialogResult())}</text>
+              </scrollbox>
             </Show>
             <Show when={localDialog() === "export"}>
-              <scrollbox maxHeight={Math.max(1, layout().height - 6)} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: false }}><text fg={theme.muted}>{displayText(dialogResult())}</text></scrollbox>
+              <scrollbox flexGrow={1} minHeight={1} paddingLeft={2} paddingRight={2} scrollbarOptions={{ visible: true }}>
+                <text fg={theme.muted}>{displayText(dialogResult())}</text>
+              </scrollbox>
             </Show>
-            <box paddingLeft={2} paddingRight={2} paddingTop={1}>
+            <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1}>
               <text fg={theme.dim}>{options().length ? `Up/Down select | Enter confirm | Esc ${localDialog() === "model" ? "back" : "cancel"}` : `Enter close | Esc ${localDialog() === "model" ? "back" : "cancel"}`}</text>
             </box>
           </box>
