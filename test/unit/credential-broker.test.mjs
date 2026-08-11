@@ -603,16 +603,27 @@ test("session credential broker leases local engine access like /model", async (
     }),
   });
 
-  assert.deepEqual(lease, {
-    mode: "runtime-key",
-    runtimeCredential: {
-      provider: "ollama",
-      apiKey: "ollama",
-      headers: {},
+  assert.equal(lease.mode, "runtime-key");
+  assert.equal(lease.runtimeCredential.provider, "ollama");
+  assert.equal(lease.runtimeCredential.apiKey, "ollama");
+  assert.deepEqual(lease.runtimeCredential.headers, {});
+  // Children need baseUrl + model snapshot — parent discovery is not loaded there.
+  assert.deepEqual(lease.runtimeCredential.transport, {
+    baseUrl: "http://127.0.0.1:11434/v1",
+    api: "openai-completions",
+    model: {
+      id: "llama3.2",
+      name: "llama3.2",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 32_768,
+      compat: undefined,
     },
-    providers: ["ollama"],
-    missing: [],
   });
+  assert.deepEqual(lease.providers, ["ollama"]);
+  assert.deepEqual(lease.missing, []);
 });
 
 test("inspectSessionModelCandidate marks local engines as local transport", async () => {
