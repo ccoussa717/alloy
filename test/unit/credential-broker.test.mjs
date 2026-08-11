@@ -534,6 +534,41 @@ test("isTrustedSessionModelRoute accepts registry routes with builtin transport"
   assert.equal(broker.isTrustedSessionModelRoute("not-a-route", { find: () => null }), false);
 });
 
+test("isTrustedSessionModelRoute accepts catalog models when only metadata drifts", async () => {
+  const model = getBuiltinModel("openai-codex", "gpt-5.6-luna");
+  assert.ok(model, "builtin openai-codex/gpt-5.6-luna should exist");
+  const drifted = {
+    ...model,
+    cost: { input: 999, output: 999, cacheRead: 0, cacheWrite: 0 },
+    thinkingLevelMap: { low: "low" },
+    compat: { ...(model.compat || {}), extraFlag: true },
+    contextWindow: (model.contextWindow || 1000) + 1,
+  };
+  const registry = {
+    find: (provider, id) =>
+      provider === "openai-codex" && id === "gpt-5.6-luna" ? drifted : null,
+    getApiKeyAndHeaders: async () => ({
+      ok: true,
+      apiKey: "codex-token",
+      headers: {},
+    }),
+    getProviderAuth: async () => ({
+      auth: { apiKey: "codex-token", headers: {} },
+    }),
+  };
+  assert.equal(
+    broker.isTrustedSessionModelRoute("openai-codex/gpt-5.6-luna", registry),
+    true,
+  );
+  const inspected = await broker.inspectSessionModelCandidate(
+    "openai-codex/gpt-5.6-luna",
+    registry,
+  );
+  assert.equal(inspected.candidate.transport, "builtin");
+  assert.equal(inspected.candidate.authenticated, true);
+  assert.equal(inspected.lease.mode, "runtime-key");
+});
+
 function localOllamaModel(overrides = {}) {
   return {
     provider: "ollama",

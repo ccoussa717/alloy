@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-08-11
+
+### Fixed
+
+- Fission no longer fails with **`custom_transport_unavailable`** for legitimate
+  catalog models (e.g. `openai-codex/gpt-5.6-luna`) when the session registry
+  only drifts cost/compat/thinking metadata. Trust now keys on core transport
+  (provider, id, api, baseUrl), not a full deep-equal of the model blob.
+
 ## [1.1.3] - 2026-08-11
 
 ### Fixed
