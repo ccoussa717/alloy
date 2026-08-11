@@ -26,6 +26,7 @@ import {
   captureBoundedDirtyBaseline,
   captureFissionPacket,
   captureFissionSubjectPacket,
+  captureHasReviewableEvidence,
   FISSION_SUBJECT_PATH,
   preflightFissionRepository,
   readRegularFileNoFollow,
@@ -1115,4 +1116,47 @@ test("subject packet rejects empty and oversize requests", () => {
       }),
     /request_limit/,
   );
+});
+
+test("untracked nested-git directories are soft-omitted and do not fail evidenceComplete", () => {
+  const repo = mkdtempSync(join(tmpdir(), "alloy-fission-soft-dir-"));
+  const packetParent = mkdtempSync(join(tmpdir(), "alloy-fission-packet-out-"));
+  try {
+    spawnSync("git", ["init"], { cwd: repo });
+    spawnSync("git", ["config", "user.email", "t@t"], { cwd: repo });
+    spawnSync("git", ["config", "user.name", "t"], { cwd: repo });
+    writeFileSync(join(repo, "tracked.txt"), "hello\n");
+    spawnSync("git", ["add", "tracked.txt"], { cwd: repo });
+    spawnSync("git", ["commit", "-m", "init"], { cwd: repo });
+    // Nested git dir (like .worktrees/feat/foo) reported as untracked directory path/
+    const nested = join(repo, ".worktrees", "feat", "local-engines");
+    mkdirSync(nested, { recursive: true });
+    spawnSync("git", ["init"], { cwd: nested });
+    writeFileSync(join(nested, "x.txt"), "nested\n");
+    writeFileSync(join(repo, "notes.md"), "review me\n");
+
+    const deps = { isProjectTrusted: () => true };
+    const preflight = preflightFissionRepository(repo, deps);
+    assert.equal(preflight.state, "READY");
+    const packetRoot = join(packetParent, "packet");
+    const capture = captureFissionPacket({
+      cwd: repo,
+      packetRoot,
+      request: "review dirty tree",
+      preflight,
+      deps,
+    });
+    assert.equal(capture.evidenceComplete, true, capture.reason);
+    assert.equal(captureHasReviewableEvidence(capture), true);
+    const omitted = capture.manifest.entries.filter((e) => !e.included);
+    assert.ok(
+      omitted.some((e) => String(e.path).includes("worktrees") || e.reason === "directory"),
+      `expected soft-omitted worktree entry, got ${JSON.stringify(omitted)}`,
+    );
+  } finally {
+    makeTreeWritable(packetParent);
+    makeTreeWritable(repo);
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(packetParent, { recursive: true, force: true });
+  }
 });
