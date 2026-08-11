@@ -42,9 +42,15 @@ const {
   applyGlobalPolicyPack,
 } = require(join(root, "lib", "config.mjs"));
 const { getRunsDir } = require(join(root, "lib", "paths.mjs"));
-const { createFusionLivePanel, renderFusionPaneLines, renderFusionWidgetLines, renderPanelThemed, renderPanelLines } = require(
-  join(root, "lib", "agent-panel.mjs"),
-);
+const {
+  createFusionLivePanel,
+  createFissionLivePanel,
+  renderFusionPaneLines,
+  renderFissionPaneLines,
+  renderFusionWidgetLines,
+  renderPanelThemed,
+  renderPanelLines,
+} = require(join(root, "lib", "agent-panel.mjs"));
 const { resolveParentChildSpawnOpts } = require(
   join(root, "lib", "parent-policy.mjs"),
 );
@@ -210,19 +216,27 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
   try {
     const theme = (ui as { theme?: unknown }).theme;
     const phase = (panel as { phase?: string })?.phase || "run";
-    const isFusion = (panel as { title?: string })?.title === "ALLOY FUSION";
-    if (isFusion) {
+    const title = (panel as { title?: string })?.title || "";
+    const isFusion = title === "ALLOY FUSION";
+    const isFission = title === "ALLOY FISSION";
+    if (isFusion || isFission) {
+      const renderPanes = isFusion ? renderFusionPaneLines : renderFissionPaneLines;
+      const createLive = isFusion ? createFusionLivePanel : createFissionLivePanel;
       if (ctx?.mode === "rpc") {
-        ui.setWidget("alloy-agents", renderFusionWidgetLines(panel), {
-          placement: "aboveEditor",
-          data: createFusionLivePanel(panel),
-        });
+        ui.setWidget(
+          "alloy-agents",
+          isFusion ? renderFusionWidgetLines(panel) : renderPanelLines(panel),
+          {
+            placement: "aboveEditor",
+            data: createLive(panel),
+          },
+        );
       } else {
         ui.setWidget(
           "alloy-agents",
           (_tui: unknown, widgetTheme: any) => ({
             render(width: number) {
-              const lines = renderFusionPaneLines(panel, width);
+              const lines = renderPanes(panel, width);
               if (!widgetTheme?.fg) return lines;
               return lines.map((line: string, index: number) =>
                 index === 0
@@ -243,8 +257,8 @@ function paintPanel(panel: unknown, ctx?: Pick<ExtensionContext, "ui" | "mode">)
         : renderPanelLines(panel);
       ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
     }
-    const statusKey = isFusion ? "alloy-fusion" : "alloy-auto";
-    const statusPrefix = isFusion ? "fusion" : "auto";
+    const statusKey = isFusion ? "alloy-fusion" : isFission ? "alloy-fission" : "alloy-auto";
+    const statusPrefix = isFusion ? "fusion" : isFission ? "fission" : "auto";
     const fix = (panel as { fixRound?: number; maxFixRounds?: number })?.maxFixRounds
       ? ` fix${(panel as { fixRound?: number }).fixRound || 0}/${(panel as { maxFixRounds?: number }).maxFixRounds}`
       : "";

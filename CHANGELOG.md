@@ -7,6 +7,22 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-08-11
+
+### Added
+
+- **Streaming multi-pane UI for `/fission`** (and shared path for `/fusion` /
+  `/auto` / `/forge`): live side-by-side reviewer panes with token/tool stream,
+  judge pane while adjudicating, and RPC live snapshots (`alloy.fission.live`).
+
+### Fixed
+
+- `/fission` no longer aborts as **`reviewer_errors`** when a reviewer returns
+  real findings plus informational `errors[]` notes (e.g. soft-omitted
+  `.worktrees/` paths). Those notes are stored as `warnings`; hard-fail only
+  when `errors[]` is non-empty **and** findings are empty. Host verdict uses
+  the same rule so COMPLETE/PASS is reachable after soft-omits.
+
 ## [1.1.6] - 2026-08-11
 
 ### Fixed
