@@ -410,6 +410,73 @@ describe("Fission coordinator", () => {
     }
   });
 
+  it("auto mode falls back to subject when dirty-tree evidence is incomplete", async () => {
+    let subjectCaptures = 0;
+    const { deps, calls } = makeDeps({
+      preflight: {
+        state: "READY",
+        repoRoot: "/repo",
+        head: Buffer.from("head\n"),
+        status: Buffer.from("?? .worktrees/feat/local-engines/\0"),
+      },
+      packet: {
+        evidenceComplete: false,
+        reason: "unsupported_type:.worktrees/feat/local-engines/",
+        manifest: { entries: [] },
+        artifacts: {},
+      },
+      deps: {
+        captureFissionSubjectPacket: ({ packetRoot }) => {
+          subjectCaptures++;
+          return {
+            kind: "subject",
+            packetRoot,
+            packetDigest: "d".repeat(64),
+            sourceDigest: "e".repeat(64),
+            evidenceComplete: true,
+            reason: null,
+            manifest: {
+              kind: "subject",
+              entries: [{ path: "subject.md", artifactPath: "subject.md", included: true }],
+            },
+            artifacts: {
+              "subject.md": {
+                type: "file",
+                path: "subject.md",
+                digest: "a".repeat(64),
+                size: 20,
+                lineCount: 2,
+                mode: 0o400,
+              },
+            },
+          };
+        },
+      },
+      runChild: (input) => {
+        if (input.role === "fission-judge") {
+          return childResult(input.model, { clusters: [], judgeConcern: null });
+        }
+        return childResult(input.model, {
+          reviewerRole: input.role.replace("fission-reviewer-", ""),
+          coverage: ["subject"],
+          findings: [],
+          errors: [],
+        });
+      },
+    });
+    const result = await runFissionWithDependencies({
+      request: "List three security risks of email-only free tier auth.",
+      fissionMode: "auto",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, deps);
+    assert.equal(result.mode, "subject");
+    assert.equal(subjectCaptures, 1);
+    assert.equal(calls.capture, 1);
+    assert.equal(result.status, "COMPLETE");
+  });
+
   it("subject mode skips git preflight entirely", async () => {
     let subjectCaptures = 0;
     const subjectDigest = "a".repeat(64);
@@ -473,7 +540,13 @@ describe("Fission coordinator", () => {
 
   it("creates one run only for READY and persists unsupported packet evidence as INCOMPLETE", async () => {
     const { deps, calls, runRoot } = makeDeps({ packet: { evidenceComplete: false, reason: "binary:asset.bin" } });
-    const result = await runFissionWithDependencies({ request: "review", defaultReviewers: 1, maxReviewers: 5 }, deps);
+    // Explicit repo mode: incomplete dirty-tree evidence stays fail-closed (no subject fallback).
+    const result = await runFissionWithDependencies({
+      request: "review",
+      fissionMode: "repo",
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, deps);
     assertCompleteShape(result);
     assert.equal(calls.createRunDir, 1);
     assert.equal(calls.capture, 1);

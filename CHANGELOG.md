@@ -7,6 +7,16 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-08-11
+
+### Fixed
+
+- Fission **dirty-tree capture** no longer dies on untracked directories / nested
+  git worktrees (e.g. `.worktrees/feat/…`) with `unsupported_type:…`. Those paths
+  are soft-omitted. In **auto** mode, if the dirty tree still has nothing
+  reviewable, Fission falls back to **subject** review of the request text
+  instead of INCOMPLETE with zero agents.
+
 ## [1.1.4] - 2026-08-11
 
 ### Fixed
