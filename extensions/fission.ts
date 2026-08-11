@@ -219,6 +219,69 @@ export function formatFissionLines(result: any) {
   return lines;
 }
 
+function paintProgressPanel(
+  progress: any,
+  ctx: { ui?: ExtensionContext["ui"] },
+) {
+  const ui = ctx?.ui;
+  if (!ui?.setWidget) return;
+  const panel = createPanelState({
+    title: "ALLOY FISSION",
+    runId: progress.runId,
+  });
+  panel.phase = String(progress.phase || progress.status || "RUNNING").toUpperCase();
+  for (const [index, reviewer] of (progress.reviewers || []).entries()) {
+    if (!reviewer) continue;
+    const status =
+      reviewer.status === "ok"
+        ? "ok"
+        : reviewer.status === "running"
+          ? "running"
+          : "fail";
+    upsertAgent(panel, {
+      role: "reviewer",
+      index: index + 1,
+      status,
+      model: reviewer.actualModel || reviewer.requestedModel,
+      usage: reviewer.usage,
+      detail: reviewer.error || reviewer.role || reviewer.status || "",
+    });
+  }
+  if (progress.judge) {
+    upsertAgent(panel, {
+      role: "judge",
+      status:
+        progress.judge.status === "ok"
+          ? "ok"
+          : progress.judge.status === "running"
+            ? "running"
+            : "fail",
+      model: progress.judge.actualModel || progress.judge.requestedModel,
+      usage: progress.judge.usage,
+      detail: progress.judge.error || "",
+    });
+  } else if (progress.phase === "judge_start") {
+    upsertAgent(panel, {
+      role: "judge",
+      status: "running",
+      model: progress.model || "judge",
+      detail: "adjudicating…",
+    });
+  }
+  const themed = renderPanelThemed(panel);
+  const lines =
+    themed && themed.length ? themed : renderPanelLines(panel);
+  ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
+  try {
+    ui.setStatus?.(
+      "alloy-fission",
+      `fission:${progress.phase || progress.status || "run"}`,
+    );
+  } catch {
+    // optional
+  }
+}
+
 function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"] }) {
   const ui = ctx?.ui;
   if (!ui?.setWidget) return;
@@ -311,6 +374,14 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       { defaultReviewers, maxReviewers },
     );
     const parentPolicy = resolveParentPolicy({ mode: "review" });
+    try {
+      ctx.ui?.notify?.(
+        `Fission starting (${parsed.reviewers} reviewers + judge)…`,
+        "info",
+      );
+    } catch {
+      // optional
+    }
     const input = {
       request: parsed.request,
       reviewers: parsed.reviewers,
@@ -319,6 +390,19 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       cwd: ctx.cwd,
       modelRegistry: ctx.modelRegistry,
       timeoutMs: 300_000,
+      onProgress: (progress: any) => {
+        paintProgressPanel(progress, ctx);
+        if (progress.phase === "packet") {
+          try {
+            ctx.ui?.notify?.(
+              `Fission packet ready (${progress.mode}); launching reviewers…`,
+              "info",
+            );
+          } catch {
+            // optional
+          }
+        }
+      },
       ...(signal ? { signal } : {}),
       ...parentPolicy,
     };
