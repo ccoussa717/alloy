@@ -25,6 +25,8 @@ import {
   FISSION_STATUS_LIMIT,
   captureBoundedDirtyBaseline,
   captureFissionPacket,
+  captureFissionSubjectPacket,
+  FISSION_SUBJECT_PATH,
   preflightFissionRepository,
   readRegularFileNoFollow,
   recaptureFissionSource,
@@ -1057,4 +1059,60 @@ test("invalid UTF-8 patch evidence is refused before packet writes", () => {
   }), /invalid_utf8/);
   assert.equal(existsSync(packetRoot), false);
   assert.equal(readdirSync(root).some((name) => name.startsWith("invalid-patch-packet.attempt-")), false);
+});
+
+test("subject packet freezes freeform text without a git repository", () => {
+  const packetRoot = join(root, "subject-packet");
+  const request = "Critique this product idea:\n1. Ship free tier\n2. Skip auth\n";
+  const capture = captureFissionSubjectPacket({ packetRoot, request });
+  assert.equal(capture.kind, "subject");
+  assert.equal(capture.evidenceComplete, true);
+  assert.equal(capture.repoRoot, null);
+  assert.ok(capture.packetDigest);
+  assert.ok(capture.sourceDigest);
+  assert.equal(capture.manifest.kind, "subject");
+  assert.equal(capture.manifest.entries.length, 1);
+  assert.equal(capture.manifest.entries[0].path, FISSION_SUBJECT_PATH);
+  assert.equal(capture.manifest.entries[0].artifactPath, FISSION_SUBJECT_PATH);
+  assert.equal(
+    readFileSync(join(packetRoot, FISSION_SUBJECT_PATH), "utf8"),
+    request,
+  );
+  assert.equal(readFileSync(join(packetRoot, "request.txt"), "utf8"), request);
+  assert.deepEqual(recaptureFissionSource(capture), {
+    ok: true,
+    digest: capture.sourceDigest,
+  });
+  assert.equal(verifyFissionArtifacts(capture).ok, true);
+});
+
+test("subject packet recapture detects tampering", () => {
+  const packetRoot = join(root, "subject-tamper");
+  const capture = captureFissionSubjectPacket({
+    packetRoot,
+    request: "original subject body",
+  });
+  chmodSync(packetRoot, 0o700);
+  const subjectPath = join(packetRoot, FISSION_SUBJECT_PATH);
+  chmodSync(subjectPath, 0o600);
+  writeFileSync(subjectPath, "tampered", { mode: 0o600 });
+  chmodSync(subjectPath, 0o400);
+  const recapture = recaptureFissionSource(capture);
+  assert.equal(recapture.ok, false);
+  assert.equal(recapture.reason, "source_drift");
+});
+
+test("subject packet rejects empty and oversize requests", () => {
+  assert.throws(
+    () => captureFissionSubjectPacket({ packetRoot: join(root, "empty"), request: "" }),
+    /empty_request/,
+  );
+  assert.throws(
+    () =>
+      captureFissionSubjectPacket({
+        packetRoot: join(root, "huge"),
+        request: "x".repeat(FISSION_REQUEST_LIMIT + 1),
+      }),
+    /request_limit/,
+  );
 });

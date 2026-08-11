@@ -130,7 +130,12 @@ function makeDeps(options = {}) {
     captureFissionPacket: (input) => {
       calls.capture++;
       assert.equal(input.packetRoot, join(runRoot, "packet"));
-      return { ...packet, packetRoot: input.packetRoot, ...(options.packet || {}) };
+      return {
+        kind: "repo",
+        ...packet,
+        packetRoot: input.packetRoot,
+        ...(options.packet || {}),
+      };
     },
     verifyFissionArtifacts: () => {
       calls.verify++;
@@ -182,7 +187,7 @@ function makeDeps(options = {}) {
 function assertCompleteShape(result) {
   assert.deepEqual(Object.keys(result).sort(), [
     "blockingSeverity", "clusters", "error", "evidenceComplete", "judge", "kind",
-    "message", "modelDiversity", "packetDigest", "panel", "rejectedFindings",
+    "message", "mode", "modelDiversity", "packetDigest", "panel", "rejectedFindings",
     "request", "requestedReviewers", "reviewers", "runDir", "runId", "sourceDigest",
     "status", "unresolvedFindings", "usage", "validatedFindings", "verdict",
   ].sort());
@@ -323,10 +328,17 @@ describe("Fission coordinator", () => {
   it("uses the supplied effective default and direct runFission preserves explicit counts", async () => {
     for (const reviewers of [undefined, 1, 2, 3]) {
       const { deps } = makeDeps({ preflight: { state: "NO_CHANGES", repoRoot: "/repo" } });
-      const opts = { request: "review", defaultReviewers: 2, maxReviewers: 3, ...(reviewers === undefined ? {} : { reviewers }) };
+      const opts = {
+        request: "review",
+        fissionMode: "repo",
+        defaultReviewers: 2,
+        maxReviewers: 3,
+        ...(reviewers === undefined ? {} : { reviewers }),
+      };
       const result = await runFission(opts, deps);
       assert.equal(result.requestedReviewers, reviewers ?? 2);
       assert.equal(result.status, "NO_CHANGES");
+      assert.equal(result.mode, "repo");
     }
   });
 
@@ -339,13 +351,124 @@ describe("Fission coordinator", () => {
       { state: "NO_CHANGES", repoRoot: "/repo" },
     ]) {
       const { deps, calls } = makeDeps({ preflight });
-      const result = await runFissionWithDependencies({ request: "review", defaultReviewers: 1, maxReviewers: 5 }, deps);
+      const result = await runFissionWithDependencies({
+        request: "review",
+        fissionMode: "repo",
+        defaultReviewers: 1,
+        maxReviewers: 5,
+      }, deps);
       assertCompleteShape(result);
       assert.equal(result.runDir, null);
+      assert.equal(result.mode, "repo");
       assert.equal(calls.preflight, 1);
       assert.equal(calls.createRunDir, 0);
       assert.equal(calls.capture, 0);
     }
+  });
+
+  it("auto mode falls back to subject when the tree is not a ready dirty repo", async () => {
+    for (const preflight of [
+      { state: "REFUSED", reason: "not_repository" },
+      { state: "REFUSED", reason: "untrusted_project" },
+      { state: "NO_CHANGES", repoRoot: "/repo" },
+    ]) {
+      let subjectCaptures = 0;
+      const { deps, calls } = makeDeps({
+        preflight,
+        deps: {
+          captureFissionSubjectPacket: ({ request, packetRoot }) => {
+            subjectCaptures++;
+            assert.equal(request, "Critique this product plan");
+            return {
+              kind: "subject",
+              packetRoot,
+              packetDigest: "d".repeat(64),
+              sourceDigest: "e".repeat(64),
+              evidenceComplete: true,
+              reason: null,
+              manifest: {
+                kind: "subject",
+                entries: [{ path: "subject.md", artifactPath: "subject.md" }],
+              },
+              artifacts: {},
+            };
+          },
+        },
+      });
+      const result = await runFissionWithDependencies({
+        request: "Critique this product plan",
+        reviewers: 1,
+        defaultReviewers: 1,
+        maxReviewers: 5,
+      }, deps);
+      assert.equal(result.mode, "subject");
+      assert.notEqual(result.status, "REFUSED");
+      assert.notEqual(result.error, "not_repository");
+      assert.equal(subjectCaptures, 1);
+      assert.equal(calls.capture, 0); // repo capture unused
+      assert.equal(calls.createRunDir, 1);
+    }
+  });
+
+  it("subject mode skips git preflight entirely", async () => {
+    let subjectCaptures = 0;
+    const subjectDigest = "a".repeat(64);
+    const subjectPacket = {
+      kind: "subject",
+      packetDigest: "d".repeat(64),
+      sourceDigest: "e".repeat(64),
+      evidenceComplete: true,
+      reason: null,
+      manifest: {
+        kind: "subject",
+        entries: [{
+          path: "subject.md",
+          artifactPath: "subject.md",
+          included: true,
+        }],
+      },
+      artifacts: {
+        "subject.md": {
+          type: "file",
+          path: "subject.md",
+          digest: subjectDigest,
+          size: 20,
+          lineCount: 3,
+          mode: 0o400,
+        },
+      },
+    };
+    const { deps, calls } = makeDeps({
+      deps: {
+        captureFissionSubjectPacket: ({ packetRoot }) => {
+          subjectCaptures++;
+          return { ...subjectPacket, packetRoot };
+        },
+      },
+      runChild: (input) => {
+        if (input.role === "fission-judge") {
+          return childResult(input.model, { clusters: [], judgeConcern: null });
+        }
+        return childResult(input.model, {
+          reviewerRole: "general_adversarial",
+          coverage: ["subject"],
+          findings: [],
+          errors: [],
+        });
+      },
+    });
+    const result = await runFissionWithDependencies({
+      request: "Review this idea for risks",
+      fissionMode: "subject",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+    }, deps);
+    assert.equal(result.mode, "subject");
+    assert.equal(calls.preflight, 0);
+    assert.equal(subjectCaptures, 1);
+    assert.equal(result.status, "COMPLETE");
+    assert.equal(result.verdict, "PASS");
   });
 
   it("creates one run only for READY and persists unsupported packet evidence as INCOMPLETE", async () => {
