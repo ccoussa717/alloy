@@ -108,17 +108,25 @@ function formatFissionStatus(config: any) {
   const configuredRoles = Array.isArray(fission.roles) ? fission.roles : [];
   const fallbackRoles =
     FISSION_ROLES[models.length || maxReviewers || reviewers] || [];
+  const orchOn = config.orchestration?.enabled === true;
   const lines = [
     "Fission settings:",
     `Default run: ${formatAgentCount(reviewers)}`,
     `Maximum reviewers per run: ${maxReviewers}`,
     `Concurrency: ${Number(config.orchestration?.maxConcurrency) || 0}`,
-    `Orchestration: ${config.orchestration?.enabled ? "enabled" : "disabled"}`,
+    `Orchestration: ${orchOn ? "enabled" : "DISABLED — runs fail INCOMPLETE before any agents"}`,
     `Blocking severity: ${fission.blockingSeverity || "not configured"}`,
     `Judge effort: ${formatEffort(fission.judgeEffort)}`,
     "",
     "Reviewers (slot → role → route | effort):",
   ];
+  if (!orchOn) {
+    lines.push(
+      "  Fix orchestration: re-run /fission setup (enables it), or set",
+      "  orchestration.enabled=true in ~/.pi/alloy/config.json",
+      "",
+    );
+  }
   if (!models.length) {
     lines.push("None configured — run /fission setup.");
   } else {
@@ -171,11 +179,19 @@ export function formatFissionLines(result: any) {
       : result.mode === "repo"
         ? "repo (dirty tree)"
         : result.mode || "—";
+  const reviewerCount = Array.isArray(result.reviewers) ? result.reviewers.length : 0;
   const lines = [
     `Fission ${result.verdict || "NO VERDICT"} / ${result.status}`,
     `Mode: ${modeLabel}`,
     result.message || "review evidence is incomplete.",
     ...(result.error ? [`Error: ${result.error}`] : []),
+    ...(reviewerCount === 0 && result.status !== "NO_CHANGES"
+      ? [
+          "",
+          "No reviewer agents started — the run failed before launching children.",
+          "Check Error above and /fission status (Orchestration must be enabled).",
+        ]
+      : []),
     "",
     "Validated findings:",
     ...(result.validatedFindings?.length
@@ -204,7 +220,17 @@ function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"] }) {
   if (!ui?.setWidget) return;
   const panel = createPanelState({ title: "ALLOY FISSION", runId: result.runId });
   panel.phase = result.status;
-  for (const [index, reviewer] of (result.reviewers || []).entries()) {
+  const reviewers = result.reviewers || [];
+  if (!reviewers.length && result.error) {
+    upsertAgent(panel, {
+      role: "launch",
+      index: 1,
+      status: "fail",
+      model: result.mode || "fission",
+      detail: String(result.error),
+    });
+  }
+  for (const [index, reviewer] of reviewers.entries()) {
     upsertAgent(panel, {
       role: "reviewer",
       index: index + 1,

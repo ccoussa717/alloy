@@ -7,6 +7,16 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-11
+
+### Fixed
+
+- Fission **INCOMPLETE with zero agents** is much clearer: status warns when
+  orchestration is disabled, the result dialog explains no reviewers started,
+  the agent panel shows the launch error, and config hints cover common codes
+  (`orchestration_disabled`, `provider_unavailable`, local `child_failed`, …).
+- Subject packet cleanup no longer leaves frozen attempt dirs when capture fails.
+
 ## [1.1.1] - 2026-08-11
 
 ### Fixed
