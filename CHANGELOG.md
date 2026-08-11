@@ -7,6 +7,24 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-11
+
+### Added
+
+- **General-purpose `/fission`**: adversarial multi-perspective review of
+  **any request** — plans, documents, ideas, contracts — not only git repos.
+  Default **auto** mode freezes a trusted dirty tree when available; otherwise
+  freezes the request as an immutable `subject.md` packet.
+- Explicit modes: `fissionMode: "auto"|"subject"|"repo"`, CLI
+  `alloy fission --subject|--repo|--mode …`.
+- Forge plan-phase fission uses **subject** mode so pre-build review no longer
+  skips on a clean tree.
+
+### Changed
+
+- Help, MVP, and status copy describe freeform + dirty-tree fission.
+- Result payloads include `mode` (`subject` | `repo`).
+
 ## [1.0.5] - 2026-08-10
 
 ### Added

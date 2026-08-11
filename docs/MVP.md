@@ -15,7 +15,7 @@ not a backlog of unfinished ideas.
 8. **Diagnostics** — `/diagnose` + `alloy_diagnostics` (typecheck/lint/test when present).
 9. **Auto** — `/auto` multi-role pipeline (scout → plan → checkpoint → build → diagnostics → review) with **fix loops** on review FAIL / bad diagnostics.
 10. **Fusion** — `/fusion <objective>` runs read-only Architect and Builder proposals concurrently, then one attributed Synthesizer call. `/fusion setup` and `/fusion status` manage each role's model and reasoning effort.
-11. **Fission** — `/fission [1..5] <contract>` and `alloy_fission` run bounded read-only review of a trusted repository's current changes through blind specialists and a fresh Judge. Exact global routes have no fallback; `NO_CHANGES`, `INCOMPLETE`, narrow `PASS`, and blocking `FAIL` are fail-closed host outcomes.
+11. **Fission** — `/fission [1..5] <request>` and `alloy_fission` run bounded read-only adversarial review through blind specialists and a fresh Judge. **Auto** mode reviews freeform subjects (plans, docs, ideas) anywhere, and freezes a trusted dirty git tree when one is available. **Repo** mode (`--repo`) stays fail-closed for CI dirty-tree gates. Exact global routes have no fallback; `NO_CHANGES` (repo only), `INCOMPLETE`, narrow `PASS`, and blocking `FAIL` are host outcomes.
 12. **Sub-agents** — `/agent`, `/agents`, profiles, live agent panel.
 13. **Docker sandbox** — `/permissions sandbox` routes bash through a session container (`node:22-bookworm`, network none by default). Fail closed if Docker is missing.
 14. **Mode and permissions UX** — Shift+Tab cycles Build / Plan; `/permissions` controls approval profiles; `/effort` controls thinking levels.

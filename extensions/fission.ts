@@ -165,8 +165,15 @@ function findingLine(finding: any) {
 export function formatFissionLines(result: any) {
   const diversity = result.modelDiversity || {};
   const usage = result.usage || {};
+  const modeLabel =
+    result.mode === "subject"
+      ? "subject (freeform)"
+      : result.mode === "repo"
+        ? "repo (dirty tree)"
+        : result.mode || "—";
   const lines = [
     `Fission ${result.verdict || "NO VERDICT"} / ${result.status}`,
+    `Mode: ${modeLabel}`,
     result.message || "review evidence is incomplete.",
     ...(result.error ? [`Error: ${result.error}`] : []),
     "",

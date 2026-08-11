@@ -88,7 +88,7 @@ Usage:
   alloy [pi-args...]
   alloy --version | -V
   alloy --help | -h
-  alloy fission [--json] [--reviewers N] <request>
+  alloy fission [--json] [--reviewers N] [--mode auto|subject|repo] <request>
   alloy forge [--json] <request>
   alloy runs [--limit N]
 
@@ -164,16 +164,25 @@ if (userArgv[0] === "fission" || userArgv[0] === "forge" || userArgv[0] === "run
   if (reviewersIdx >= 0) {
     reviewers = Number.parseInt(rest[reviewersIdx + 1], 10);
   }
+  const modeIdx = rest.indexOf("--mode");
+  let fissionMode;
+  if (modeIdx >= 0) fissionMode = rest[modeIdx + 1];
+  if (rest.includes("--repo")) fissionMode = "repo";
+  if (rest.includes("--subject")) fissionMode = "subject";
+  const limitIdx = rest.indexOf("--limit");
+  const limit =
+    limitIdx >= 0 ? Number.parseInt(rest[limitIdx + 1], 10) : 20;
   const requestParts = rest.filter(
     (a, i) =>
       a !== "--json" &&
       a !== "--reviewers" &&
+      a !== "--mode" &&
+      a !== "--repo" &&
+      a !== "--subject" &&
       !(reviewersIdx >= 0 && i === reviewersIdx + 1) &&
-      !a.startsWith("--limit"),
+      !(modeIdx >= 0 && i === modeIdx + 1) &&
+      !(limitIdx >= 0 && (i === limitIdx || i === limitIdx + 1)),
   );
-  const limitIdx = rest.indexOf("--limit");
-  const limit =
-    limitIdx >= 0 ? Number.parseInt(rest[limitIdx + 1], 10) : 20;
 
   if (cmd === "runs") {
     const out = cliRuns({ limit });
@@ -183,7 +192,7 @@ if (userArgv[0] === "fission" || userArgv[0] === "forge" || userArgv[0] === "run
   }
   if (cmd === "fission") {
     const request = requestParts.join(" ").trim();
-    const out = await cliFission({ request, reviewers });
+    const out = await cliFission({ request, reviewers, fissionMode });
     if (json) console.log(JSON.stringify(out, null, 2));
     else {
       const r = out.result;

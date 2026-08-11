@@ -225,7 +225,7 @@ Effort level: `/effort` or `/thinking` (not Shift+Tab — that toggles Build/Pla
 | **Chat** | (just type) | Yes if Build allows | Default — one agent, linear tools |
 | **Sub-agent** | `/agent …` | Yes if tools allow | Opt-in extra child |
 | **Fusion** | `/fusion <goal>` | No | Two plans → one synthesis |
-| **Fission** | `/fission [N] <contract>` | No | Adversarial review of dirty tree |
+| **Fission** | `/fission [N] <request>` | No | Adversarial multi-view review (any subject; dirty tree when available) |
 | **Auto** | `/auto <task>` | Yes (worktree) | Scout → build → review → fix |
 | **Forge** | `/forge <task>` | Yes | fusion → fission → auto → fission |
 
@@ -262,7 +262,7 @@ Example config: [`config/alloy.example.json`](./config/alloy.example.json).
 |---|---|
 | Everyday coding | Chat after `/model` |
 | Plan only | `/fusion <objective>` |
-| Review dirty tree | `/fission <contract>` |
+| Multi-view review (plan/idea/diff) | `/fission <request>` |
 | Implement with fix loops | `/auto <request>` |
 | Full quality path | `/forge <request>` |
 | Preset posture | `/pack apply ship` |
@@ -342,27 +342,35 @@ Auth, abort, validation, or budget failures stop earlier. Artifacts land under
 
 In-product: `/help fusion`.
 
-### Fission: adjudicate the current change
+### Fission: adversarial multi-perspective review
 
 > **Trust boundary:** Fission is for projects the operator has marked trusted.
 > Repository Git config/attributes may execute under normal Git behavior.
 > Do not run it on hostile/untrusted repositories.
 > This is a product boundary, not a hidden implementation caveat.
+>
+> Freeform **subject** mode (plans, ideas, docs) freezes only the request text
+> into a packet and does not walk the host tree. **Repo / dirty-tree** mode still
+> requires a trusted repository. Default **auto** picks dirty-tree when READY,
+> otherwise subject.
 
 ```text
 /fission setup                 # roles, models, judge, severity
 /fission status
-/fission <contract>            # default reviewer count
-/fission 5 <contract>          # explicit count (≤ max)
+/fission <request>             # plan, idea, doc, or code contract
+/fission 5 <request>           # explicit count (≤ max)
 ```
 
-Fission freezes the current dirty Git state, sends only the bounded packet to
-blind read-only reviewers, and has a fresh Judge adjudicate their structured
-findings. Use `/fission <contract>` for the configured default count or
-`/fission 5 <contract>` for an explicit count. The equivalent `alloy_fission`
-tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are integers from
-1 through the effective maximum of five and are rejected, never clamped, above
-that limit.
+**Auto (default):** if the cwd is a trusted dirty git repo, Fission freezes the
+dirty tree as evidence; otherwise it freezes the request text as a freeform
+subject packet. CI force-repo: `alloy fission --repo --json "…"`.
+
+Blind read-only reviewers inspect only the immutable packet; a fresh Judge
+adjudicates structured findings. Use `/fission <request>` for the configured
+default count or `/fission 5 <request>` for an explicit count. The equivalent
+`alloy_fission` tool accepts `{ "request": "...", "reviewers": 5 }`. Counts are
+integers from 1 through the effective maximum of five and are rejected, never
+clamped, above that limit.
 
 Reviewers use **predefined roles** from `/fission setup` (security, adversarial
 code review, cynical customer, correctness, architecture, tests, performance,
