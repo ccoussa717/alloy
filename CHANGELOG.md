@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.6] - 2026-08-11
+
+### Fixed
+
+- `/fission` no longer looks idle while working: live agent panel + status updates
+  as the packet freezes and each reviewer/judge starts and finishes, plus an
+  immediate “Fission starting…” notification.
+
 ## [1.1.5] - 2026-08-11
 
 ### Fixed
