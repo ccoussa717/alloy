@@ -15,6 +15,7 @@ import {
   type BashOperations,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { streamSimple as streamOpenAiCompatible } from "@earendil-works/pi-ai/compat";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -33,6 +34,7 @@ const { createDockerBashOperations, ensureSandboxContainer } = require(
 const { ALLOY_CLAUDE_OPUS_5_MODEL } = require(
   join(root, "lib", "alloy-models.mjs"),
 );
+const { isLocalEngineProvider } = require(join(root, "lib", "local-engines.mjs"));
 
 type ChildManifest = {
   permissionProfile?: string;
@@ -204,13 +206,15 @@ export function installRuntimeCredential(
     headers?: unknown;
     env?: unknown;
     baseUrl?: unknown;
+    transport?: unknown;
   };
   if (
     !credential ||
     typeof credential !== "object" ||
     Array.isArray(credential) ||
     Object.keys(credential).some(
-      (key) => !["version", "provider", "apiKey", "headers"].includes(key),
+      (key) =>
+        !["version", "provider", "apiKey", "headers", "transport"].includes(key),
     )
   ) {
     throw new Error("Invalid runtime credential envelope");
@@ -247,6 +251,88 @@ export function installRuntimeCredential(
       headers[name] = value;
     }
   }
+
+  // Local engines: full OpenAI-compatible transport must be brokered because
+  // children load only this enforcer (no local-engines discovery extension).
+  if (credential.transport != null) {
+    if (!isLocalEngineProvider(provider)) {
+      throw new Error("Runtime transport is only allowed for local engines");
+    }
+    const transport = credential.transport as {
+      baseUrl?: unknown;
+      api?: unknown;
+      model?: Record<string, unknown>;
+    };
+    let baseUrl: string;
+    try {
+      const parsed = new URL(String(transport.baseUrl || ""));
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("bad protocol");
+      }
+      baseUrl = parsed.toString().replace(/\/$/, "");
+    } catch {
+      throw new Error("Invalid local engine transport baseUrl");
+    }
+    if (transport.api !== "openai-completions") {
+      throw new Error("Invalid local engine transport api");
+    }
+    const model = transport.model;
+    if (
+      !model ||
+      typeof model !== "object" ||
+      Array.isArray(model) ||
+      typeof model.id !== "string" ||
+      !String(model.id).trim()
+    ) {
+      throw new Error("Invalid local engine transport model");
+    }
+    const modelId = String(model.id);
+    // Placeholder keys ("ollama"/"local") must not force Authorization headers.
+    const hasRealKey =
+      apiKey !== "ollama" &&
+      apiKey !== "local" &&
+      !apiKey.startsWith("$");
+    pi.registerProvider(provider, {
+      baseUrl,
+      apiKey,
+      api: "openai-completions",
+      ...(Object.keys(headers).length ? { headers } : {}),
+      models: [
+        {
+          id: modelId,
+          name:
+            typeof model.name === "string" && model.name
+              ? model.name
+              : modelId,
+          reasoning: Boolean(model.reasoning),
+          input: Array.isArray(model.input) ? model.input : ["text"],
+          cost:
+            model.cost && typeof model.cost === "object"
+              ? model.cost
+              : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
+          compat: model.compat,
+        },
+      ],
+      streamSimple: (streamModel, context, options) =>
+        streamOpenAiCompatible(
+          streamModel,
+          context,
+          hasRealKey
+            ? options
+            : {
+                ...options,
+                headers: {
+                  ...options?.headers,
+                  Authorization: null,
+                } as unknown as Record<string, string>,
+              },
+        ),
+    });
+    return;
+  }
+
   const canonicalModel =
     selectedModel === "anthropic/claude-opus-5" && provider === "anthropic"
       ? ALLOY_CLAUDE_OPUS_5_MODEL

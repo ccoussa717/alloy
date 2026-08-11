@@ -7,6 +7,17 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-11
+
+### Fixed
+
+- Fission/fusion/auto **children on Ollama / llama.cpp / LM Studio** no longer
+  die with opaque `child_failed`. Isolated children load only the child
+  enforcer (no local discovery), so session leases now broker baseUrl + model
+  transport for local engines and child-enforcer registers them with keyless
+  OpenAI-compatible streaming. Cloud routes stay key-only (no baseUrl smuggling).
+- Fission panel errors include a short stderr hint when a child fails.
+
 ## [1.1.0] - 2026-08-11
 
 ### Added

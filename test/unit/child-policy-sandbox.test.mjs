@@ -813,6 +813,54 @@ describe("credential isolation — host auth.json unreadability", () => {
     assert.equal(calls[0][1].models[0].id, "claude-opus-5");
   });
 
+  it("registers brokered Ollama transport for isolated no-extension children", () => {
+    const calls = [];
+    const envelope = buildChildRuntimeCredentialEnvelope({
+      provider: "ollama",
+      apiKey: "ollama",
+      headers: {},
+      transport: {
+        baseUrl: "http://127.0.0.1:11434/v1",
+        api: "openai-completions",
+        model: {
+          id: "qwen3.6:27b",
+          name: "qwen3.6:27b",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 32_768,
+        },
+      },
+    });
+    installRuntimeCredential(
+      { registerProvider: (...args) => calls.push(args) },
+      envelope,
+      "ollama/qwen3.6:27b",
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "ollama");
+    assert.equal(calls[0][1].baseUrl, "http://127.0.0.1:11434/v1");
+    assert.equal(calls[0][1].api, "openai-completions");
+    assert.equal(calls[0][1].apiKey, "ollama");
+    assert.equal(calls[0][1].models[0].id, "qwen3.6:27b");
+    assert.equal(typeof calls[0][1].streamSimple, "function");
+    // Cloud providers must not smuggle arbitrary baseUrl via transport.
+    assert.throws(
+      () =>
+        buildChildRuntimeCredentialEnvelope({
+          provider: "anthropic",
+          apiKey: "x",
+          transport: {
+            baseUrl: "http://127.0.0.1:9/v1",
+            api: "openai-completions",
+            model: { id: "evil" },
+          },
+        }),
+      /only allowed for local engines/i,
+    );
+  });
+
   it("runtime credentials never appear in child argv or returned spawn diagnostics", async () => {
     const result = await runChildAgent({
       prompt: "hello",
