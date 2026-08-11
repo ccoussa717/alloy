@@ -27,9 +27,14 @@ const { groupFusionModelRoutes: groupModelRoutes } = require(
 const { isTrustedSessionModelRoute } = require(
   join(root, "lib", "credential-broker.mjs"),
 );
-const { createPanelState, renderPanelLines, renderPanelThemed, upsertAgent } = require(
-  join(root, "lib", "agent-panel.mjs"),
-);
+const {
+  createPanelState,
+  renderPanelLines,
+  renderPanelThemed,
+  upsertAgent,
+  renderFissionPaneLines,
+  createFissionLivePanel,
+} = require(join(root, "lib", "agent-panel.mjs"));
 const { resolveParentChildSpawnOpts } = require(join(root, "lib", "parent-policy.mjs"));
 const {
   ensureMvpBuiltinCatalogs,
@@ -219,10 +224,57 @@ export function formatFissionLines(result: any) {
   return lines;
 }
 
+/** Live multi-pane stream (mirrors fusion streaming UI). */
+function paintStreamPanel(
+  panel: any,
+  ctx: { ui?: ExtensionContext["ui"]; mode?: string },
+) {
+  const ui = ctx?.ui;
+  if (!ui?.setWidget || !panel) return;
+  try {
+    if (ctx?.mode === "rpc") {
+      ui.setWidget("alloy-agents", renderPanelLines(panel), {
+        placement: "aboveEditor",
+        data: createFissionLivePanel(panel),
+      });
+    } else {
+      ui.setWidget(
+        "alloy-agents",
+        (_tui: unknown, widgetTheme: any) => ({
+          render(width: number) {
+            const lines = renderFissionPaneLines(panel, width);
+            if (!widgetTheme?.fg) return lines;
+            return lines.map((line: string, index: number) =>
+              index === 0
+                ? widgetTheme.fg("accent", line)
+                : /^[┌├└].*[┐┤┘]$/.test(line)
+                  ? widgetTheme.fg("dim", line)
+                  : line,
+            );
+          },
+          invalidate() {},
+        }),
+        { placement: "aboveEditor" },
+      );
+    }
+    ui.setStatus?.(
+      "alloy-fission",
+      `fission:${panel.phase || "run"}`,
+    );
+  } catch {
+    // UI must never fail the run
+  }
+}
+
 function paintProgressPanel(
   progress: any,
-  ctx: { ui?: ExtensionContext["ui"] },
+  ctx: { ui?: ExtensionContext["ui"]; mode?: string },
 ) {
+  // Prefer the live stream panel from the workflow (token/tool streaming).
+  if (progress?.panel?.agents) {
+    paintStreamPanel(progress.panel, ctx);
+    return;
+  }
   const ui = ctx?.ui;
   if (!ui?.setWidget) return;
   const panel = createPanelState({
@@ -268,25 +320,15 @@ function paintProgressPanel(
       detail: "adjudicating…",
     });
   }
-  const themed = renderPanelThemed(panel);
-  const lines =
-    themed && themed.length ? themed : renderPanelLines(panel);
-  ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
-  try {
-    ui.setStatus?.(
-      "alloy-fission",
-      `fission:${progress.phase || progress.status || "run"}`,
-    );
-  } catch {
-    // optional
-  }
+  paintStreamPanel(panel, ctx);
 }
 
-function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"] }) {
+function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"]; mode?: string }) {
   const ui = ctx?.ui;
   if (!ui?.setWidget) return;
   const panel = createPanelState({ title: "ALLOY FISSION", runId: result.runId });
   panel.phase = result.status;
+  panel.mode = result.mode;
   const reviewers = result.reviewers || [];
   if (!reviewers.length && result.error) {
     upsertAgent(panel, {
@@ -305,6 +347,7 @@ function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"] }) {
       model: reviewer.actualModel || reviewer.requestedModel,
       usage: reviewer.usage,
       detail: reviewer.error || reviewer.role || "",
+      warnings: reviewer.warnings || null,
     });
   }
   if (result.judge) {
@@ -316,10 +359,7 @@ function paintPanel(result: any, ctx: { ui?: ExtensionContext["ui"] }) {
       detail: result.judge.error || "",
     });
   }
-  const theme = (ui as any).theme;
-  const lines = theme ? renderPanelThemed(panel, theme) : renderPanelLines(panel);
-  ui.setWidget("alloy-agents", lines, { placement: "belowEditor" });
-  ui.setStatus?.("alloy-fission", `fission:${result.status}`);
+  paintStreamPanel(panel, ctx);
 }
 
 function parseCountLabel(label: string): number {
@@ -390,6 +430,7 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       cwd: ctx.cwd,
       modelRegistry: ctx.modelRegistry,
       timeoutMs: 300_000,
+      onPanel: (panel: unknown) => paintStreamPanel(panel, ctx),
       onProgress: (progress: any) => {
         paintProgressPanel(progress, ctx);
         if (progress.phase === "packet") {

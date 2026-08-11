@@ -174,18 +174,60 @@ export function registerForge(pi: ExtensionAPI) {
             }
           },
           onPanel: (panel: unknown) => {
-            const theme = (ctx.ui as any).theme;
             const {
               renderPanelThemed: themed,
               renderPanelLines: plain,
+              renderFusionPaneLines,
+              renderFissionPaneLines,
+              createFusionLivePanel,
+              createFissionLivePanel,
             } = require(join(root, "lib", "agent-panel.mjs"));
-            const lines = theme
-              ? themed(panel, theme)
-              : plain(panel);
-            ctx.ui.setWidget?.("alloy-agents", lines, { placement: "belowEditor" });
+            const title = (panel as { title?: string })?.title || "";
+            const phase = (panel as { phase?: string })?.phase || "run";
+            const theme = (ctx.ui as any).theme;
+            if (title === "ALLOY FUSION" || title === "ALLOY FISSION") {
+              const isFusion = title === "ALLOY FUSION";
+              const renderPanes = isFusion
+                ? renderFusionPaneLines
+                : renderFissionPaneLines;
+              const createLive = isFusion
+                ? createFusionLivePanel
+                : createFissionLivePanel;
+              if ((ctx as { mode?: string }).mode === "rpc") {
+                ctx.ui.setWidget?.(
+                  "alloy-agents",
+                  plain(panel),
+                  { placement: "aboveEditor", data: createLive(panel) },
+                );
+              } else {
+                ctx.ui.setWidget?.(
+                  "alloy-agents",
+                  (_tui: unknown, widgetTheme: any) => ({
+                    render(width: number) {
+                      const lines = renderPanes(panel, width);
+                      if (!widgetTheme?.fg) return lines;
+                      return lines.map((line: string, index: number) =>
+                        index === 0
+                          ? widgetTheme.fg("accent", line)
+                          : /^[┌├└].*[┐┤┘]$/.test(line)
+                            ? widgetTheme.fg("dim", line)
+                            : line,
+                      );
+                    },
+                    invalidate() {},
+                  }),
+                  { placement: "aboveEditor" },
+                );
+              }
+            } else {
+              const lines = theme ? themed(panel, theme) : plain(panel);
+              ctx.ui.setWidget?.("alloy-agents", lines, {
+                placement: "belowEditor",
+              });
+            }
             ctx.ui.setStatus?.(
               "alloy-forge",
-              `forge:${(panel as { phase?: string })?.phase || "run"}`,
+              `forge:${phase}`,
             );
           },
         });

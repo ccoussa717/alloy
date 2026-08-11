@@ -686,6 +686,11 @@ describe("Fission coordinator", () => {
         '"critical"', '"low"', '"staged_diff"', '"unstaged_diff"', '"file"',
         '"maxItems":50', '"maxItems":20', '"maxLength":8192', '"maxLength":4096',
         '"errors"', '"artifactDigest"', '"lineStart"', '"lineEnd"',
+        'Review only review-packet.json entries whose included field is true',
+        'Entries with included:false are declared packet exclusions',
+        'must not by themselves be reported in errors',
+        'Use errors only when a required included artifact cannot be inspected',
+        'affectedPath must exactly equal an included path',
         'entirely within one diff section owned by affectedPath',
         'Concrete valid JSON example',
       ]) assert.equal(child.prompt.includes(required), true, required);
@@ -733,6 +738,7 @@ describe("Fission coordinator", () => {
       [(input) => childResult(input.model, reviewerOutput("general_adversarial"), { ok: false, error: "aborted" }), "aborted"],
       [(input) => childResult(input.model, reviewerOutput("general_adversarial"), { ok: false, error: "output_limit" }), "output_limit"],
       [(input) => childResult(input.model, { broken: true }), "reviewer_schema"],
+      // errors[] with zero findings remains a hard fail
       [(input) => childResult(input.model, { ...reviewerOutput("general_adversarial"), errors: ["could not inspect"] }), "reviewer_errors"],
       [(input) => childResult(input.model, reviewerOutput("general_adversarial"), { actualModel: null }), "actual_model_missing"],
       [(input) => childResult(input.model, reviewerOutput("general_adversarial"), { actualModel: "other/model" }), "actual_model_mismatch"],
@@ -755,6 +761,72 @@ describe("Fission coordinator", () => {
     } });
     const result = await runFissionWithDependencies({ request: "review", reviewers: 2, defaultReviewers: 2, maxReviewers: 5 }, duplicate.deps);
     assert.equal(result.error, "actual_model_mismatch");
+  });
+
+  it("keeps findings when errors[] only notes soft-omitted packet paths", async () => {
+    const panels = [];
+    const { deps, calls } = makeDeps({
+      runChild: (input) => {
+        if (input.role === "fission-judge") {
+          const submitted = JSON.parse(input.prompt.trim().split("\n").at(-1)).findings;
+          const ids = submitted.map((item) => item.id);
+          const ref = {
+            artifactPath: "unstaged.diff",
+            artifactDigest: digest,
+            lineStart: 1,
+            lineEnd: 1,
+          };
+          return childResult(input.model, {
+            clusters: ids.length
+              ? [{
+                  canonicalFindingId: ids[0],
+                  findingIds: ids,
+                  disposition: "rejected",
+                  adjudicatedSeverity: null,
+                  rationale: "not a real defect after adjudication",
+                  evidenceRefs: [ref],
+                }]
+              : [],
+            judgeConcern: null,
+          });
+        }
+        const role = input.role.replace("fission-reviewer-", "");
+        return childResult(input.model, {
+          ...reviewerOutput(role, ["real finding on the dirty tree"]),
+          errors: [
+            "The packet lists .worktrees/feat/local-engines/ as an untracked directory with included:false so its contents could not be inspected",
+          ],
+        });
+      },
+    });
+    const result = await runFissionWithDependencies({
+      request: "review",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      onPanel: (panel) => {
+        panels.push({
+          phase: panel.phase,
+          agents: (panel.agents || []).map((agent) => ({
+            role: agent.role,
+            index: agent.index,
+            status: agent.status,
+          })),
+        });
+      },
+    }, deps);
+    assert.equal(result.status, "COMPLETE");
+    assert.equal(result.verdict, "PASS");
+    assert.equal(result.error, null);
+    assert.equal(result.reviewers[0].status, "ok");
+    assert.deepEqual(result.reviewers[0].warnings, [
+      "The packet lists .worktrees/feat/local-engines/ as an untracked directory with included:false so its contents could not be inspected",
+    ]);
+    assert.equal(calls.children.some((child) => child.role === "fission-judge"), true);
+    assert.equal(typeof calls.children[0].onEvent, "function");
+    assert.equal(typeof calls.children.find((c) => c.role === "fission-judge")?.onEvent, "function");
+    assert.ok(panels.length > 0, "live panel should stream during the run");
+    assert.ok(panels.some((p) => p.phase === "REVIEW" || p.agents.some((a) => a.role === "reviewer")));
   });
 
   it("settles an output-limited reviewer with all provider-reported crossing-turn usage", async () => {

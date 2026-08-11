@@ -245,6 +245,76 @@ test("fusion live snapshots stay below the transport limit after JSON escaping",
   assert.match(live.agents[2].output, /SYNTHESIZER END$/);
 });
 
+test("fission pane lines render two reviewer columns and judge stack", () => {
+  const p = panel.createPanelState({ title: "ALLOY FISSION", runId: "fission-live" });
+  p.mode = "repo";
+  panel.setPhase(p, "REVIEW");
+  panel.upsertAgent(p, {
+    role: "reviewer",
+    index: 1,
+    status: "running",
+    model: "openai-codex/gpt-5.6-sol",
+    output: "Reviewing docs/alloy-ai-meetup.html for responsive layout issues…",
+  });
+  panel.upsertAgent(p, {
+    role: "reviewer",
+    index: 2,
+    status: "running",
+    model: "xai/grok-4.5",
+    output: "Checking architecture failure handling paths…",
+  });
+  panel.upsertAgent(p, {
+    role: "judge",
+    status: "pending",
+    model: "openai-codex/gpt-5.6-sol",
+    detail: "waiting",
+  });
+  const lines = panel.renderFissionPaneLines(p, 80);
+  assert.ok(lines[0].includes("ALLOY FISSION"));
+  assert.ok(lines.some((line) => line.includes("R1") || line.includes("gpt-5.6-sol")));
+  assert.ok(lines.some((line) => line.includes("R2") || line.includes("grok-4.5")));
+  assert.ok(lines.some((line) => /[┌├└]/.test(line)));
+  const live = panel.createFissionLivePanel(p);
+  assert.equal(live.kind, "alloy.fission.live");
+  assert.equal(live.version, 1);
+  assert.equal(live.mode, "repo");
+  assert.ok(live.agents.some((a) => a.role === "reviewer" && a.output));
+  assert.ok(Buffer.byteLength(JSON.stringify(live)) < 20_000);
+});
+
+test("applyWorkflowChildEvent streams output into the agent panel", () => {
+  const p = panel.createPanelState({ title: "ALLOY FISSION", runId: "stream" });
+  let emits = 0;
+  let updates = 0;
+  panel.applyWorkflowChildEvent(
+    p,
+    { role: "reviewer", index: 1, model: "xai/grok-4.5" },
+    { type: "tool_execution_start", toolName: "read", args: { path: "review-packet.json" } },
+    () => {
+      emits++;
+    },
+    () => {
+      updates++;
+    },
+  );
+  panel.applyWorkflowChildEvent(
+    p,
+    { role: "reviewer", index: 1, model: "xai/grok-4.5" },
+    { outputText: '{"findings":[{"claim":"issue"}]}' },
+    () => {
+      emits++;
+    },
+    () => {
+      updates++;
+    },
+  );
+  assert.equal(emits, 1);
+  assert.equal(updates, 1);
+  const agent = p.agents.find((a) => a.role === "reviewer" && a.index === 1);
+  assert.match(agent.detail, /read/);
+  assert.match(agent.output, /findings/);
+});
+
 test("fusion live snapshots redact secrets before RPC publication", () => {
   const p = panel.createPanelState({ title: "ALLOY FUSION", runId: "fusion-redacted" });
   panel.upsertAgent(p, {

@@ -585,7 +585,10 @@ test("host verdict table is ordered and reviewer agreement never determines PASS
     [{ ...complete, reviewers: [null] }, "INCOMPLETE"],
     [{ ...complete, reviewers: [{ status: "timeout", valid: false }] }, "INCOMPLETE"],
     [{ ...complete, reviewers: [{ status: "ok", valid: false, output: reviewer() }] }, "INCOMPLETE"],
-    [{ ...complete, reviewers: [{ status: "ok", valid: true, output: reviewer({ errors: ["failed"] }) }] }, "INCOMPLETE"],
+    // errors[] with zero findings is still a hard incomplete
+    [{ ...complete, reviewers: [{ status: "ok", valid: true, output: reviewer({ findings: [], errors: ["failed"] }) }] }, "INCOMPLETE"],
+    // errors[] with findings present are informational warnings — run can still PASS
+    [{ ...complete, reviewers: [{ status: "ok", valid: true, output: reviewer({ errors: ["soft-omitted path note"] }) }] }, "PASS"],
     [{ ...complete, requestedReviewers: 2, reviewers: [...complete.reviewers, ...complete.reviewers] }, "INCOMPLETE"],
     [{ ...complete, judge: { status: "timeout", valid: false } }, "INCOMPLETE"],
     [{ ...complete, judge: { status: "ok", valid: false, output: pass } }, "INCOMPLETE"],
