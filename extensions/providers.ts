@@ -30,6 +30,9 @@ const { getAlloyVersion } = require(join(root, "lib", "version.mjs"));
 const { ALLOY_CLAUDE_OPUS_5_MODEL } = require(
   join(root, "lib", "alloy-models.mjs"),
 );
+const { ensureMvpBuiltinCatalogs } = require(
+  join(root, "lib", "model-catalog.mjs"),
+);
 
 export function withClaudeOpus5(anthropic: Provider): Provider {
   const fallback = ALLOY_CLAUDE_OPUS_5_MODEL;
@@ -136,6 +139,14 @@ export function registerProviders(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
+    // Ensure full hosted catalogs (e.g. openai-codex gpt-5.6-luna/sol/terra)
+    // even when the session registry only exposed a partial subset.
+    try {
+      ensureMvpBuiltinCatalogs(pi, ctx.modelRegistry);
+    } catch {
+      // catalog ensure must not block session start
+    }
+
     const anthropic = ctx.modelRegistry.getProvider("anthropic");
     if (
       anthropic &&

@@ -65,6 +65,79 @@ describe("version and model catalog", () => {
     assert.equal(resolveModelInCatalog("xai/grok-4.5", catalog).ok, true);
   });
 
+  it("openai-codex catalog includes the full 5.6 family (luna/sol/terra)", () => {
+    const catalog = loadProviderCatalogIds();
+    if (!catalog["openai-codex"]?.length) return;
+    for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4"]) {
+      assert.ok(
+        catalog["openai-codex"].includes(id),
+        `expected openai-codex catalog to include ${id}, got ${catalog["openai-codex"].join(",")}`,
+      );
+    }
+  });
+
+  it("collectSetupModelRoutes merges full Codex catalog into a partial session registry", async () => {
+    const {
+      collectSetupModelRoutes,
+      listAlloyBuiltinModels,
+      withFullBuiltinModelCatalog,
+    } = await import("../../lib/model-catalog.mjs");
+    const partial = [
+      { provider: "openai-codex", id: "gpt-5.4" },
+      { provider: "openai-codex", id: "gpt-5.5" },
+      { provider: "xai", id: "grok-4.5" },
+    ];
+    const builtins = listAlloyBuiltinModels("openai-codex");
+    assert.ok(builtins.some((m) => m.id === "gpt-5.6-luna"));
+    const registry = {
+      getAll: () => partial,
+      getProvider: (id) =>
+        id === "openai-codex"
+          ? {
+              id: "openai-codex",
+              getModels: () =>
+                partial
+                  .filter((m) => m.provider === "openai-codex")
+                  .map((m) => ({ id: m.id })),
+            }
+          : id === "xai"
+            ? { id: "xai", getModels: () => [{ id: "grok-4.5" }] }
+            : null,
+      find: (provider, id) => {
+        const hit = partial.find((m) => m.provider === provider && m.id === id);
+        if (hit) return { provider, id };
+        const builtin = builtins.find((m) => m.provider === provider && m.id === id);
+        return builtin || null;
+      },
+    };
+    const routes = collectSetupModelRoutes(
+      registry,
+      ["openai-codex", "xai", "anthropic"],
+      (route, reg) => Boolean(reg.find?.(route.split("/")[0], route.split("/").slice(1).join("/"))),
+    );
+    assert.ok(routes.includes("openai-codex/gpt-5.4"));
+    assert.ok(routes.includes("openai-codex/gpt-5.5"));
+    assert.ok(
+      routes.includes("openai-codex/gpt-5.6-luna"),
+      `missing luna in ${routes.join(",")}`,
+    );
+    assert.ok(routes.includes("openai-codex/gpt-5.6-sol"));
+    assert.ok(routes.includes("openai-codex/gpt-5.6-terra"));
+    assert.ok(routes.includes("xai/grok-4.5"));
+
+    const wrapped = withFullBuiltinModelCatalog(
+      {
+        id: "openai-codex",
+        getModels: () => [{ id: "gpt-5.4" }, { id: "gpt-5.5" }],
+      },
+      "openai-codex",
+    );
+    const ids = wrapped.getModels().map((m) => m.id);
+    assert.ok(ids.includes("gpt-5.6-luna"));
+    assert.ok(ids.includes("gpt-5.6-sol"));
+    assert.ok(ids.includes("gpt-5.6-terra"));
+  });
+
   it("doctor reports current Claude subscription economics without leaking secrets", () => {
     const report = formatFullDoctorReport({
       results: [

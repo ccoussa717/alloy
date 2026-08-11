@@ -7,6 +7,16 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-11
+
+### Fixed
+
+- **Codex model list is complete again** in `/fission setup` (and fusion/auto
+  setup): session registries that only exposed a partial openai-codex subset
+  (e.g. missing `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) are merged with
+  the full pinned Pi builtin catalog. Same expand runs at session start so
+  `/model` and child launches see the full set too.
+
 ## [1.1.2] - 2026-08-11
 
 ### Fixed
