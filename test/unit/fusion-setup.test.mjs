@@ -326,9 +326,18 @@ test("fusion setup selects a provider before each model", async () => {
     await command.handler("setup", ctx);
 
     assert.deepEqual(calls[0].options, ["Anthropic", "Codex", "xAI"]);
-    assert.deepEqual(calls[1].options, ["claude-new", "claude-old"]);
-    assert.deepEqual(calls[4].options, ["gpt-new", "gpt-old"]);
-    assert.deepEqual(calls[7].options, ["grok-new", "grok-old"]);
+    // Session models remain; full pinned catalogs are merged in (Codex 5.6-*, etc.).
+    assert.ok(calls[1].options.includes("claude-new"));
+    assert.ok(calls[1].options.includes("claude-old"));
+    assert.ok(calls[4].options.includes("gpt-new"));
+    assert.ok(calls[4].options.includes("gpt-old"));
+    assert.ok(
+      calls[4].options.includes("gpt-5.6-luna") ||
+        calls[4].options.includes("gpt-5.4"),
+      `codex list incomplete: ${calls[4].options.join(",")}`,
+    );
+    assert.ok(calls[7].options.includes("grok-new"));
+    assert.ok(calls[7].options.includes("grok-old"));
     const saved = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
     assert.deepEqual(saved.fusion, {
       architectModel: "anthropic/claude-new",

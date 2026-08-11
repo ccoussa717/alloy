@@ -28,6 +28,13 @@ const { resolveSessionCredentialLease } = require(
   join(root, "lib", "credential-broker.mjs"),
 );
 const {
+  ensureMvpBuiltinCatalogs,
+  collectSetupModelRoutes,
+} = require(join(root, "lib", "model-catalog.mjs"));
+const { isTrustedSessionModelRoute } = require(
+  join(root, "lib", "credential-broker.mjs"),
+);
+const {
   loadConfig,
   loadGlobalConfig,
   saveGlobalFusionConfig,
@@ -118,16 +125,25 @@ function formatAutoHelp() {
   return formatAutoCommandHelp();
 }
 
-async function setupAuto(ctx: ExtensionContext) {
+async function setupAuto(ctx: ExtensionContext, pi?: ExtensionAPI) {
   if (!ctx.hasUI) {
     console.log("/auto setup requires the interactive TUI.");
     return;
   }
+  if (pi) {
+    try {
+      ensureMvpBuiltinCatalogs(pi, ctx.modelRegistry);
+    } catch {
+      // keep partial catalog
+    }
+  }
   const global = loadGlobalConfig();
   const allowed = (global.providers?.allow || []).filter(Boolean);
-  const routes = ctx.modelRegistry
-    .getAll()
-    .map((model: any) => `${model.provider}/${model.id}`);
+  const routes = collectSetupModelRoutes(
+    ctx.modelRegistry,
+    allowed,
+    isTrustedSessionModelRoute,
+  );
   const groups = groupFusionModelRoutes(routes, allowed);
   if (!groups.length) {
     ctx.ui.notify("No allowed models available for Auto setup.", "warning");
@@ -547,10 +563,17 @@ async function showFusionLines(
   else console.log(lines.join("\n"));
 }
 
-async function setupFusion(ctx: ExtensionContext) {
+async function setupFusion(ctx: ExtensionContext, pi?: ExtensionAPI) {
   if (!ctx.hasUI) {
     console.log("/fusion setup requires the interactive TUI.");
     return;
+  }
+  if (pi) {
+    try {
+      ensureMvpBuiltinCatalogs(pi, ctx.modelRegistry);
+    } catch {
+      // keep partial catalog
+    }
   }
   const global = loadGlobalConfig();
   const allowed = (global.providers?.allow || []).filter(Boolean);
@@ -561,9 +584,11 @@ async function setupFusion(ctx: ExtensionContext) {
     builder: defaults.builder || "not configured",
     synthesizer: defaults.synthesizer || "not configured",
   };
-  const routes = ctx.modelRegistry
-    .getAll()
-    .map((model) => `${model.provider}/${model.id}`);
+  const routes = collectSetupModelRoutes(
+    ctx.modelRegistry,
+    allowed,
+    isTrustedSessionModelRoute,
+  );
   const configuredRoutes = [
     ...Object.values(current),
     ...favorites,
@@ -683,7 +708,7 @@ export function registerAuto(pi: ExtensionAPI) {
     }
     if (id === "setup") {
       try {
-        await setupAuto(ctx);
+        await setupAuto(ctx, pi);
       } catch (error) {
         ctx.ui.notify(String((error as Error).message || error), "warning");
       }
@@ -939,7 +964,7 @@ export function registerAuto(pi: ExtensionAPI) {
         return;
       }
       try {
-        await setupFusion(ctx);
+        await setupFusion(ctx, pi);
       } catch (error) {
         ctx.ui.notify(String((error as Error).message || error), "warning");
       }
@@ -948,7 +973,7 @@ export function registerAuto(pi: ExtensionAPI) {
         "Skip if fission is already configured",
       ]);
       try {
-        await setupAuto(ctx);
+        await setupAuto(ctx, pi);
       } catch (error) {
         ctx.ui.notify(String((error as Error).message || error), "warning");
       }
@@ -988,7 +1013,7 @@ export function registerAuto(pi: ExtensionAPI) {
     }
     if (id === "setup") {
       try {
-        await setupFusion(ctx);
+        await setupFusion(ctx, pi);
       } catch (error) {
         ctx.ui.notify(String((error as Error).message || error), "warning");
       }

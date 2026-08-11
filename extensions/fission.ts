@@ -31,6 +31,10 @@ const { createPanelState, renderPanelLines, renderPanelThemed, upsertAgent } = r
   join(root, "lib", "agent-panel.mjs"),
 );
 const { resolveParentChildSpawnOpts } = require(join(root, "lib", "parent-policy.mjs"));
+const {
+  ensureMvpBuiltinCatalogs,
+  collectSetupModelRoutes,
+} = require(join(root, "lib", "model-catalog.mjs"));
 
 type Dependencies = {
   loadConfig?: typeof loadConfig;
@@ -328,16 +332,23 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       console.log("/fission setup requires the interactive TUI.");
       return;
     }
+    // Expand partial session catalogs (Codex often omits 5.6-* until re-registered).
+    try {
+      ensureMvpBuiltinCatalogs(pi, ctx.modelRegistry);
+    } catch {
+      // setup must still open with whatever the registry already has
+    }
     const global = loadOperatorConfig();
     const allowed = (global.providers?.allow || []).filter(Boolean);
     const current = global.fission || {};
     const currentEfforts = Array.isArray(current.reviewerEfforts)
       ? current.reviewerEfforts
       : [];
-    const routes = ctx.modelRegistry
-      .getAll()
-      .map((model: any) => `${model.provider}/${model.id}`)
-      .filter((route: string) => isTrustedModelRoute(route, ctx.modelRegistry));
+    const routes = collectSetupModelRoutes(
+      ctx.modelRegistry,
+      allowed,
+      isTrustedModelRoute,
+    );
     const groups = groupModelRoutes(routes, allowed);
     const distinctRouteCount = new Set(
       groups.flatMap((group: any) =>
