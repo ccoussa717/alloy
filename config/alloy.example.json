@@ -68,7 +68,8 @@
     "defaultReviewers": 3,
     "maxReviewers": 5,
     "blockingSeverity": "high",
-    "workflowTimeoutMs": 900000
+    "workflowTimeoutMs": 900000,
+    "judgeEnabled": false
   },
   "profiles": {
     "research": { "model": "xai/grok-4.5" },
