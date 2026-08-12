@@ -387,7 +387,8 @@ wheel_up="$(printf '\033[<64;10;10M')"
 wheel_down="$(printf '\033[<65;10;10M')"
 wait_for_text "$SESSION" 'Working' >/dev/null
 working_frame_a="$(activity_line "$SESSION")"
-sleep 0.12
+# Activity steps at ~120ms; wait long enough for at least one bounce frame.
+sleep 0.28
 working_frame_b="$(activity_line "$SESSION")"
 if [[ "$working_frame_a" == "$working_frame_b" ]]; then
   printf 'activity scanner did not advance while the backend was working\n' >&2
@@ -482,9 +483,9 @@ wait_for_text "$REMOTE_ON" 'hydrated history item 50' >/dev/null
 tmux send-keys -t "$REMOTE_ON" -l "hold"
 tmux send-keys -t "$REMOTE_ON" Enter
 wait_for_text "$REMOTE_ON" 'Working' >/dev/null
-sleep 0.12
+sleep 0.15
 remote_on_bytes_before="$(wc -c < "$REMOTE_ON_OUTPUT")"
-sleep 0.25
+sleep 0.35
 remote_on_bytes_after="$(wc -c < "$REMOTE_ON_OUTPUT")"
 if [[ "$remote_on_bytes_before" == "$remote_on_bytes_after" ]]; then
   printf 'raw PTY capture did not observe forced SSH animation\n' >&2
@@ -492,18 +493,19 @@ if [[ "$remote_on_bytes_before" == "$remote_on_bytes_after" ]]; then
 fi
 tmux kill-session -t "$REMOTE_ON"
 
+# auto mode now animates over SSH too (product default); still honor =off.
 tmux new-session -d -s "$REMOTE_AUTO" -x 80 -y 24 "$REMOTE_AUTO_RUN"
 tmux pipe-pane -t "$REMOTE_AUTO" -o "$(pipe_capture_command "$REMOTE_AUTO_OUTPUT")"
 wait_for_text "$REMOTE_AUTO" 'hydrated history item 50' >/dev/null
 tmux send-keys -t "$REMOTE_AUTO" -l "hold"
 tmux send-keys -t "$REMOTE_AUTO" Enter
 wait_for_text "$REMOTE_AUTO" 'Working' >/dev/null
-wait_for_stable_file_size "$REMOTE_AUTO_OUTPUT"
+sleep 0.15
 remote_auto_bytes_before="$(wc -c < "$REMOTE_AUTO_OUTPUT")"
-sleep 0.25
+sleep 0.35
 remote_auto_bytes_after="$(wc -c < "$REMOTE_AUTO_OUTPUT")"
-if [[ "$remote_auto_bytes_before" != "$remote_auto_bytes_after" ]]; then
-  printf 'TUI emitted continuous redraw bytes over SSH auto mode\n' >&2
+if [[ "$remote_auto_bytes_before" == "$remote_auto_bytes_after" ]]; then
+  printf 'SSH auto mode should animate the Working indicator by default\n' >&2
   exit 1
 fi
 tmux kill-session -t "$REMOTE_AUTO"
@@ -696,4 +698,4 @@ assert_contains "$fusion_widget_compact" "SYNTHESIZER" "40x10 live Fusion widget
 assert_contains "$fusion_widget_compact" "Ask anything" "40x10 live Fusion widget preserves composer"
 tmux kill-session -t "$FUSION_WIDGET_COMPACT"
 
-printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, provider login status, externally completed login dismissal, searchable help, retained-panel autocomplete, streaming command expansion, local/forced activity animation, SSH-static raw output, tools, commands, syntax rendering, first-run hint, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
+printf 'Alloy UI PTY verification passed: pre-readiness SIGTERM/SIGINT cleanup, hydration, responsive Fusion transcript at 140x30/80x24/40x10, live Fusion widget at 40x10, bounded streaming repaint frames, mouse-release clipboard copy, visible login URL, provider login status, externally completed login dismissal, searchable help, retained-panel autocomplete, streaming command expansion, local/SSH activity animation, tools, commands, syntax rendering, first-run hint, splash divider, sticky wheel, extension allow/cancel, 40x10, abort/exit, backend loss, terminal restoration\n'
