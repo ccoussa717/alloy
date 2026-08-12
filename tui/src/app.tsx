@@ -2,7 +2,7 @@ import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type ScrollBo
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type FusionTranscriptAgent, type TranscriptBlock, type TranscriptToolStatus } from "./content";
+import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type FissionTranscriptAgent, type FusionTranscriptAgent, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import {
   commandCompletion,
   commandSuggestions,
