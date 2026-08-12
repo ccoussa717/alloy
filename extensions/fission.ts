@@ -232,8 +232,10 @@ function paintStreamPanel(
   const ui = ctx?.ui;
   if (!ui?.setWidget || !panel) return;
   try {
+    // Alloy OpenTUI always runs Pi in --mode rpc. Prefer structured live data
+    // (FissionLiveDashboard); fall back to box-drawing pane lines if data is dropped.
     if (ctx?.mode === "rpc") {
-      ui.setWidget("alloy-agents", renderPanelLines(panel), {
+      ui.setWidget("alloy-agents", renderFissionPaneLines(panel, 100), {
         placement: "aboveEditor",
         data: createFissionLivePanel(panel),
       });

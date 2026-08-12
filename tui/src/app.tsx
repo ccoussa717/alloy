@@ -21,6 +21,8 @@ import {
   type ExtensionDialog,
   type FusionLiveAgentState,
   type FusionLivePanelState,
+  type FissionLiveAgentState,
+  type FissionLivePanelState,
   type ModelInfo,
   type NotificationState,
   type RpcMessage,
@@ -200,8 +202,12 @@ export function fusionWidgetTone(
   line: string,
   index: number,
 ): "accent" | "accentDim" | "muted" {
-  if (!lines[0]?.includes("ALLOY FUSION") && !lines.some((item) => /^[◆▲⧉]/.test(item))) return "muted";
-  if (index === 0 || /Architect|Builder|Synthesizer/.test(line)) return "accent";
+  const isLive =
+    lines[0]?.includes("ALLOY FUSION") ||
+    lines[0]?.includes("ALLOY FISSION") ||
+    lines.some((item) => /^[◆▲⧉]/.test(item) || /^[┌├└]/.test(item));
+  if (!isLive) return "muted";
+  if (index === 0 || /Architect|Builder|Synthesizer|Reviewer|Judge|R\d/.test(line)) return "accent";
   if (/^[┌├└]/.test(line)) return "accentDim";
   return "muted";
 }
@@ -438,6 +444,177 @@ function FusionLiveDashboard(props: { panel: FusionLivePanelState; width: number
           <FusionLiveRolePane agent={synthesizer()!} frame={props.frame} outputWidth={Math.max(8, props.width - 18)} />
         </Show>
       </box>
+    </Show>
+  );
+}
+
+function fissionLiveLabel(agent: FissionLiveAgentState): string {
+  if (agent.role === "judge") return "JUDGE";
+  if (agent.role === "reviewer") return `R${agent.index ?? "?"}`;
+  return String(agent.role || "AGENT").toUpperCase();
+}
+
+function fissionLiveActivity(agent: FissionLiveAgentState): string {
+  const event = agent.events[0];
+  return agent.status !== "running"
+    ? agent.activity
+    : event
+    ? `${event.status === "running" ? "using" : event.status} ${event.tool}${event.detail ? ` · ${event.detail}` : ""}`
+    : agent.activity;
+}
+
+function FissionLiveRolePane(props: {
+  agent: FissionLiveAgentState;
+  frame: number;
+  outputWidth: number;
+  grow?: boolean;
+}) {
+  const running = () => props.agent.status === "running";
+  const output = () => fusionLiveOutputPreview(props.agent.output, props.outputWidth);
+  return (
+    <box
+      width={props.grow ? undefined : "100%"}
+      flexGrow={props.grow ? 1 : 0}
+      flexBasis={props.grow ? 0 : undefined}
+      minWidth={0}
+      flexDirection="column"
+      border={["left"]}
+      borderColor={theme.accent}
+      backgroundColor={theme.panel}
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      <text height={1} fg={theme.accent}>
+        {props.agent.role === "judge" ? "⚖" : "◆"} {fissionLiveLabel(props.agent)}
+        {props.agent.model ? ` · ${props.agent.model}` : ""}
+      </text>
+      <text
+        height={1}
+        fg={
+          props.agent.status === "fail"
+            ? theme.error
+            : running()
+              ? theme.warning
+              : props.agent.status === "ok"
+                ? theme.success
+                : theme.muted
+        }
+      >
+        {running() ? activityFrame(props.frame, 4) : fusionLiveStatusGlyph(props.agent.status)}{" "}
+        {props.agent.status} · {fissionLiveActivity(props.agent)}
+      </text>
+      <For each={props.agent.events.slice(0, 1)}>
+        {(event) => (
+          <text height={1} fg={event.status === "failed" ? theme.error : theme.dim}>
+            TOOL {event.tool}
+            {event.detail ? ` · ${event.detail}` : ""}
+          </text>
+        )}
+      </For>
+      <Show when={output()}>
+        <text height={1} fg={theme.text}>MODEL OUTPUT · {output()}</text>
+      </Show>
+    </box>
+  );
+}
+
+function FissionLiveDashboard(props: {
+  panel: FissionLivePanelState;
+  width: number;
+  height: number;
+  frame: number;
+}) {
+  const reviewers = () => props.panel.agents.filter((agent) => agent.role === "reviewer");
+  const judge = () => props.panel.agents.find((agent) => agent.role === "judge");
+  const judgeActive = () => judge() !== undefined && judge()!.status !== "pending";
+  const columns = () => props.width >= 90 && reviewers().length === 2;
+  const compact = () => props.height < 14 || props.width < 60;
+  return (
+    <Show
+      when={!compact()}
+      fallback={
+        <box flexDirection="column">
+          <text height={1} fg={theme.accent}>
+            ALLOY FISSION · {props.panel.phase}
+            {props.panel.mode ? ` · ${props.panel.mode}` : ""}
+          </text>
+          <For each={props.panel.agents}>
+            {(agent) => (
+              <text
+                height={1}
+                fg={
+                  agent.status === "fail"
+                    ? theme.error
+                    : agent.status === "ok"
+                      ? theme.success
+                      : theme.accent
+                }
+              >
+                {fissionLiveLabel(agent)} {fusionLiveStatusGlyph(agent.status)} {agent.status}{" "}
+                {fissionLiveActivity(agent)}
+              </text>
+            )}
+          </For>
+        </box>
+      }
+    >
+      <box flexDirection="column">
+        <text height={1} fg={theme.accent}>
+          ALLOY FISSION · {props.panel.phase}
+          {props.panel.mode ? ` · ${props.panel.mode}` : ""}
+        </text>
+        <box flexDirection={columns() ? "row" : "column"} gap={columns() ? 1 : 0}>
+          <For each={reviewers()}>
+            {(agent) => (
+              <FissionLiveRolePane
+                agent={agent}
+                frame={props.frame}
+                outputWidth={
+                  columns()
+                    ? Math.max(8, Math.floor(props.width / Math.max(1, reviewers().length)) - 18)
+                    : Math.max(8, props.width - 18)
+                }
+                grow={columns()}
+              />
+            )}
+          </For>
+        </box>
+        <Show when={judgeActive()}>
+          <FissionLiveRolePane
+            agent={judge()!}
+            frame={props.frame}
+            outputWidth={Math.max(8, props.width - 18)}
+          />
+        </Show>
+      </box>
+    </Show>
+  );
+}
+
+function AgentLiveDashboard(props: {
+  panel: FusionLivePanelState | FissionLivePanelState;
+  width: number;
+  height: number;
+  frame: number;
+}) {
+  return (
+    <Show
+      when={props.panel.kind === "alloy.fission.live"}
+      fallback={
+        <FusionLiveDashboard
+          panel={props.panel as FusionLivePanelState}
+          width={props.width}
+          height={props.height}
+          frame={props.frame}
+        />
+      }
+    >
+      <FissionLiveDashboard
+        panel={props.panel as FissionLivePanelState}
+        width={props.width}
+        height={props.height}
+        frame={props.frame}
+      />
     </Show>
   );
 }
@@ -1164,7 +1341,7 @@ export function AlloyApp(props: AlloyAppProps) {
                 when={widget.data}
                 fallback={<For each={widget.lines}>{(line, index) => <text wrapMode="char" fg={theme[fusionWidgetTone(widget.lines, line, index())]}>{line}</text>}</For>}
               >
-                <FusionLiveDashboard panel={widget.data!} width={Math.max(1, layout().width - layout().horizontalPadding * 2 - 2)} height={layout().height} frame={activityFrameIndex()} />
+                <AgentLiveDashboard panel={widget.data!} width={Math.max(1, layout().width - layout().horizontalPadding * 2 - 2)} height={layout().height} frame={activityFrameIndex()} />
               </Show>
             )}
           </For>
