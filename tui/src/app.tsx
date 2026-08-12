@@ -357,6 +357,123 @@ function FusionResult(props: { block: Extract<TranscriptBlock, { kind: "fusion" 
   );
 }
 
+function fissionResultLayout(width: number): "columns" | "stack" {
+  return width >= 90 ? "columns" : "stack";
+}
+
+function FissionAgentResult(props: {
+  agent: {
+    alias: string;
+    role: string;
+    model: string;
+    status: "done" | "failed";
+    text: string;
+    error?: string;
+  };
+  grow?: boolean;
+  maxHeight?: number;
+}) {
+  const label = () =>
+    props.agent.role === "judge"
+      ? "JUDGE"
+      : props.agent.alias || props.agent.role.toUpperCase();
+  const glyph = () => (props.agent.role === "judge" ? "⚖" : "◆");
+  return (
+    <box
+      width={props.grow ? undefined : "100%"}
+      flexGrow={props.grow ? 1 : 0}
+      flexBasis={props.grow ? 0 : undefined}
+      minWidth={0}
+      flexDirection="column"
+      border={["left"]}
+      borderColor={theme.accent}
+      backgroundColor={theme.panel}
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+      maxHeight={props.maxHeight}
+    >
+      <text fg={theme.accent}>
+        {glyph()} {label()} · {props.agent.model}
+      </text>
+      <text fg={props.agent.status === "done" ? theme.success : theme.error}>
+        {props.agent.status === "done" ? "✓" : "×"} {props.agent.status}
+      </text>
+      <Show when={props.agent.error}>
+        <text fg={theme.error}>{props.agent.error}</text>
+      </Show>
+      <box height={1} />
+      <scrollbox
+        flexGrow={1}
+        minHeight={8}
+        maxHeight={props.maxHeight ? Math.max(6, props.maxHeight - 4) : 24}
+        stickyScroll={true}
+        stickyStart="top"
+        scrollbarOptions={{ visible: true }}
+      >
+        <markdown
+          syntaxStyle={syntaxStyle}
+          internalBlockMode="top-level"
+          content={props.agent.text || "(no output)"}
+          tableOptions={{ style: "grid" }}
+          fg={theme.text}
+          bg={theme.panel}
+        />
+      </scrollbox>
+    </box>
+  );
+}
+
+function FissionResult(props: {
+  block: Extract<TranscriptBlock, { kind: "fission" }>;
+  width: number;
+}) {
+  const columns = () =>
+    fissionResultLayout(props.width) === "columns" && props.block.reviewers.length === 2;
+  const paneHeight = () => Math.max(16, Math.min(36, Math.floor(props.width / 3)));
+  return (
+    <box flexDirection="column" gap={1}>
+      <text fg={theme.accent}>
+        FISSION // {props.block.verdict || props.block.status}
+      </text>
+      <text fg={theme.dim}>
+        {props.block.runId}
+        {props.block.mode ? ` · ${props.block.mode}` : ""}
+      </text>
+      <Show when={props.block.request}>
+        <text fg={theme.muted}>request: {props.block.request}</text>
+      </Show>
+      <Show when={props.block.error}>
+        <text fg={theme.error}>× {props.block.error}</text>
+      </Show>
+      <Show when={props.block.summary}>
+        <markdown
+          syntaxStyle={syntaxStyle}
+          internalBlockMode="top-level"
+          content={props.block.summary!}
+          tableOptions={{ style: "grid" }}
+          fg={theme.text}
+          bg={theme.background}
+        />
+      </Show>
+      <box flexDirection={columns() ? "row" : "column"} gap={1}>
+        <For each={props.block.reviewers}>
+          {(agent) => (
+            <FissionAgentResult agent={agent} grow={columns()} maxHeight={paneHeight()} />
+          )}
+        </For>
+      </box>
+      <Show when={props.block.judge}>
+        {(agent) => <FissionAgentResult agent={agent()} maxHeight={paneHeight()} />}
+      </Show>
+      <Show when={props.block.runDir}>
+        <text fg={theme.dim}>artifacts: {props.block.runDir}</text>
+      </Show>
+    </box>
+  );
+}
+
 function liveRoleLabel(role: FusionLiveAgentState["role"]): string {
   if (role === "architect") return "ARCHITECT";
   if (role === "builder") return "BUILDER";
@@ -470,7 +587,28 @@ function FissionLiveRolePane(props: {
   grow?: boolean;
 }) {
   const running = () => props.agent.status === "running";
-  const output = () => fusionLiveOutputPreview(props.agent.output, props.outputWidth);
+  // Keep a longer multi-line tail so streaming is visible, not a single truncated line.
+  const outputLines = () => {
+    const text = String(props.agent.output || "").replace(/\r/g, "");
+    if (!text.trim()) return running() ? ["…streaming"] : ["…"];
+    const width = Math.max(12, props.outputWidth);
+    const wrapped: string[] = [];
+    for (const paragraph of text.split("\n")) {
+      const words = paragraph.length ? paragraph.split(/(\s+)/) : [""];
+      let line = "";
+      for (const word of words) {
+        const next = line + word;
+        if (Bun.stringWidth(next) > width && line) {
+          wrapped.push(line);
+          line = word.trimStart();
+        } else {
+          line = next;
+        }
+      }
+      wrapped.push(line);
+    }
+    return wrapped.slice(-8);
+  };
   return (
     <box
       width={props.grow ? undefined : "100%"}
@@ -483,6 +621,7 @@ function FissionLiveRolePane(props: {
       backgroundColor={theme.panel}
       paddingLeft={1}
       paddingRight={1}
+      minHeight={10}
     >
       <text height={1} fg={theme.accent}>
         {props.agent.role === "judge" ? "⚖" : "◆"} {fissionLiveLabel(props.agent)}
@@ -511,9 +650,11 @@ function FissionLiveRolePane(props: {
           </text>
         )}
       </For>
-      <Show when={output()}>
-        <text height={1} fg={theme.text}>MODEL OUTPUT · {output()}</text>
-      </Show>
+      <box flexDirection="column" minHeight={6}>
+        <For each={outputLines()}>
+          {(line) => <text height={1} fg={theme.text} wrapMode="none">{line || " "}</text>}
+        </For>
+      </box>
     </box>
   );
 }
@@ -527,8 +668,9 @@ function FissionLiveDashboard(props: {
   const reviewers = () => props.panel.agents.filter((agent) => agent.role === "reviewer");
   const judge = () => props.panel.agents.find((agent) => agent.role === "judge");
   const judgeActive = () => judge() !== undefined && judge()!.status !== "pending";
-  const columns = () => props.width >= 90 && reviewers().length === 2;
-  const compact = () => props.height < 14 || props.width < 60;
+  const columns = () => props.width >= 80 && reviewers().length >= 2;
+  // Prefer multi-pane stream; only collapse on very tight terminals.
+  const compact = () => props.height < 12 || props.width < 48;
   return (
     <Show
       when={!compact()}
@@ -664,6 +806,7 @@ function Block(props: { block: TranscriptBlock; width?: number; user?: boolean; 
     return <text fg={theme.muted}>[{props.block.kind}: {props.block.name ?? props.block.mimeType ?? "attachment"}]</text>;
   }
   if (props.block.kind === "fusion") return <FusionResult block={props.block} width={props.width ?? 80} />;
+  if (props.block.kind === "fission") return <FissionResult block={props.block} width={props.width ?? 80} />;
   if (props.block.kind === "custom") return <text fg={theme.muted}>{props.block.name}: {props.block.text}</text>;
   return <text fg={theme.muted}>{props.block.text}</text>;
 }
