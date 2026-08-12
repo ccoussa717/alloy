@@ -459,13 +459,15 @@ function FissionResult(props: {
       </Show>
       <box flexDirection={columns() ? "row" : "column"} gap={1}>
         <For each={props.block.reviewers}>
-          {(agent) => (
+          {(agent: FissionTranscriptAgent) => (
             <FissionAgentResult agent={agent} grow={columns()} maxHeight={paneHeight()} />
           )}
         </For>
       </box>
       <Show when={props.block.judge}>
-        {(agent) => <FissionAgentResult agent={agent()} maxHeight={paneHeight()} />}
+        {(agent: () => FissionTranscriptAgent) => (
+          <FissionAgentResult agent={agent()} maxHeight={paneHeight()} />
+        )}
       </Show>
       <Show when={props.block.runDir}>
         <text fg={theme.dim}>artifacts: {props.block.runDir}</text>
