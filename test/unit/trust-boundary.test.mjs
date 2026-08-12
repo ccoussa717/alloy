@@ -159,6 +159,7 @@ describe("trust boundary", () => {
         defaultReviewers: 2,
         maxReviewers: 2,
         blockingSeverity: "medium",
+        workflowTimeoutMs: 900_000,
         reviewerEfforts: [],
         judgeEffort: null,
         roles: ["correctness_regressions", "security_trust_boundaries"],
@@ -477,6 +478,7 @@ describe("trust boundary", () => {
       defaultReviewers: 3,
       maxReviewers: 5,
       blockingSeverity: "medium",
+      workflowTimeoutMs: 900_000,
       reviewerEfforts: [],
       judgeEffort: null,
       roles: [],
@@ -492,6 +494,10 @@ describe("trust boundary", () => {
       ]) {
         writeFileSync(path, JSON.stringify({ fission }));
         assert.throws(() => loadGlobalConfig(), /fission.*reviewer/i);
+      }
+      for (const workflowTimeoutMs of [59_999, 86_400_001, 90_000.5, "900000"]) {
+        writeFileSync(path, JSON.stringify({ fission: { workflowTimeoutMs } }));
+        assert.throws(() => loadGlobalConfig(), /fission.*workflowTimeoutMs/i);
       }
     } finally {
       writeFileSync(path, valid);
@@ -553,14 +559,16 @@ describe("trust boundary", () => {
         models: ["evil/model"],
         judgeModel: "evil/judge",
         modelFamilies: { "evil/model": "evil" },
+        workflowTimeoutMs: 86_400_000,
         blockingSeverity: "medium",
       },
     });
     assert.deepEqual(tightened.config.fission.models, base.fission.models);
     assert.equal(tightened.config.fission.judgeModel, base.fission.judgeModel);
     assert.deepEqual(tightened.config.fission.modelFamilies, base.fission.modelFamilies);
+    assert.equal(tightened.config.fission.workflowTimeoutMs, base.fission.workflowTimeoutMs);
     assert.equal(tightened.config.fission.blockingSeverity, "medium");
-    assert.equal(tightened.rejected.filter((item) => /global-only/.test(item)).length, 3);
+    assert.equal(tightened.rejected.filter((item) => /global-only/.test(item)).length, 4);
 
     const loosened = mergeProjectConfigTightenOnly(base, {
       fission: { blockingSeverity: "critical" },
