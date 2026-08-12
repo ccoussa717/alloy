@@ -32,7 +32,13 @@ import {
   type WidgetState,
 } from "./session-store";
 import parsers from "./parsers-config";
-import { activityAnimationInterval, activityFrame, activityLabel, splashDivider } from "./presentation";
+import {
+  ACTIVITY_TRACK_WIDTH,
+  activityAnimationInterval,
+  activityFrame,
+  activityLabel,
+  splashDivider,
+} from "./presentation";
 import { syntaxStyle } from "./syntax";
 import { theme } from "./theme";
 import { Sidebar } from "./sidebar";
@@ -1610,7 +1616,12 @@ export function AlloyApp(props: AlloyAppProps) {
       </box>
       <box height={1} flexShrink={0} paddingLeft={layout().horizontalPadding + 1} paddingRight={layout().horizontalPadding} flexDirection="row" justifyContent="space-between">
         <text fg={activityActive() ? theme.accent : theme.dim}>
-          {activityActive() ? activityFrame(activityFrameIndex()) : "⬝".repeat(8)} <span style={{ fg: activityActive() ? theme.text : theme.dim }}>{activityLabel(session(), toolExecutions())}</span>
+          {activityActive()
+            ? activityFrame(activityFrameIndex(), ACTIVITY_TRACK_WIDTH)
+            : "·".repeat(ACTIVITY_TRACK_WIDTH)}{" "}
+          <span style={{ fg: activityActive() ? theme.text : theme.dim }}>
+            {activityLabel(session(), toolExecutions())}
+          </span>
         </text>
         <text fg={theme.dim}>{session().isStreaming ? "Ctrl+C abort" : "Ctrl+C exit"}</text>
       </box>
