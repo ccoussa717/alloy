@@ -650,6 +650,71 @@ describe("extension UI events", () => {
     });
   });
 
+  it("stores validated Fission live widget data with reviewer panes", () => {
+    const state = reduceRpcMessage(createInitialState(), {
+      type: "extension_ui_request",
+      id: "fission-widget-1",
+      method: "setWidget",
+      widgetKey: "alloy-agents",
+      widgetLines: ["Fission fallback"],
+      widgetPlacement: "aboveEditor",
+      widgetData: {
+        kind: "alloy.fission.live",
+        version: 1,
+        runId: "fission-live",
+        phase: "REVIEW",
+        mode: "repo",
+        agents: [
+          {
+            role: "reviewer",
+            index: 1,
+            status: "running",
+            model: "openai-codex/gpt-5.6-sol",
+            activity: "reading packet",
+            output: "Reviewing docs/alloy-ai-meetup.html…",
+            events: [{ tool: "read", detail: "review-packet.json", status: "running" }],
+          },
+          {
+            role: "reviewer",
+            index: 2,
+            status: "running",
+            model: "xai/grok-4.5",
+            activity: "starting…",
+            output: "",
+            events: [],
+          },
+          {
+            role: "judge",
+            index: null,
+            status: "pending",
+            model: "openai-codex/gpt-5.6-sol",
+            activity: "Waiting",
+            output: "",
+            events: [],
+          },
+        ],
+      },
+    });
+
+    expect(state.widgets["alloy-agents"]?.lines).toEqual(["Fission fallback"]);
+    expect(state.widgets["alloy-agents"]?.data).toMatchObject({
+      kind: "alloy.fission.live",
+      version: 1,
+      phase: "REVIEW",
+      mode: "repo",
+    });
+    expect(state.widgets["alloy-agents"]?.data?.agents?.map((agent: any) => agent.role)).toEqual([
+      "reviewer",
+      "reviewer",
+      "judge",
+    ]);
+    expect(state.widgets["alloy-agents"]?.data?.agents?.[0]).toMatchObject({
+      index: 1,
+      model: "openai-codex/gpt-5.6-sol",
+      status: "running",
+    });
+  });
+
   it("rejects structured Fusion panels above the transport byte limit", () => {
     const oversizedOutput = "💡".repeat(4_096);
     const state = reduceRpcMessage(createInitialState(), {

@@ -7,6 +7,18 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.8] - 2026-08-11
+
+### Fixed
+
+- **Fission streaming UI actually shows in Alloy OpenTUI.** Alloy always runs Pi
+  in `--mode rpc`; v1.1.7 sent `alloy.fission.live` data the TUI dropped because
+  only `alloy.fusion.live` was parsed. OpenTUI now renders a Fission live dashboard
+  (reviewer panes + judge), and RPC fallback lines use stream panes not the status list.
+- Local installs on 1.1.6 still hit hard `reviewer_errors` for soft-omitted paths;
+  ensure you restart Alloy after upgrading to ≥1.1.7/1.1.8.
+
+
 ## [1.1.7] - 2026-08-11
 
 ### Added
