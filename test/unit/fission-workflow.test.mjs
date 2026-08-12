@@ -112,8 +112,6 @@ function makeDeps(options = {}) {
         modelFamilies: options.modelFamilies || {},
         reviewerEfforts: options.reviewerEfforts || [],
         judgeEffort: options.judgeEffort ?? null,
-        // Workflow unit tests cover the full adjudicated path unless overridden.
-        judgeEnabled: options.judgeEnabled !== false,
       },
     }),
     preflightFissionRepository: () => {
@@ -257,8 +255,7 @@ describe("Fission pure contracts", () => {
       judgeEffort: "max",
     });
     assert.throws(() => resolveFissionModels(cfg, 4), /reviewer_models/);
-    assert.throws(() => resolveFissionModels({ fission: { models: reviewerModels } }, 3, {}, { requireJudge: true }), /judge_model/);
-    assert.doesNotThrow(() => resolveFissionModels({ fission: { models: reviewerModels } }, 3, {}, { requireJudge: false }));
+    assert.throws(() => resolveFissionModels({ fission: { models: reviewerModels } }, 3), /judge_model/);
     assert.throws(() => resolveFissionModels(cfg, 2, { models: ["evil/override"] }), /override/);
   });
 
@@ -638,8 +635,8 @@ describe("Fission coordinator", () => {
     assert.equal(denied.error, "sandbox_model_egress_unavailable");
     assertCompleteShape(denied);
 
-    const missing = makeDeps({ deps: { loadConfig: () => ({ orchestration: { enabled: true, maxConcurrency: 2 }, budgets: { maxCostUsd: 5 }, fission: { models: reviewerModels, judgeEnabled: true } }) } });
-    const invalid = await runFissionWithDependencies({ request: "review", defaultReviewers: 1, maxReviewers: 5, judgeEnabled: true }, missing.deps);
+    const missing = makeDeps({ deps: { loadConfig: () => ({ orchestration: { enabled: true, maxConcurrency: 2 }, budgets: { maxCostUsd: 5 }, fission: { models: reviewerModels } }) } });
+    const invalid = await runFissionWithDependencies({ request: "review", defaultReviewers: 1, maxReviewers: 5 }, missing.deps);
     assert.equal(invalid.error, "judge_model");
     assert.equal(missing.calls.children.length, 0);
   });
@@ -732,25 +729,6 @@ describe("Fission coordinator", () => {
     const manifest = JSON.parse(readFileSync(join(runRoot, "launch-manifest.json"), "utf8"));
     assert.deepEqual(manifest.reviewerEfforts, ["high", "low"]);
     assert.equal(manifest.judgeEffort, "medium");
-  });
-
-  it("skips the judge when judgeEnabled is false (report only)", async () => {
-    const { deps, calls, runRoot } = makeDeps({ judgeEnabled: false });
-    const result = await runFissionWithDependencies({
-      request: "review",
-      reviewers: 2,
-      defaultReviewers: 2,
-      maxReviewers: 5,
-      judgeEnabled: false,
-    }, deps);
-    assert.equal(result.status, "COMPLETE");
-    assert.equal(result.verdict, null);
-    assert.match(result.message, /report only/i);
-    assert.equal(result.judge, null);
-    assert.equal(calls.children.some((child) => child.role === "fission-judge"), false);
-    assert.equal(calls.children.filter((child) => child.role.startsWith("fission-reviewer-")).length, 2);
-    const manifest = JSON.parse(readFileSync(join(runRoot, "launch-manifest.json"), "utf8"));
-    assert.equal(manifest.judgeEnabled, false);
   });
 
   it("fails reviewers closed for child, schema, attestation, diversity, usage, and budget failures", async () => {
