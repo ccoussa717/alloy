@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.13] - 2026-08-12
+
+### Added
+- **Composer command history:** Up/Down in the input line cycles through previously
+  submitted prompts and slash commands (readline-style). History is persisted under
+  `~/.pi/alloy/command-history.json` (last 200 entries). Multi-line edits still use
+  Up/Down for cursor movement when not on the first/last line; slash autocomplete
+  keeps Up/Down for suggestion selection.
+
 ## [1.1.12] - 2026-08-12
 
 ### Added

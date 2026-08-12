@@ -3,6 +3,7 @@ import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } 
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type FissionTranscriptAgent, type FusionTranscriptAgent, type TranscriptBlock, type TranscriptToolStatus } from "./content";
+import { createPersistentCommandHistory } from "./command-history";
 import {
   commandCompletion,
   commandSuggestions,
@@ -839,6 +840,8 @@ export function AlloyApp(props: AlloyAppProps) {
   let modalInput: TextareaRenderable | undefined;
   let submitting = false;
   let lastBackendEditorText: string | undefined;
+  let applyingHistoryText = false;
+  const commandHistory = createPersistentCommandHistory();
   const submissionQueue: Array<{ value: string; restoreOnFailure: boolean }> = [];
   const extensionTimeouts = new Map<string, { delay: number; timer: ReturnType<typeof setTimeout> }>();
   let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1048,16 +1051,61 @@ export function AlloyApp(props: AlloyAppProps) {
     composer.clear();
     setComposerText("");
     setDismissedAutocompleteText(undefined);
+    commandHistory.abandonBrowse();
+  }
+
+  function applyComposerText(value: string, options: { fromHistory?: boolean } = {}): void {
+    applyingHistoryText = options.fromHistory === true;
+    try {
+      composer.setText(value);
+      composer.gotoBufferEnd();
+      setComposerText(value);
+      setDismissedAutocompleteText(undefined);
+      setAutocompleteSelected(0);
+    } finally {
+      applyingHistoryText = false;
+    }
   }
 
   function completeAutocomplete(): void {
     const suggestion = autocompleteItems()[autocompleteSelected()];
     if (!suggestion) return;
     const value = commandCompletion(suggestion);
-    composer.setText(value);
-    composer.gotoBufferEnd();
-    setComposerText(value);
-    setDismissedAutocompleteText(undefined);
+    applyComposerText(value);
+    commandHistory.abandonBrowse();
+  }
+
+  /** Up/down history when not in autocomplete/dialog; respects multi-line cursor. */
+  function handleComposerHistory(event: KeyEvent): boolean {
+    if (extensionDialog() || localDialog() || autocompleteOpen()) return false;
+    if (event.name !== "up" && event.name !== "down") return false;
+    if (!composer) return false;
+
+    const cursor = composer.visualCursor;
+    const text = composer.plainText;
+    const lineCount = Math.max(1, text.split(/\r?\n/).length);
+
+    if (event.name === "up") {
+      // Let multi-line editing move within the buffer unless we're on the first line.
+      if (cursor && cursor.logicalRow > 0) return false;
+      const previous = commandHistory.previous(text);
+      if (previous === null) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      applyComposerText(previous, { fromHistory: true });
+      return true;
+    }
+
+    // down
+    if (cursor && cursor.logicalRow < lineCount - 1 && commandHistory.index() >= commandHistory.entries().length) {
+      return false;
+    }
+    const next = commandHistory.next(text);
+    if (next === null) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    applyComposerText(next, { fromHistory: true });
+    return true;
   }
 
   async function runResolution(resolution: SubmissionResolution): Promise<boolean> {
@@ -1128,6 +1176,7 @@ export function AlloyApp(props: AlloyAppProps) {
   function submitComposer(): void {
     const value = composer.plainText;
     if (!value.trim()) return;
+    commandHistory.push(value);
     clearComposer();
     void submitValue(value, true);
   }
@@ -1307,6 +1356,8 @@ export function AlloyApp(props: AlloyAppProps) {
         return;
       }
     }
+    // After autocomplete handling: Up/Down cycle submitted command history.
+    if (handleComposerHistory(event)) return;
     if (!extensionDialog() && !localDialog()) return;
     if (event.name === "escape") {
       event.preventDefault();
@@ -1541,6 +1592,7 @@ export function AlloyApp(props: AlloyAppProps) {
               setComposerText(value);
               setAutocompleteSelected(0);
               setDismissedAutocompleteText(undefined);
+              if (!applyingHistoryText) commandHistory.abandonBrowse();
             }
           }}
           onSubmit={submitComposer}

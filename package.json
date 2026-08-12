@@ -1,6 +1,6 @@
 {
   "name": "alloy-agent",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "description": "Alloy multi-provider coding agent with an OpenCode-derived Solid/OpenTUI frontend and Pi runtime.",
   "private": true,
   "type": "module",
