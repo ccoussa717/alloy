@@ -677,6 +677,109 @@ test("routed Fusion uses fallback evidence, matching leases, and serial proposal
   assert.equal(artifacts.includes("secret-"), false);
 });
 
+test("Fusion uses models saved by setup when orchestration is enabled", async () => {
+  const runDir = makeRunDir();
+  const cfg = routedFusionConfig({ maxConcurrency: 1 });
+  cfg.fusion = {
+    architectModel: "anthropic/fusion-architect",
+    builderModel: "openai-codex/fusion-builder",
+    synthesizerModel: "anthropic/fusion-synthesizer",
+  };
+  const calls = [];
+  const exactPreparations = [];
+  const workflow = routedFusionDeps(
+    runDir,
+    async (options) => {
+      calls.push(options);
+      return {
+        ok: true,
+        text: proposals[options.role] || synthesis,
+        model: options.model,
+        usage: { input: 1, output: 1, cost: 0.1, turns: 1, costKnown: true },
+      };
+    },
+    cfg,
+  );
+  workflow.deps.prepareExactAgentLaunch = async (input) => {
+    exactPreparations.push(input);
+    const provider = input.model.split("/", 1)[0];
+    return {
+      ok: true,
+      spec: { model: input.model, tools: input.tools, profile: input.profile },
+      decision: {
+        ok: true,
+        role: input.requestedRole,
+        model: input.model,
+        provider,
+        reason: "exact-route",
+        fallbackUsed: false,
+        candidates: [input.model],
+        rejected: [],
+        credentialBoundary: "runtime-key",
+      },
+      credential: {
+        mode: "runtime-key",
+        runtimeCredential: { provider, apiKey: `secret-${provider}` },
+      },
+      maxConcurrency: cfg.orchestration.maxConcurrency,
+      budgetUsd: cfg.budgets.maxCostUsd - input.spentCostUsd,
+      budgetLimitUsd: cfg.budgets.maxCostUsd,
+    };
+  };
+
+  const summary = await fusion.runFusionWithDependencies(
+    { request: "Honor Fusion setup", cwd: process.cwd(), modelRegistry: {} },
+    workflow.deps,
+  );
+
+  assert.deepEqual(
+    calls.map((item) => item.model),
+    [
+      "anthropic/fusion-architect",
+      "openai-codex/fusion-builder",
+      "anthropic/fusion-synthesizer",
+    ],
+  );
+  assert.deepEqual(
+    exactPreparations.map((item) => item.model),
+    calls.map((item) => item.model),
+  );
+  assert.equal(workflow.preparations.length, 0);
+  assert.equal(workflow.reservations.length, 3);
+  assert.equal(workflow.settlements.length, 3);
+  assert.equal(JSON.stringify(summary).includes("secret-"), false);
+  assert.equal(summary.status, "COMPLETE");
+});
+
+test("partial Fusion setup keeps generic orchestration routing", async () => {
+  const runDir = makeRunDir();
+  const cfg = routedFusionConfig({ maxConcurrency: 1 });
+  cfg.fusion = { architectModel: "anthropic/stale-architect" };
+  const workflow = routedFusionDeps(
+    runDir,
+    async (options) => ({
+      ok: true,
+      text: proposals[options.role] || synthesis,
+      model: options.model,
+      usage: { input: 1, output: 1, cost: 0.1, turns: 1, costKnown: true },
+    }),
+    cfg,
+  );
+  workflow.deps.prepareExactAgentLaunch = async () =>
+    assert.fail("partial Fusion setup must not enter exact-route mode");
+
+  const summary = await fusion.runFusionWithDependencies(
+    { request: "Ignore partial setup", cwd: process.cwd(), modelRegistry: {} },
+    workflow.deps,
+  );
+
+  assert.deepEqual(
+    workflow.preparations.map((item) => item.requestedRole),
+    ["planning", "implementation", "review"],
+  );
+  assert.equal(summary.status, "COMPLETE");
+});
+
 test("routed Fusion rejects identical proposal models before spawning", async () => {
   const runDir = makeRunDir();
   let childCalls = 0;

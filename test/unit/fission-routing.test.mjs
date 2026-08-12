@@ -61,6 +61,7 @@ describe("exact agent launch admission", () => {
       cwd: "/project",
       model: route,
       profile: "review",
+      requestedRole: "planning",
       tools: ["read", "grep", "find", "ls"],
       activeChildren: 1,
       spentCostUsd: 2,
@@ -70,6 +71,7 @@ describe("exact agent launch admission", () => {
     assert.deepEqual(inspected, [route]);
     assert.equal(result.spec.model, route);
     assert.equal(result.decision.model, route);
+    assert.equal(result.decision.role, "planning");
     assert.equal(result.decision.provider, "anthropic");
     assert.equal(result.decision.fallbackUsed, false);
     assert.deepEqual(result.decision.candidates, [route]);
