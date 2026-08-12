@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.15] - 2026-08-12
+
+### Fixed
+- **Working indicator animation:** the footer activity bar animates again
+  (including over SSH), uses a 25% shorter track (6 cells), and steps at 120ms
+  for a smoother left↔right bounce. Set `ALLOY_ACTIVITY_ANIMATION=off` to
+  disable, or a millisecond value (30–2000) to tune speed.
+
 ## [1.1.14] - 2026-08-12
 
 ### Changed
