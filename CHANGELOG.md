@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.10] - 2026-08-12
+
+### Fixed
+- **Fission result UX** cleaned up to match Fusion: full-height expandable
+  side-by-side panes (no nested teeny scrollboxes), consistent findings-first
+  body text, chrome in the pane header, live dashboard cleared when the run
+  finishes so the transcript comparison is the primary interaction.
+
 ## [1.1.9] - 2026-08-12
 
 ### Added
