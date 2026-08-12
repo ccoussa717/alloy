@@ -358,26 +358,29 @@ function FusionResult(props: { block: Extract<TranscriptBlock, { kind: "fusion" 
 }
 
 function fissionResultLayout(width: number): "columns" | "stack" {
-  return width >= 90 ? "columns" : "stack";
+  return width >= 80 ? "columns" : "stack";
 }
 
+function shortRoleLabel(role: string): string {
+  return String(role || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Fusion-style full panes: expand with content, main transcript scrolls (no nested teeny scrollboxes). */
 function FissionAgentResult(props: {
-  agent: {
-    alias: string;
-    role: string;
-    model: string;
-    status: "done" | "failed";
-    text: string;
-    error?: string;
-  };
+  agent: FissionTranscriptAgent;
   grow?: boolean;
-  maxHeight?: number;
 }) {
   const label = () =>
     props.agent.role === "judge"
       ? "JUDGE"
-      : props.agent.alias || props.agent.role.toUpperCase();
+      : props.agent.alias || "R?";
   const glyph = () => (props.agent.role === "judge" ? "⚖" : "◆");
+  const subtitle = () =>
+    props.agent.role === "judge"
+      ? props.agent.model
+      : `${shortRoleLabel(props.agent.role)} · ${props.agent.model}`;
   return (
     <box
       width={props.grow ? undefined : "100%"}
@@ -388,14 +391,13 @@ function FissionAgentResult(props: {
       border={["left"]}
       borderColor={theme.accent}
       backgroundColor={theme.panel}
-      paddingLeft={1}
+      paddingLeft={2}
       paddingRight={1}
       paddingTop={1}
       paddingBottom={1}
-      maxHeight={props.maxHeight}
     >
       <text fg={theme.accent}>
-        {glyph()} {label()} · {props.agent.model}
+        {glyph()} {label()} · {subtitle()}
       </text>
       <text fg={props.agent.status === "done" ? theme.success : theme.error}>
         {props.agent.status === "done" ? "✓" : "×"} {props.agent.status}
@@ -404,23 +406,14 @@ function FissionAgentResult(props: {
         <text fg={theme.error}>{props.agent.error}</text>
       </Show>
       <box height={1} />
-      <scrollbox
-        flexGrow={1}
-        minHeight={8}
-        maxHeight={props.maxHeight ? Math.max(6, props.maxHeight - 4) : 24}
-        stickyScroll={true}
-        stickyStart="top"
-        scrollbarOptions={{ visible: true }}
-      >
-        <markdown
-          syntaxStyle={syntaxStyle}
-          internalBlockMode="top-level"
-          content={props.agent.text || "(no output)"}
-          tableOptions={{ style: "grid" }}
-          fg={theme.text}
-          bg={theme.panel}
-        />
-      </scrollbox>
+      <markdown
+        syntaxStyle={syntaxStyle}
+        internalBlockMode="top-level"
+        content={props.agent.text || "(no output)"}
+        tableOptions={{ style: "grid" }}
+        fg={theme.text}
+        bg={theme.panel}
+      />
     </box>
   );
 }
@@ -430,20 +423,17 @@ function FissionResult(props: {
   width: number;
 }) {
   const columns = () =>
-    fissionResultLayout(props.width) === "columns" && props.block.reviewers.length === 2;
-  const paneHeight = () => Math.max(16, Math.min(36, Math.floor(props.width / 3)));
+    fissionResultLayout(props.width) === "columns" && props.block.reviewers.length >= 2;
   return (
     <box flexDirection="column" gap={1}>
       <text fg={theme.accent}>
         FISSION // {props.block.verdict || props.block.status}
       </text>
       <text fg={theme.dim}>
-        {props.block.runId}
-        {props.block.mode ? ` · ${props.block.mode}` : ""}
+        {[props.block.runId, props.block.mode, props.block.request]
+          .filter(Boolean)
+          .join(" · ")}
       </text>
-      <Show when={props.block.request}>
-        <text fg={theme.muted}>request: {props.block.request}</text>
-      </Show>
       <Show when={props.block.error}>
         <text fg={theme.error}>× {props.block.error}</text>
       </Show>
@@ -453,20 +443,20 @@ function FissionResult(props: {
           internalBlockMode="top-level"
           content={props.block.summary!}
           tableOptions={{ style: "grid" }}
-          fg={theme.text}
+          fg={theme.muted}
           bg={theme.background}
         />
       </Show>
       <box flexDirection={columns() ? "row" : "column"} gap={1}>
         <For each={props.block.reviewers}>
           {(agent: FissionTranscriptAgent) => (
-            <FissionAgentResult agent={agent} grow={columns()} maxHeight={paneHeight()} />
+            <FissionAgentResult agent={agent} grow={columns()} />
           )}
         </For>
       </box>
       <Show when={props.block.judge}>
         {(agent: () => FissionTranscriptAgent) => (
-          <FissionAgentResult agent={agent()} maxHeight={paneHeight()} />
+          <FissionAgentResult agent={agent()} />
         )}
       </Show>
       <Show when={props.block.runDir}>

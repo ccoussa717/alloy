@@ -26,7 +26,8 @@ describe("fission presentation", () => {
         errors: ["soft omit note"],
       },
     });
-    assert.match(text, /R01/);
+    // Header chrome (alias/model) is UI-side; body is findings-first.
+    assert.doesNotMatch(text, /\*\*Alias:\*\*/);
     assert.match(text, /overflow clipped/);
     assert.match(text, /soft omit note/);
   });

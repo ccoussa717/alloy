@@ -229,6 +229,15 @@ export function formatFissionLines(result: any) {
   return lines;
 }
 
+function clearFissionPanel(ctx?: { ui?: ExtensionContext["ui"] }) {
+  try {
+    ctx?.ui?.setWidget?.("alloy-agents", undefined);
+    ctx?.ui?.setStatus?.("alloy-fission", undefined);
+  } catch {
+    // optional
+  }
+}
+
 /** Live multi-pane stream (mirrors fusion streaming UI). */
 function paintStreamPanel(
   panel: any,
@@ -455,7 +464,8 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       ...parentPolicy,
     };
     const result = await executeFission(input);
-    paintPanel(result, ctx);
+    // Drop live dashboard once complete — result lives in the transcript (Fusion-style).
+    clearFissionPanel(ctx);
     return result;
   };
 
@@ -777,19 +787,17 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
         const hint = result.error ? fissionConfigHint(result.error) : null;
         if (hint) lines.push(hint);
         // Fusion-style transcript result: side-by-side reviewers + judge in the TUI.
+        clearFissionPanel(ctx);
         pi.sendMessage({
           customType: "alloy-fission",
           content: lines.join("\n"),
           display: true,
           details: presented,
         });
-        ctx.ui.notify?.(
-          `Fission ${result.verdict || result.status} — full review is in the transcript (side-by-side reviewers).`,
-          result.status === "COMPLETE" ? "info" : "warning",
-        );
       } catch (error) {
         const message = String((error as Error).message || error);
         const hint = fissionConfigHint(message);
+        clearFissionPanel(ctx);
         ctx.ui.notify(hint ? `${message}. ${hint}` : message, "warning");
         try {
           pi.sendMessage({

@@ -498,7 +498,7 @@ function fissionArtifactUnavailable(details: UnknownRecord): UnknownRecord {
   }
 }
 
-/** Build presentation text from a raw terminal/result.json reviewer row. */
+/** Body-only markdown from a raw terminal/result.json reviewer row (header is UI chrome). */
 function fissionReviewerTextFromResult(reviewer: UnknownRecord | undefined): string {
   if (!reviewer) return "(no reviewer)"
   const error = stringField(reviewer, "error")
@@ -510,26 +510,18 @@ function fissionReviewerTextFromResult(reviewer: UnknownRecord | undefined): str
   const coverage = Array.isArray(field(output, "coverage"))
     ? (field(output, "coverage") as unknown[])
     : []
-  const lines = [
-    `**Alias:** ${redactDisplayText(stringField(reviewer, "alias") || "—")}`,
-    `**Role:** ${redactDisplayText(stringField(output, "reviewerRole") || stringField(reviewer, "role") || "—")}`,
-    `**Model:** ${redactDisplayText(stringField(reviewer, "actualModel") || stringField(reviewer, "requestedModel") || "—")}`,
-    `**Status:** ${redactDisplayText(stringField(reviewer, "status") || "—")}`,
-  ]
-  if (coverage.length) {
-    lines.push("", "**Coverage:**", ...coverage.map((item) => `- ${redactDisplayText(String(item))}`))
-  }
+  const lines: string[] = []
   if (findings.length) {
-    lines.push("", `## Findings (${findings.length})`)
     findings.forEach((item, index) => {
+      if (index > 0) lines.push("", "---", "")
       const finding = recordValue(item)
       const severity = stringField(finding, "severity") || "unknown"
       const claim = stringField(finding, "claim") || "(no claim)"
       const path = stringField(finding, "affectedPath") || "—"
       lines.push(
+        `### ${index + 1}. ${severity} — ${redactDisplayText(claim)}`,
         "",
-        `### ${index + 1}. [${severity}] ${redactDisplayText(claim)}`,
-        `**Path:** \`${redactDisplayText(path)}\``,
+        `\`${redactDisplayText(path)}\``,
       )
       const evidence = stringField(finding, "evidence")
       if (evidence) lines.push("", redactDisplayText(evidence))
@@ -537,7 +529,10 @@ function fissionReviewerTextFromResult(reviewer: UnknownRecord | undefined): str
       if (fix) lines.push("", `**Fix:** ${redactDisplayText(fix)}`)
     })
   } else {
-    lines.push("", "_No findings submitted._")
+    lines.push("_No findings submitted._")
+  }
+  if (coverage.length) {
+    lines.push("", "---", "", "**Coverage**", ...coverage.map((item) => `- ${redactDisplayText(String(item))}`))
   }
   if (error) lines.push("", `**Error:** ${redactDisplayText(error)}`)
   return lines.join("\n")
@@ -549,29 +544,26 @@ function fissionJudgeTextFromResult(result: UnknownRecord): string {
   const error = stringField(judge, "error")
   const output = recordValue(field(judge, "output"))
   if (error && !output) return `**Error:** ${redactDisplayText(error)}`
-  const lines = [
-    `**Model:** ${redactDisplayText(stringField(judge, "actualModel") || stringField(judge, "requestedModel") || "—")}`,
-    `**Status:** ${redactDisplayText(stringField(judge, "status") || "—")}`,
-    `**Host message:** ${redactDisplayText(stringField(result, "message") || "—")}`,
-    `**Verdict:** ${redactDisplayText(stringField(result, "verdict") || "—")}`,
-  ]
+  const lines: string[] = []
+  const message = stringField(result, "message")
+  if (message) lines.push(redactDisplayText(message), "")
   const clusters = Array.isArray(field(output, "clusters"))
     ? (field(output, "clusters") as unknown[])
     : []
   if (clusters.length) {
-    lines.push("", `## Clusters (${clusters.length})`)
     clusters.forEach((item, index) => {
+      if (index > 0) lines.push("", "---", "")
       const cluster = recordValue(item)
       const disposition = stringField(cluster, "disposition") || "unknown"
       const severity = stringField(cluster, "adjudicatedSeverity")
       lines.push(
-        "",
         `### ${index + 1}. ${disposition}${severity ? ` · ${severity}` : ""}`,
+        "",
         redactDisplayText(stringField(cluster, "rationale") || "(no rationale)"),
       )
     })
   } else {
-    lines.push("", "_No clusters._")
+    lines.push("_No clusters adjudicated._")
   }
   if (error) lines.push("", `**Error:** ${redactDisplayText(error)}`)
   return lines.join("\n")
@@ -616,12 +608,7 @@ function presentFissionResult(result: UnknownRecord): UnknownRecord {
           error: stringField(judgeRaw, "error") || null,
         }
       : null,
-    summary: [
-      `Fission ${stringField(result, "verdict") || stringField(result, "status") || "UNKNOWN"}`,
-      stringField(result, "message") || "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    summary: stringField(result, "message") || "",
   }
 }
 
