@@ -132,7 +132,6 @@ function formatFissionStatus(config: any) {
     `Orchestration: ${orchOn ? "enabled" : "DISABLED — runs fail INCOMPLETE before any agents"}`,
     `Blocking severity: ${fission.blockingSeverity || "not configured"}`,
     `Workflow timeout: ${Math.round((fission.workflowTimeoutMs ?? DEFAULT_FISSION_WORKFLOW_TIMEOUT_MS) / 60_000)} minutes`,
-    `Judge: ${fission.judgeEnabled === true ? "enabled (PASS/FAIL gate)" : "disabled (report only)"}`,
     `Judge effort: ${formatEffort(fission.judgeEffort)}`,
     "",
     "Reviewers (slot → role → route | effort):",
@@ -433,12 +432,9 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       { defaultReviewers, maxReviewers },
     );
     const parentPolicy = resolveParentPolicy({ mode: "review" });
-    const judgeEnabled = effectiveConfig.fission?.judgeEnabled === true;
     try {
       ctx.ui?.notify?.(
-        judgeEnabled
-          ? `Fission starting (${parsed.reviewers} reviewers + judge)…`
-          : `Fission starting (${parsed.reviewers} reviewers, report only — no judge)…`,
+        `Fission starting (${parsed.reviewers} reviewers + judge)…`,
         "info",
       );
     } catch {
@@ -454,8 +450,6 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       timeoutMs:
         effectiveConfig.fission?.workflowTimeoutMs ??
         DEFAULT_FISSION_WORKFLOW_TIMEOUT_MS,
-      // Interactive: follow config (default report-only / no judge).
-      judgeEnabled,
       onPanel: (panel: unknown) => paintStreamPanel(panel, ctx),
       onProgress: (progress: any) => {
         paintProgressPanel(progress, ctx);
@@ -688,20 +682,6 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       return;
     }
 
-    // 6) Judge on/off (default off for interactive dual-pane review)
-    const judgeChoice = await ctx.ui.select(
-      `Enable judge PASS/FAIL gate? (current: ${current.judgeEnabled === true ? "on" : "off"})`,
-      [
-        "No — report only (side-by-side reviewers; no adjudicator)",
-        "Yes — run independent judge after reviewers",
-      ],
-    );
-    if (!judgeChoice) {
-      cancelSetup(ctx);
-      return;
-    }
-    const judgeEnabled = judgeChoice.startsWith("Yes");
-
     const selectedRoutes = new Set([...selectedModels, judgeRoute]);
     const modelFamilies: Record<string, string> = {};
     for (const route of selectedRoutes) {
@@ -720,7 +700,6 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       defaultReviewers,
       maxReviewers,
       blockingSeverity: severityChoice,
-      judgeEnabled,
       reviewerEfforts,
       judgeEffort,
     });

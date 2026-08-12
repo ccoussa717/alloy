@@ -247,7 +247,6 @@ test("fission status shows routes, specialties, effort, and concurrency", async 
   assert.match(text, /concurrency: 2/i);
   assert.match(text, /blocking severity: high/i);
   assert.match(text, /workflow timeout: 20 minutes/i);
-  assert.match(text, /Judge: disabled \(report only\)/i);
 });
 
 test("command and tool runs use the configured workflow timeout", async () => {
@@ -275,41 +274,6 @@ test("command and tool runs use the configured workflow timeout", async () => {
 
   assert.equal(calls.length, 2);
   assert.deepEqual(calls.map((call) => call.timeoutMs), [1_200_000, 1_200_000]);
-});
-
-test("interactive fission defaults to report-only (judge off)", async () => {
-  const fission = {
-    defaultReviewers: 2,
-    maxReviewers: 4,
-    judgeEnabled: false,
-  };
-  const { commands, calls } = harness(fission);
-  const ctx = {
-    cwd: "/repo/project",
-    hasUI: false,
-    modelRegistry: { getAll: () => [] },
-    ui: { notify() {}, setWidget() {}, setStatus() {} },
-  };
-  await commands.get("fission").handler("review this", ctx);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].judgeEnabled, false);
-});
-
-test("interactive fission enables judge when configured", async () => {
-  const fission = {
-    defaultReviewers: 2,
-    maxReviewers: 4,
-    judgeEnabled: true,
-  };
-  const { commands, calls } = harness(fission);
-  const ctx = {
-    cwd: "/repo/project",
-    hasUI: false,
-    modelRegistry: { getAll: () => [] },
-    ui: { notify() {}, setWidget() {}, setStatus() {} },
-  };
-  await commands.get("fission").handler("review this", ctx);
-  assert.equal(calls[0].judgeEnabled, true);
 });
 
 test("fission setup saves default≠max, efforts, severity, and distinct routes", async () => {
@@ -354,7 +318,6 @@ test("fission setup saves default≠max, efforts, severity, and distinct routes"
     "claude-judge",
     "medium",
     "high", // blocking severity
-    "Yes — run independent judge after reviewers",
   ];
   const selections = [];
   const notifications = [];
@@ -412,7 +375,6 @@ test("fission setup saves default≠max, efforts, severity, and distinct routes"
   ]);
   assert.equal(saves[0].judgeEffort, "medium");
   assert.equal(saves[0].blockingSeverity, "high");
-  assert.equal(saves[0].judgeEnabled, true);
   assert.equal(saves[0].modelFamilies["anthropic/claude-new"], "claude");
   assert.equal(saves[0].modelFamilies["openai-codex/gpt-new"], "gpt");
   assert.match(selections[0].options[0], /Default 1:/);
@@ -458,7 +420,6 @@ test("fission setup reports project-effective restrictions after saving global s
     "judge",
     "default (model/provider default)",
     "medium",
-    "No — report only (side-by-side reviewers; no adjudicator)",
   ];
   const views = [];
   const { commands } = harness(global.fission, {
