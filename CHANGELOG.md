@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.16] - 2026-08-12
+
+### Fixed
+- **Fusion setup routing:** `/fusion` now honors the complete Architect,
+  Builder, and Synthesizer model routes saved by `/fusion setup` while retaining
+  exact-route validation, concurrency limits, budget reservations, credential
+  isolation, and accurate role attribution. Partial legacy setup continues to
+  use generic orchestration rather than mixing configured and fallback routes.
+
 ## [1.1.15] - 2026-08-12
 
 ### Fixed
