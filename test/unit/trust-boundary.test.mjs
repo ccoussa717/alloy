@@ -160,6 +160,7 @@ describe("trust boundary", () => {
         maxReviewers: 2,
         blockingSeverity: "medium",
         workflowTimeoutMs: 900_000,
+        judgeEnabled: false,
         reviewerEfforts: [],
         judgeEffort: null,
         roles: ["correctness_regressions", "security_trust_boundaries"],
@@ -479,6 +480,7 @@ describe("trust boundary", () => {
       maxReviewers: 5,
       blockingSeverity: "medium",
       workflowTimeoutMs: 900_000,
+      judgeEnabled: false,
       reviewerEfforts: [],
       judgeEffort: null,
       roles: [],
@@ -496,9 +498,15 @@ describe("trust boundary", () => {
         assert.throws(() => loadGlobalConfig(), /fission.*reviewer/i);
       }
       for (const workflowTimeoutMs of [59_999, 86_400_001, 90_000.5, "900000"]) {
-        writeFileSync(path, JSON.stringify({ fission: { workflowTimeoutMs } }));
+        writeFileSync(path, JSON.stringify({
+          fission: { ...DEFAULT_CONFIG.fission, workflowTimeoutMs },
+        }));
         assert.throws(() => loadGlobalConfig(), /fission.*workflowTimeoutMs/i);
       }
+      writeFileSync(path, JSON.stringify({
+        fission: { ...DEFAULT_CONFIG.fission, judgeEnabled: "yes" },
+      }));
+      assert.throws(() => loadGlobalConfig(), /fission.*judgeEnabled/i);
     } finally {
       writeFileSync(path, valid);
     }
@@ -560,6 +568,7 @@ describe("trust boundary", () => {
         judgeModel: "evil/judge",
         modelFamilies: { "evil/model": "evil" },
         workflowTimeoutMs: 86_400_000,
+        judgeEnabled: true,
         blockingSeverity: "medium",
       },
     });
@@ -567,8 +576,9 @@ describe("trust boundary", () => {
     assert.equal(tightened.config.fission.judgeModel, base.fission.judgeModel);
     assert.deepEqual(tightened.config.fission.modelFamilies, base.fission.modelFamilies);
     assert.equal(tightened.config.fission.workflowTimeoutMs, base.fission.workflowTimeoutMs);
+    assert.equal(tightened.config.fission.judgeEnabled, base.fission.judgeEnabled);
     assert.equal(tightened.config.fission.blockingSeverity, "medium");
-    assert.equal(tightened.rejected.filter((item) => /global-only/.test(item)).length, 4);
+    assert.equal(tightened.rejected.filter((item) => /global-only/.test(item)).length, 5);
 
     const loosened = mergeProjectConfigTightenOnly(base, {
       fission: { blockingSeverity: "critical" },

@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.12] - 2026-08-12
+
+### Added
+- **Optional Fission judge.** Interactive `/fission` defaults to **report only**
+  (no adjudicator): side-by-side reviewers complete without a PASS/FAIL gate.
+  Enable the judge for a real gate via `/fission setup` or `fission.judgeEnabled: true`.
+  CLI and Forge still enable the judge by default.
+
 ## [1.1.11] - 2026-08-12
 
 ### Fixed
