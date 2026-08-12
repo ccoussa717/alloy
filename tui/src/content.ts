@@ -24,6 +24,16 @@ export type FusionTranscriptAgent = {
   error?: string
 }
 
+export type FissionTranscriptAgent = {
+  alias: string
+  role: string
+  model: string
+  status: "done" | "failed"
+  text: string
+  usage: FusionTranscriptUsage
+  error?: string
+}
+
 export type TranscriptBlock =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string; source: "thinking" | "reasoning"; redacted: boolean }
@@ -47,6 +57,19 @@ export type TranscriptBlock =
       objective: string
       proposals: FusionTranscriptAgent[]
       synthesis?: FusionTranscriptAgent
+      error?: string
+      summary?: string
+    }
+  | {
+      kind: "fission"
+      status: string
+      verdict: string
+      runId: string
+      runDir: string
+      request: string
+      mode: string
+      reviewers: FissionTranscriptAgent[]
+      judge?: FissionTranscriptAgent
       error?: string
       summary?: string
     }
@@ -460,6 +483,182 @@ function hydrateFusionDetails(details: UnknownRecord | undefined): UnknownRecord
   }
 }
 
+function fissionArtifactUnavailable(details: UnknownRecord): UnknownRecord {
+  return {
+    ...details,
+    bodyStorage: "inline",
+    error: [
+      stringField(details, "error"),
+      "Full Fission output unavailable: the run artifact could not be read safely.",
+    ]
+      .filter(Boolean)
+      .join("; "),
+    reviewers: Array.isArray(field(details, "reviewers")) ? field(details, "reviewers") : [],
+    judge: field(details, "judge") ?? null,
+  }
+}
+
+/** Build presentation text from a raw terminal/result.json reviewer row. */
+function fissionReviewerTextFromResult(reviewer: UnknownRecord | undefined): string {
+  if (!reviewer) return "(no reviewer)"
+  const error = stringField(reviewer, "error")
+  const output = recordValue(field(reviewer, "output"))
+  if (error && !output) return `**Error:** ${redactDisplayText(error)}`
+  const findings = Array.isArray(field(output, "findings"))
+    ? (field(output, "findings") as unknown[])
+    : []
+  const coverage = Array.isArray(field(output, "coverage"))
+    ? (field(output, "coverage") as unknown[])
+    : []
+  const lines = [
+    `**Alias:** ${redactDisplayText(stringField(reviewer, "alias") || "—")}`,
+    `**Role:** ${redactDisplayText(stringField(output, "reviewerRole") || stringField(reviewer, "role") || "—")}`,
+    `**Model:** ${redactDisplayText(stringField(reviewer, "actualModel") || stringField(reviewer, "requestedModel") || "—")}`,
+    `**Status:** ${redactDisplayText(stringField(reviewer, "status") || "—")}`,
+  ]
+  if (coverage.length) {
+    lines.push("", "**Coverage:**", ...coverage.map((item) => `- ${redactDisplayText(String(item))}`))
+  }
+  if (findings.length) {
+    lines.push("", `## Findings (${findings.length})`)
+    findings.forEach((item, index) => {
+      const finding = recordValue(item)
+      const severity = stringField(finding, "severity") || "unknown"
+      const claim = stringField(finding, "claim") || "(no claim)"
+      const path = stringField(finding, "affectedPath") || "—"
+      lines.push(
+        "",
+        `### ${index + 1}. [${severity}] ${redactDisplayText(claim)}`,
+        `**Path:** \`${redactDisplayText(path)}\``,
+      )
+      const evidence = stringField(finding, "evidence")
+      if (evidence) lines.push("", redactDisplayText(evidence))
+      const fix = stringField(finding, "suggestedFix")
+      if (fix) lines.push("", `**Fix:** ${redactDisplayText(fix)}`)
+    })
+  } else {
+    lines.push("", "_No findings submitted._")
+  }
+  if (error) lines.push("", `**Error:** ${redactDisplayText(error)}`)
+  return lines.join("\n")
+}
+
+function fissionJudgeTextFromResult(result: UnknownRecord): string {
+  const judge = recordValue(field(result, "judge"))
+  if (!judge) return "(no judge)"
+  const error = stringField(judge, "error")
+  const output = recordValue(field(judge, "output"))
+  if (error && !output) return `**Error:** ${redactDisplayText(error)}`
+  const lines = [
+    `**Model:** ${redactDisplayText(stringField(judge, "actualModel") || stringField(judge, "requestedModel") || "—")}`,
+    `**Status:** ${redactDisplayText(stringField(judge, "status") || "—")}`,
+    `**Host message:** ${redactDisplayText(stringField(result, "message") || "—")}`,
+    `**Verdict:** ${redactDisplayText(stringField(result, "verdict") || "—")}`,
+  ]
+  const clusters = Array.isArray(field(output, "clusters"))
+    ? (field(output, "clusters") as unknown[])
+    : []
+  if (clusters.length) {
+    lines.push("", `## Clusters (${clusters.length})`)
+    clusters.forEach((item, index) => {
+      const cluster = recordValue(item)
+      const disposition = stringField(cluster, "disposition") || "unknown"
+      const severity = stringField(cluster, "adjudicatedSeverity")
+      lines.push(
+        "",
+        `### ${index + 1}. ${disposition}${severity ? ` · ${severity}` : ""}`,
+        redactDisplayText(stringField(cluster, "rationale") || "(no rationale)"),
+      )
+    })
+  } else {
+    lines.push("", "_No clusters._")
+  }
+  if (error) lines.push("", `**Error:** ${redactDisplayText(error)}`)
+  return lines.join("\n")
+}
+
+function presentFissionResult(result: UnknownRecord): UnknownRecord {
+  const reviewersRaw = Array.isArray(field(result, "reviewers"))
+    ? (field(result, "reviewers") as unknown[])
+    : []
+  const reviewers = reviewersRaw.map((item) => {
+    const reviewer = recordValue(item) || {}
+    return {
+      alias: stringField(reviewer, "alias") || "R?",
+      role: stringField(reviewer, "role") || "reviewer",
+      model: stringField(reviewer, "actualModel") || stringField(reviewer, "requestedModel") || "unknown model",
+      status: stringField(reviewer, "status") === "ok" ? "done" : "failed",
+      text: fissionReviewerTextFromResult(reviewer),
+      usage: field(reviewer, "usage") || {},
+      error: stringField(reviewer, "error") || null,
+    }
+  })
+  const judgeRaw = recordValue(field(result, "judge"))
+  return {
+    kind: "fission",
+    status: stringField(result, "status") || "UNKNOWN",
+    verdict: stringField(result, "verdict") || "",
+    message: stringField(result, "message") || "",
+    request: stringField(result, "request") || "",
+    runId: stringField(result, "runId") || "",
+    runDir: stringField(result, "runDir") || "",
+    mode: stringField(result, "mode") || "",
+    error: stringField(result, "error") || null,
+    reviewers,
+    judge: judgeRaw
+      ? {
+          alias: "Judge",
+          role: "judge",
+          model: stringField(judgeRaw, "actualModel") || stringField(judgeRaw, "requestedModel") || "unknown model",
+          status: stringField(judgeRaw, "status") === "ok" ? "done" : "failed",
+          text: fissionJudgeTextFromResult(result),
+          usage: field(judgeRaw, "usage") || {},
+          error: stringField(judgeRaw, "error") || null,
+        }
+      : null,
+    summary: [
+      `Fission ${stringField(result, "verdict") || stringField(result, "status") || "UNKNOWN"}`,
+      stringField(result, "message") || "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  }
+}
+
+function hydrateFissionDetails(details: UnknownRecord | undefined): UnknownRecord | undefined {
+  if (!details) return details
+  if (stringField(details, "bodyStorage") !== "artifact") {
+    // Already a presentation payload, or inline transport with reviewers.
+    if (Array.isArray(field(details, "reviewers"))) return details
+    if (stringField(details, "kind") === "fission") return presentFissionResult(details)
+    return details
+  }
+  try {
+    const alloyHome = process.env.ALLOY_HOME || join(homedir(), ".pi", "alloy")
+    const runsRoot = realpathSync(join(alloyHome, "runs"))
+    const runDir = realpathSync(stringField(details, "runDir") || "")
+    const resultPath = realpathSync(stringField(details, "resultPath") || "")
+    const expected = join(runDir, "terminal", "result.json")
+    if (!runDir.startsWith(`${runsRoot}${sep}`) || resultPath !== expected) {
+      return fissionArtifactUnavailable(details)
+    }
+    const storedBytes = readFileSync(resultPath)
+    const digest = createHash("sha256").update(storedBytes).digest("hex")
+    if (digest !== stringField(details, "resultSha256")) return fissionArtifactUnavailable(details)
+    const stored = recordValue(JSON.parse(storedBytes.toString("utf8")))
+    if (
+      !stored ||
+      stringField(stored, "kind") !== "fission" ||
+      stringField(stored, "runId") !== stringField(details, "runId")
+    ) {
+      return fissionArtifactUnavailable(details)
+    }
+    return presentFissionResult(stored)
+  } catch {
+    return fissionArtifactUnavailable(details)
+  }
+}
+
 function customBlocks(message: UnknownRecord, role: string): TranscriptBlock[] {
   if (role === "bashExecution") {
     const command = redactDisplayText(stringField(message, "command") || "")
@@ -473,6 +672,78 @@ function customBlocks(message: UnknownRecord, role: string): TranscriptBlock[] {
   }
 
   const name = redactDisplayText(stringField(message, "customType") || role || "custom")
+  if (name === "alloy-fission") {
+    const details = hydrateFissionDetails(recordValue(field(message, "details")))
+    if (details && stringField(details, "kind") === "fission") {
+      const normalizeUsage = (value: unknown): FusionTranscriptUsage => {
+        const usage = recordValue(value)
+        const finiteNonNegative = (key: string): number | null => {
+          const amount = numberField(usage, key)
+          return amount !== undefined && amount >= 0 ? amount : null
+        }
+        const cost = finiteNonNegative("cost")
+        return {
+          input: finiteNonNegative("input") ?? 0,
+          output: finiteNonNegative("output") ?? 0,
+          cost,
+          costKnown: field(usage, "costKnown") !== false && cost !== null,
+          turns: finiteNonNegative("turns") ?? 0,
+        }
+      }
+      const rawReviewers = Array.isArray(field(details, "reviewers"))
+        ? (field(details, "reviewers") as unknown[])
+        : []
+      const reviewers: FissionTranscriptAgent[] = rawReviewers
+        .map((item) => {
+          const agent = recordValue(item)
+          if (!agent) return undefined
+          const error = stringField(agent, "error")
+          const statusRaw = stringField(agent, "status")
+          const normalized: FissionTranscriptAgent = {
+            alias: redactDisplayText(stringField(agent, "alias") || "R?"),
+            role: redactDisplayText(stringField(agent, "role") || "reviewer"),
+            model: redactDisplayText(stringField(agent, "model") || "unknown model"),
+            status: statusRaw === "done" || statusRaw === "ok" ? "done" : "failed",
+            text: redactDisplayText(stringField(agent, "text") || ""),
+            usage: normalizeUsage(field(agent, "usage")),
+          }
+          if (error) normalized.error = redactDisplayText(error)
+          return normalized
+        })
+        .filter((agent): agent is FissionTranscriptAgent => agent !== undefined)
+      const judgeRaw = recordValue(field(details, "judge"))
+      let judge: FissionTranscriptAgent | undefined
+      if (judgeRaw) {
+        const error = stringField(judgeRaw, "error")
+        const statusRaw = stringField(judgeRaw, "status")
+        judge = {
+          alias: "Judge",
+          role: "judge",
+          model: redactDisplayText(stringField(judgeRaw, "model") || "unknown model"),
+          status: statusRaw === "done" || statusRaw === "ok" ? "done" : "failed",
+          text: redactDisplayText(stringField(judgeRaw, "text") || ""),
+          usage: normalizeUsage(field(judgeRaw, "usage")),
+        }
+        if (error) judge.error = redactDisplayText(error)
+      }
+      const block: Extract<TranscriptBlock, { kind: "fission" }> = {
+        kind: "fission",
+        status: redactDisplayText(stringField(details, "status") || "UNKNOWN"),
+        verdict: redactDisplayText(stringField(details, "verdict") || ""),
+        runId: redactDisplayText(stringField(details, "runId") || ""),
+        runDir: redactDisplayText(stringField(details, "runDir") || ""),
+        request: redactDisplayText(stringField(details, "request") || ""),
+        mode: redactDisplayText(stringField(details, "mode") || ""),
+        reviewers,
+      }
+      if (judge) block.judge = judge
+      const workflowError = stringField(details, "error")
+      if (workflowError) block.error = redactDisplayText(workflowError)
+      const summary = stringField(details, "summary") || contentText(field(message, "content"))
+      if (summary) block.summary = redactDisplayText(summary)
+      return [block]
+    }
+  }
   if (name === "alloy-fusion") {
     const details = hydrateFusionDetails(recordValue(field(message, "details")))
     if (details && stringField(details, "kind") === "fusion") {

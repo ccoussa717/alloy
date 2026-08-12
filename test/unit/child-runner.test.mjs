@@ -238,4 +238,35 @@ describe("child output and model attestation", () => {
       assert.equal(JSON.stringify({ callbacks, result }).includes("SECRET"), false);
     }
   });
+
+  it("streams text_delta under maxOutputBytes without retaining raw update events", async () => {
+    const start = {
+      type: "message_start",
+      message: { role: "assistant", content: [{ type: "text", text: "" }] },
+    };
+    const delta = {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "live " },
+    };
+    const delta2 = {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "stream" },
+    };
+    const complete = message({
+      provider: "anthropic",
+      model: "safe",
+      content: [{ type: "text", text: "live stream" }],
+    });
+    const callbacks = [];
+    const result = await runEvents([start, delta, delta2, complete], {
+      maxOutputBytes: Buffer.byteLength(JSON.stringify(complete.message), "utf8") + 1024,
+      onEvent: (event) => callbacks.push(event),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.text, "live stream");
+    // Deltas stream via onEvent for live UI, but are not retained in events[].
+    assert.ok(callbacks.some((event) => event.outputText === "live "));
+    assert.ok(callbacks.some((event) => event.outputText === "live stream"));
+    assert.equal(result.events.some((event) => event.type === "message_update"), false);
+  });
 });

@@ -40,6 +40,11 @@ const {
   ensureMvpBuiltinCatalogs,
   collectSetupModelRoutes,
 } = require(join(root, "lib", "model-catalog.mjs"));
+const {
+  createFissionPresentationSummary,
+  createFissionTransportSummary,
+  formatFissionContextLines,
+} = require(join(root, "lib", "fission-presentation.mjs"));
 
 type Dependencies = {
   loadConfig?: typeof loadConfig;
@@ -766,19 +771,47 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
           request,
           ctx,
         });
-        const lines = formatFissionLines(result);
+        const context = createFissionPresentationSummary(result);
+        const presented = createFissionTransportSummary(result);
+        const lines = formatFissionContextLines(context);
         const hint = result.error ? fissionConfigHint(result.error) : null;
-        if (hint) lines.push("", hint);
-        await ctx.ui.select(
-          `Fission ${result.status}`,
-          helpMenuLines(lines, {
-            doneLabel: "✓  Done — press Enter or Esc to close",
-          }),
+        if (hint) lines.push(hint);
+        // Fusion-style transcript result: side-by-side reviewers + judge in the TUI.
+        pi.sendMessage({
+          customType: "alloy-fission",
+          content: lines.join("\n"),
+          display: true,
+          details: presented,
+        });
+        ctx.ui.notify?.(
+          `Fission ${result.verdict || result.status} — full review is in the transcript (side-by-side reviewers).`,
+          result.status === "COMPLETE" ? "info" : "warning",
         );
       } catch (error) {
         const message = String((error as Error).message || error);
         const hint = fissionConfigHint(message);
         ctx.ui.notify(hint ? `${message}. ${hint}` : message, "warning");
+        try {
+          pi.sendMessage({
+            customType: "alloy-fission",
+            content: `Fission failed: ${message}`,
+            display: true,
+            details: createFissionTransportSummary({
+              kind: "fission",
+              status: "FAILED",
+              verdict: null,
+              message,
+              request,
+              runId: "",
+              runDir: "",
+              reviewers: [],
+              judge: null,
+              error: message,
+            }),
+          });
+        } catch {
+          // notification is the last reporting path
+        }
       }
     },
   });

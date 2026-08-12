@@ -7,6 +7,17 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-08-12
+
+### Added
+- **Fission result transcript** mirrors Fusion: side-by-side scrollable reviewer
+  panes + judge in the main transcript (no more dead-end “Done” modal).
+
+### Fixed
+- **Live streaming for fission children.** Output-limited child agents still
+  emit `text_delta` to the panel (raw update events stay unretained for safety).
+- Live fission panes show multi-line streaming output instead of a one-line tail.
+
 ### Fixed
 
 - Backend slash commands remain dispatchable while a response is streaming,
