@@ -7,6 +7,12 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Backend slash commands remain dispatchable while a response is streaming,
+  including `/help`; command names are canonicalized and tabs/newlines are
+  accepted as argument separators.
+
 ## [1.1.8] - 2026-08-11
 
 ### Fixed
@@ -17,7 +23,6 @@ and releases use [semantic versioning](https://semver.org/).
   (reviewer panes + judge), and RPC fallback lines use stream panes not the status list.
 - Local installs on 1.1.6 still hit hard `reviewer_errors` for soft-omitted paths;
   ensure you restart Alloy after upgrading to ≥1.1.7/1.1.8.
-
 
 ## [1.1.7] - 2026-08-11
 

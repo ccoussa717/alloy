@@ -102,12 +102,19 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
   const value = input.trim();
   if (!value) return { kind: "none" };
 
-  const firstSpace = value.indexOf(" ");
-  const name = (firstSpace === -1 ? value : value.slice(0, firstSpace)).toLowerCase();
-  const args = firstSpace === -1 ? "" : value.slice(firstSpace + 1).trim();
+  const firstWhitespace = value.search(/\s/);
+  const name = (firstWhitespace === -1 ? value : value.slice(0, firstWhitespace)).toLowerCase();
+  const args = firstWhitespace === -1 ? "" : value.slice(firstWhitespace).trim();
 
   if (name === "/quit" || name === "/exit" || name === "/q") return { kind: "exit", clearInput: true };
-  if (name === "/help") return request({ type: "prompt", message: value }, { refresh: true });
+  if (name === "/help") {
+    const message = args ? `/help ${args}` : "/help";
+    return request({
+      type: "prompt",
+      message,
+      ...(context.isStreaming ? { streamingBehavior: "steer" } : {}),
+    }, { refresh: true });
+  }
   if (name === "/new") return request({ type: "new_session" }, { refresh: true });
   if (name === "/clone") return request({ type: "clone" }, { refresh: true });
   if (name === "/compact") {
@@ -142,9 +149,11 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
     const commandName = name.slice(1);
     const registered = context.commands.find((command) => command.name.replace(/^\//, "").toLowerCase() === commandName);
     if (!registered) return { kind: "error", message: `Unknown command: ${name}` };
+    const canonicalName = registered.name.replace(/^\//, "");
+    const message = args ? `/${canonicalName} ${args}` : `/${canonicalName}`;
     return request({
       type: "prompt",
-      message: value,
+      message,
       ...(context.isStreaming ? { streamingBehavior: "steer" } : {}),
     }, { refresh: true });
   }
