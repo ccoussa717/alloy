@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
+  DEFAULT_FISSION_WORKFLOW_TIMEOUT_MS,
   loadConfig,
   loadGlobalConfig,
   saveGlobalFissionConfig,
@@ -130,6 +131,7 @@ function formatFissionStatus(config: any) {
     `Concurrency: ${Number(config.orchestration?.maxConcurrency) || 0}`,
     `Orchestration: ${orchOn ? "enabled" : "DISABLED — runs fail INCOMPLETE before any agents"}`,
     `Blocking severity: ${fission.blockingSeverity || "not configured"}`,
+    `Workflow timeout: ${Math.round((fission.workflowTimeoutMs ?? DEFAULT_FISSION_WORKFLOW_TIMEOUT_MS) / 60_000)} minutes`,
     `Judge effort: ${formatEffort(fission.judgeEffort)}`,
     "",
     "Reviewers (slot → role → route | effort):",
@@ -445,7 +447,9 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       maxReviewers,
       cwd: ctx.cwd,
       modelRegistry: ctx.modelRegistry,
-      timeoutMs: 300_000,
+      timeoutMs:
+        effectiveConfig.fission?.workflowTimeoutMs ??
+        DEFAULT_FISSION_WORKFLOW_TIMEOUT_MS,
       onPanel: (panel: unknown) => paintStreamPanel(panel, ctx),
       onProgress: (progress: any) => {
         paintProgressPanel(progress, ctx);

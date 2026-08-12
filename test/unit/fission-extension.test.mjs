@@ -58,6 +58,7 @@ function harness(
       registerTool(spec) {
         tools.set(spec.name, spec);
       },
+      sendMessage() {},
     },
     {
       loadConfig: () => ({ fission }),
@@ -216,6 +217,7 @@ test("fission status shows routes, specialties, effort, and concurrency", async 
       defaultReviewers: 2,
       maxReviewers: 2,
       blockingSeverity: "high",
+      workflowTimeoutMs: 1_200_000,
       reviewerEfforts: ["high", null],
       judgeEffort: "medium",
     },
@@ -244,6 +246,34 @@ test("fission status shows routes, specialties, effort, and concurrency", async 
   assert.match(text, /Judge effort: medium/i);
   assert.match(text, /concurrency: 2/i);
   assert.match(text, /blocking severity: high/i);
+  assert.match(text, /workflow timeout: 20 minutes/i);
+});
+
+test("command and tool runs use the configured workflow timeout", async () => {
+  const fission = {
+    defaultReviewers: 2,
+    maxReviewers: 4,
+    workflowTimeoutMs: 1_200_000,
+  };
+  const { commands, tools, calls } = harness(fission);
+  const ctx = {
+    cwd: "/repo/project",
+    hasUI: false,
+    modelRegistry: { getAll: () => [] },
+    ui: { notify() {}, setWidget() {}, setStatus() {} },
+  };
+
+  await commands.get("fission").handler("review this", ctx);
+  await tools.get("alloy_fission").execute(
+    "call-1",
+    { request: "review that", reviewers: 1 },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map((call) => call.timeoutMs), [1_200_000, 1_200_000]);
 });
 
 test("fission setup saves default≠max, efforts, severity, and distinct routes", async () => {

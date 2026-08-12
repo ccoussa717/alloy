@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.11] - 2026-08-12
+
+### Fixed
+- **Fission judge timeout:** the shared reviewer-plus-judge deadline now defaults
+  to 15 minutes instead of 5 and is operator-configurable with
+  `fission.workflowTimeoutMs` (1 minute to 24 hours). Forge uses the same
+  configured deadline for its plan and post-diff fission phases.
+
 ## [1.1.10] - 2026-08-12
 
 ### Fixed
