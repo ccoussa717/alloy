@@ -194,7 +194,7 @@ test("formatCommandCatalog merges native and live commands without duplicates", 
       description: "Extension collision",
       source: "extension",
     },
-  ]);
+  ], { frontend: "pi" });
 
   assert.match(text, /Pi native/);
   assert.match(text, /\/model <provider\/model> .*Select model/);

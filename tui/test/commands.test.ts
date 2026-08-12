@@ -109,7 +109,13 @@ describe("resolveSubmission", () => {
     });
   });
 
-  it("runs every registered command through prompt expansion while streaming", () => {
+  it("runs every backend slash command through prompt expansion while streaming", () => {
+    expect(resolveSubmission("/help workflows", { ...context, isStreaming: true })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/help workflows", streamingBehavior: "steer" },
+      clearInput: true,
+      refresh: true,
+    });
     expect(resolveSubmission("/mode build", { ...context, isStreaming: true })).toEqual({
       kind: "request",
       request: { type: "prompt", message: "/mode build", streamingBehavior: "steer" },
@@ -125,6 +131,28 @@ describe("resolveSubmission", () => {
     expect(resolveSubmission("/skill:testing focused", { ...context, isStreaming: true })).toEqual({
       kind: "request",
       request: { type: "prompt", message: "/skill:testing focused", streamingBehavior: "steer" },
+      clearInput: true,
+      refresh: true,
+    });
+  });
+
+  it("canonicalizes command names and accepts every whitespace separator", () => {
+    const commands = [...context.commands, { name: "fission", source: "extension" as const }];
+    expect(resolveSubmission("/FISSION\tstatus", { ...context, commands })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/fission status" },
+      clearInput: true,
+      refresh: true,
+    });
+    expect(resolveSubmission("/FISSION\nreview this", { ...context, commands, isStreaming: true })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/fission review this", streamingBehavior: "steer" },
+      clearInput: true,
+      refresh: true,
+    });
+    expect(resolveSubmission("/HELP\tworkflows", { ...context, isStreaming: true })).toEqual({
+      kind: "request",
+      request: { type: "prompt", message: "/help workflows", streamingBehavior: "steer" },
       clearInput: true,
       refresh: true,
     });
