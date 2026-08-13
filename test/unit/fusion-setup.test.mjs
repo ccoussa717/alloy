@@ -68,6 +68,28 @@ test("Fusion operator output names routed provider failures", () => {
   assert.doesNotMatch(lines.join("\n"), /DO NOT ENTER MODEL CONTEXT/);
 });
 
+test("Fusion operator output lists missing proposal sections", () => {
+  const lines = autoExtension.formatFusionLines({
+    status: "FAILED",
+    runId: "run-missing",
+    runDir: "/tmp/run-missing",
+    models: {},
+    usage: {},
+    error: "invalid_proposal",
+    missingSections: ["architect: Risks, Verification"],
+    proposals: [
+      {
+        role: "architect",
+        ok: false,
+        error: "invalid_proposal",
+        missingSections: ["Risks", "Verification"],
+        text: "partial",
+      },
+    ],
+  });
+  assert.match(lines.join("\n"), /Missing sections: architect: Risks, Verification/);
+});
+
 test("Fusion transcript keeps complete output while context contains metadata only", () => {
   const largeProposal = "architect result ".repeat(20_000);
   const largeSynthesis = "synthesis result ".repeat(20_000);

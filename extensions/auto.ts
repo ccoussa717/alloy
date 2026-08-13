@@ -373,6 +373,9 @@ export function createFusionPresentationSummary(summary: any) {
         ok: proposal?.ok === true,
         contractOk: proposal?.contractOk === true,
         error: String(proposal?.error || "") || null,
+        missingSections: Array.isArray(proposal?.missingSections)
+          ? proposal.missingSections.map((section) => truncateUtf8(section, 64))
+          : [],
         text: String(proposal?.text || ""),
         usage: presentationUsage(proposal?.usage),
         durationMs: finiteNonNegative(proposal?.durationMs),
@@ -487,6 +490,14 @@ export function formatFusionContextLines(summary: any) {
     "Full outputs are shown in the terminal and saved to artifacts; model context remains metadata-only.",
   ];
   if (summary?.error) lines.push(`Error: ${truncateUtf8(summary.error, FUSION_METADATA_BYTES)}`);
+  const missingSections = Array.isArray(summary?.missingSections)
+    ? summary.missingSections.filter(Boolean)
+    : [];
+  if (missingSections.length) {
+    lines.push(
+      `Missing sections: ${truncateUtf8(missingSections.join("; "), FUSION_METADATA_BYTES)}`,
+    );
+  }
   if (summary?.error === "provider_unavailable") {
     if (summary.missingProviders?.length) {
       lines.push(`Provider unavailable in this Alloy session: ${summary.missingProviders.slice(0, 3).map((provider: unknown) => truncateUtf8(provider, 64)).join(", ")}`);
@@ -513,6 +524,9 @@ export function formatFusionPresentationLines(summary: any) {
     lines.push("", `${role.toUpperCase()} // ${proposal?.model || "unknown model"}`);
     lines.push(proposal?.ok === true ? "✓ done" : "× failed");
     if (proposal?.error) lines.push(`× ${proposal.error}`);
+    if (Array.isArray(proposal?.missingSections) && proposal.missingSections.length) {
+      lines.push(`Missing sections: ${proposal.missingSections.join(", ")}`);
+    }
     lines.push(proposal?.text || "(no output)");
   }
   if (summary?.synthesizer || summary?.synthesis) {

@@ -270,6 +270,19 @@ describe("trust boundary", () => {
     assert.equal(detail.config.permissionProfile, "ask-all");
   });
 
+  it("trusted project cannot weaken implementPermissionProfile", () => {
+    const locked = {
+      ...DEFAULT_CONFIG,
+      permissionProfile: "ask-all",
+      auto: { useWorktree: true, forceSandbox: false, implementPermissionProfile: "ask-all" },
+    };
+    const loosened = mergeProjectConfigTightenOnly(locked, {
+      auto: { implementPermissionProfile: "ask-none" },
+    });
+    assert.equal(loosened.config.auto.implementPermissionProfile, "ask-all");
+    assert.ok(loosened.rejected.some((item) => /implementPermissionProfile/.test(item)));
+  });
+
   it("trusted project cannot loosen forceSandbox or worktree isolation", () => {
     const locked = {
       ...DEFAULT_CONFIG,

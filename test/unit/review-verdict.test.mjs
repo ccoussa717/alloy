@@ -13,11 +13,15 @@ test("parseReviewVerdict prefers VERDICT line", () => {
 });
 
 test("parseReviewVerdict last-line PASS/FAIL", () => {
-  assert.equal(auto.parseReviewVerdict("looks good\nPASS"), "PASS");
-  assert.equal(auto.parseReviewVerdict("broken tests\nFAIL"), "FAIL");
+  assert.equal(auto.parseReviewVerdict("looks good\nPASS"), "UNKNOWN");
+  assert.equal(auto.parseReviewVerdict("broken tests\nFAIL"), "UNKNOWN");
 });
 
 test("parseReviewVerdict unknown", () => {
   assert.equal(auto.parseReviewVerdict("no clear call"), "UNKNOWN");
   assert.equal(auto.parseReviewVerdict("this would PASS with tests"), "UNKNOWN");
+});
+
+test("parseReviewVerdict uses the last VERDICT line", () => {
+  assert.equal(auto.parseReviewVerdict("VERDICT: FAIL\nmore notes\nVERDICT: PASS"), "PASS");
 });

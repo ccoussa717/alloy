@@ -7,6 +7,20 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.18] - 2026-08-13
+
+### Fixed
+- **Auto stops on scout/plan failure.** A failed scout or plan no longer
+  continues into implement with `"(none)"`.
+- **Fission subject fallback is fail-closed.** CLI does not silently review
+  the prompt. A thrown dirty-tree capture honors `allowSubjectFallback` and
+  confirm. TUI confirm errors or a missing UI decline the fallback.
+- **Reviewer verdict requires `VERDICT: PASS|FAIL`.** A last-line bare PASS
+  no longer counts.
+- **Fusion names missing contract headings** on FAILED / invalid_proposal.
+- **Forge `/runs` keeps the project cwd** on every early finish path.
+- **Trusted project config cannot weaken implement approvals.**
+
 ## [1.1.17] - 2026-08-13
 
 ### Fixed

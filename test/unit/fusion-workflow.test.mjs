@@ -310,6 +310,8 @@ test("invalid proposal skips synthesis and cannot complete", async () => {
   assert.equal(calls.length, 2);
   assert.equal(summary.status, "FAILED");
   assert.equal(summary.proposals[1].error, "invalid_proposal");
+  assert.ok(summary.proposals[1].missingSections?.length > 0);
+  assert.ok(summary.missingSections.some((item) => String(item).startsWith("fusion-builder:") || String(item).includes("builder")));
   assert.equal(summary.synthesis, "");
 });
 
