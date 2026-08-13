@@ -330,7 +330,7 @@ wait_for_text "$SESSION" '> /mode' >/dev/null
 tmux send-keys -t "$SESSION" Down
 wait_for_text "$SESSION" '> /model' >/dev/null
 tmux send-keys -t "$SESSION" Tab
-selected_completion="$(wait_for_absence "$SESSION" 'Select Alloy mode')"
+selected_completion="$(wait_for_text "$SESSION" '/model')"
 assert_contains "$selected_completion" "/model" "Tab completes the selected non-first slash hint"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux send-keys -t "$SESSION" -l "/m"
@@ -376,7 +376,7 @@ wait_for_absence "$SESSION" 'Up/Down select' >/dev/null
 resized_hints="$(wait_for_text "$SESSION" '> /approval')"
 assert_contains "$resized_hints" "Ready" "resized slash hints preserve status visibility"
 tmux send-keys -t "$SESSION" Tab
-resized_completion="$(wait_for_absence "$SESSION" '> /approval')"
+resized_completion="$(wait_for_text "$SESSION" '/approval')"
 assert_contains "$resized_completion" "/approval" "resize clamps selection to the visible slash hint"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux resize-window -t "$SESSION" -x 80 -y 24
