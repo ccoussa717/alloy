@@ -24,7 +24,7 @@ type SessionLister = {
 const SHOW_ALL_SESSIONS = "Show all sessions";
 
 export const OPEN_TUI_HOTKEYS = [
-  "Enter        Send prompt or confirm a selection",
+  "Enter        Send a prompt, or interrupt and update a thinking model",
   "Shift+Enter  Insert a newline",
   "Shift+Tab    Toggle Build / Plan mode",
   "PageUp/Down  Scroll the transcript one page",
@@ -33,7 +33,7 @@ export const OPEN_TUI_HOTKEYS = [
   "Ctrl+Shift+A Open the most recent sub-agent transcript",
   "Up/Down      Move through extension command choices",
   "Y/N          Confirm or deny a confirmation dialog",
-  "Esc          Cancel the current dialog or dismiss a notification",
+  "Esc          Abort the thinking model, cancel a dialog, or dismiss a notice",
 ];
 
 export function flattenSessionTree(tree: SessionTreeNode[]): FlatSessionTreeEntry[] {

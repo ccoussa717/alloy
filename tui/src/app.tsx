@@ -4,6 +4,7 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount,
 import { createStore, reconcile } from "solid-js/store";
 import { displayPreview, displayText, messageBlocks, messageRole, toolSummary, type FissionTranscriptAgent, type FusionTranscriptAgent, type TranscriptBlock, type TranscriptToolStatus } from "./content";
 import { createPersistentCommandHistory } from "./command-history";
+import { resolveEscapeAction, shouldInterruptThenPrompt } from "./interrupt";
 import {
   commandCompletion,
   commandSuggestions,
@@ -1073,6 +1074,12 @@ export function AlloyApp(props: AlloyAppProps) {
     }
   }
 
+  onMount(() => {
+    // Deliver every mid-run instruction together instead of one-at-a-time
+    // after the current turn. Combined with abort-then-prompt on Enter.
+    void request({ type: "set_steering_mode", mode: "all" });
+  });
+
   function refresh(): Promise<void> {
     if (refreshPromise) return refreshPromise;
     refreshPromise = (async () => {
@@ -1195,11 +1202,30 @@ export function AlloyApp(props: AlloyAppProps) {
             continue;
           }
         }
-        const handled = await runResolution(resolveSubmission(next.value, {
-          // Queue as steer while streaming OR while workflows/tools are active
-          // (fission/fusion often leave isStreaming false mid-run).
+        const toolsRunning = Object.values(session().toolExecutions).some((tool) => tool.status === "running");
+        const interrupt = shouldInterruptThenPrompt({
+          text: next.value,
           isStreaming: session().isStreaming,
-          isBusy: session().isStreaming || activityActive() || liveWorkflow() !== null,
+          toolsRunning,
+        });
+        if (interrupt) {
+          await request({ type: "abort" });
+          flushEvents();
+          const deadline = Date.now() + 750;
+          while ((session().isStreaming || Object.values(session().toolExecutions).some((tool) => tool.status === "running")) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            flushEvents();
+          }
+        }
+        const streaming = interrupt ? false : session().isStreaming;
+        const busy = interrupt
+          ? false
+          : session().isStreaming || activityActive() || liveWorkflow() !== null;
+        const handled = await runResolution(resolveSubmission(next.value, {
+          // After an interrupt, send a fresh prompt so the new text updates
+          // the live turn instead of waiting in the follow-up queue.
+          isStreaming: streaming,
+          isBusy: busy,
           commands: session().commands,
           models: session().availableModels,
         }));
@@ -1418,19 +1444,21 @@ export function AlloyApp(props: AlloyAppProps) {
     }
     // After autocomplete handling: Up/Down cycle submitted command history.
     if (handleComposerHistory(event)) return;
-    if (!extensionDialog() && !localDialog()) {
-      if (event.name === "escape" && notifications().length > 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        reduce({ type: "dismiss_notification" });
-      }
-      return;
-    }
     if (event.name === "escape") {
       event.preventDefault();
-      void dismissDialog();
+      event.stopPropagation();
+      const action = resolveEscapeAction({
+        hasDialog: Boolean(extensionDialog() || localDialog()),
+        autocompleteOpen: false,
+        modelBusy: session().isStreaming || activityActive() || liveWorkflow() !== null,
+        hasNotifications: notifications().length > 0,
+      });
+      if (action === "dialog") void dismissDialog();
+      else if (action === "abort") void request({ type: "abort" });
+      else if (action === "notification") reduce({ type: "dismiss_notification" });
       return;
     }
+    if (!extensionDialog() && !localDialog()) return;
     if ((event.name === "up" || event.name === "down") && options().length > 0) {
       event.preventDefault();
       setSelected((value) => (value + (event.name === "up" ? -1 : 1) + options().length) % options().length);
@@ -1685,7 +1713,7 @@ export function AlloyApp(props: AlloyAppProps) {
             {activityLabel({ ...session(), workflowLabel: liveWorkflow()?.label }, toolExecutions())}
           </span>
         </text>
-        <text fg={theme.dim}>{session().isStreaming || liveWorkflow() ? "Ctrl+C abort" : "Ctrl+C exit"}</text>
+        <text fg={theme.dim}>{session().isStreaming || liveWorkflow() || activityActive() ? "Esc abort · Ctrl+C abort" : "Ctrl+C exit"}</text>
       </box>
       <For each={belowWidgets()}>
         {(widget) => (

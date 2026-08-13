@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.19] - 2026-08-13
+
+### Changed
+- **Escape interrupts a thinking model.** With no dialog or slash palette
+  open, Esc aborts the live turn (same as Ctrl+C during a run).
+- **Enter updates the live turn.** A new chat message while the model is
+  thinking or using tools aborts that turn and sends the new instruction
+  immediately, instead of waiting in the follow-up queue.
+
 ## [1.1.18] - 2026-08-13
 
 ### Fixed
