@@ -424,6 +424,47 @@ describe("Fission coordinator", () => {
     }
   });
 
+  it("auto mode does not subject-fallback when capture throws and fallback is forbidden", async () => {
+    const { deps, calls } = makeDeps({
+      deps: {
+        captureFissionPacket: () => {
+          calls.capture++;
+          throw new Error("status_unreadable");
+        },
+      },
+    });
+    const result = await runFissionWithDependencies({
+      request: "review the tree",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      allowSubjectFallback: false,
+    }, deps);
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "status_unreadable");
+    assert.equal(result.mode, "repo");
+    assert.equal(calls.children.length, 0);
+  });
+
+  it("auto mode honors a declined subject-fallback confirm after capture throw", async () => {
+    const { deps } = makeDeps({
+      deps: {
+        captureFissionPacket: () => {
+          throw new Error("status_unreadable");
+        },
+      },
+    });
+    const result = await runFissionWithDependencies({
+      request: "review the tree",
+      reviewers: 1,
+      defaultReviewers: 1,
+      maxReviewers: 5,
+      confirmSubjectFallback: async () => false,
+    }, deps);
+    assert.equal(result.status, "INCOMPLETE");
+    assert.equal(result.error, "subject_fallback_declined");
+  });
+
   it("auto mode falls back to subject when dirty-tree evidence is incomplete", async () => {
     let subjectCaptures = 0;
     const { deps, calls } = makeDeps({

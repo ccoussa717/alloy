@@ -177,6 +177,33 @@ function workflowDeps(
   };
 }
 
+test("Auto stops before build when scout or plan fails", async () => {
+  const runDir = join(tmp, "scout-fail");
+  const harness = workflowDeps(runDir);
+  harness.deps.runChildAgent = async (options) => {
+    harness.launches.push(options);
+    if (options.role === "scout") {
+      return {
+        ok: false,
+        error: "timeout",
+        text: "",
+        model: options.model,
+        usage: { input: 1, output: 0, cost: 0.1, turns: 1, costKnown: true },
+      };
+    }
+    throw new Error(`must not launch ${options.role}`);
+  };
+
+  const summary = await auto.runAutoWorkflowWithDependencies(
+    { request: "stop after scout", cwd: tmp, useWorktree: false, modelRegistry: {} },
+    harness.deps,
+  );
+
+  assert.equal(summary.status, "FAILED");
+  assert.equal(summary.error, "timeout");
+  assert.deepEqual(harness.launches.map((item) => item.role), ["scout"]);
+});
+
 test("Auto fails before launching agents when sandboxed diagnostics are unavailable", async () => {
   const runDir = join(tmp, "sandbox-diagnostics");
   const harness = workflowDeps(runDir);

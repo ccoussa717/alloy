@@ -483,7 +483,7 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       ...(signal ? { signal } : {}),
       ...parentPolicy,
       confirmSubjectFallback: async ({ reason }: { reason?: string } = {}) => {
-        if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return true;
+        if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return false;
         try {
           const ok = await ctx.ui.confirm(
             "Review request text instead?",
@@ -491,7 +491,7 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
           );
           return Boolean(ok);
         } catch {
-          return true;
+          return false;
         }
       },
     };
