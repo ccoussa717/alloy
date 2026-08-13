@@ -302,15 +302,17 @@ tmux send-keys -t "$SESSION" -l "/pl"
 slash_hints="$(wait_for_text "$SESSION" 'Switch to Plan mode')"
 assert_contains "$slash_hints" "/plan" "partial slash input shows hydrated command hints"
 tmux send-keys -t "$SESSION" Tab
-tab_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+tab_completion="$(wait_for_text "$SESSION" '/plan')"
 assert_contains "$tab_completion" "/plan" "Tab completes a partial slash command"
+assert_contains "$tab_completion" "Switch to Plan mode" "exact command stays visible after Tab inserts a trailing space"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
 
 tmux send-keys -t "$SESSION" -l "/pl"
 wait_for_text "$SESSION" 'Switch to Plan mode' >/dev/null
 tmux send-keys -t "$SESSION" Enter
-enter_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+enter_completion="$(wait_for_text "$SESSION" '/plan')"
 assert_contains "$enter_completion" "/plan" "Enter completes a partial slash command"
+assert_contains "$enter_completion" "Switch to Plan mode" "exact command stays visible after Enter completion"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
 
 tmux send-keys -t "$SESSION" -l "/m"
