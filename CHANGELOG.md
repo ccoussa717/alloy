@@ -7,14 +7,28 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.16] - 2026-08-12
+## [1.1.16] - 2026-08-13
 
 ### Fixed
-- **Fusion setup routing:** `/fusion` now honors the complete Architect,
-  Builder, and Synthesizer model routes saved by `/fusion setup` while retaining
-  exact-route validation, concurrency limits, budget reservations, credential
-  isolation, and accurate role attribution. Partial legacy setup continues to
-  use generic orchestration rather than mixing configured and fallback routes.
+- **Setup is the runtime.** Fusion, Auto, and Forge launch the models
+  operators pick in setup (exact routes). Complete `/fusion setup` routes
+  keep exact-route validation, concurrency limits, budget reservations,
+  credential isolation, and accurate role attribution; partial legacy
+  Fusion setup stays on generic orchestration. Fusion/Auto setup also
+  align orchestration role primaries so `/status` and the run cannot drift.
+- **TUI busy = live workflow.** Fusion/Fission dashboards count as busy:
+  follow-ups queue as steer, Ctrl+C aborts instead of exiting, the footer
+  shows the phase, and heartbeat refresh no longer wipes running tools or
+  error banners.
+- **Forge and Auto fail closed.** Auto requires a successful build and an
+  explicit `VERDICT: PASS`. Forge fails unless post-diff fission is
+  `COMPLETE`/`PASS` (or `NO_CHANGES`). Post-diff review is repo-mode only
+  and never falls back to reviewing the prompt.
+- **Provider API errors surface.** Children map Anthropic/etc. usage and
+  stopReason errors instead of empty/`proposal ready`.
+- **Fission setup rejects duplicate specialties** before spend. Interactive
+  `/fission` confirms before falling back from a dirty tree to subject
+  review.
 
 ## [1.1.15] - 2026-08-12
 

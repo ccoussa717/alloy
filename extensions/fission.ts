@@ -199,8 +199,16 @@ export function formatFissionLines(result: any) {
   const lines = [
     `Fission ${result.verdict || "NO VERDICT"} / ${result.status}`,
     `Mode: ${modeLabel}`,
+    ...(result.repoFallbackReason
+      ? [`Repo fallback: dirty-tree evidence incomplete (${result.repoFallbackReason}); reviewed request text instead.`]
+      : []),
     result.message || "review evidence is incomplete.",
     ...(result.error ? [`Error: ${result.error}`] : []),
+    ...(result.judge?.error && result.judge?.status === "fail"
+      ? [
+          `Judge (${result.judge.actualModel || result.judge.requestedModel || "n/a"}): ${result.judge.error}`,
+        ]
+      : []),
     ...(reviewerCount === 0 && result.status !== "NO_CHANGES"
       ? [
           "",
@@ -466,6 +474,18 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       },
       ...(signal ? { signal } : {}),
       ...parentPolicy,
+      confirmSubjectFallback: async ({ reason }: { reason?: string } = {}) => {
+        if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return true;
+        try {
+          const ok = await ctx.ui.confirm(
+            "Review request text instead?",
+            `Dirty-tree evidence is incomplete (${reason || "unknown"}). Review the request as a subject instead of the working tree?`,
+          );
+          return Boolean(ok);
+        } catch {
+          return true;
+        }
+      },
     };
     const result = await executeFission(input);
     // Drop live dashboard once complete — result lives in the transcript (Fusion-style).
@@ -581,6 +601,14 @@ export function registerFission(pi: ExtensionAPI, dependencies: Dependencies = {
       if (!roleId) {
         cancelSetup(ctx);
         return;
+      }
+      if (selectedRoles.includes(roleId)) {
+        ctx.ui.notify(
+          `Role “${formatFissionRoleLabel(roleId)}” is already assigned; pick a distinct specialty.`,
+          "warning",
+        );
+        index -= 1;
+        continue;
       }
       selectedRoles.push(roleId);
       const specialty = formatFissionRoleLabel(roleId);

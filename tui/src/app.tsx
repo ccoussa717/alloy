@@ -486,6 +486,12 @@ function liveRoleGlyph(role: FusionLiveAgentState["role"]): string {
 }
 
 export function fusionLiveRoleActivity(agent: FusionLiveAgentState): string {
+  if (agent.status === "fail") {
+    const failed = agent.events.find((event) => event.status === "failed");
+    const detail = failed?.detail || agent.activity;
+    if (!detail || /ready|waiting|queued|analyzing/i.test(detail)) return "failed";
+    return detail;
+  }
   const event = agent.events[0];
   return agent.status !== "running"
     ? agent.activity
@@ -835,10 +841,28 @@ export function AlloyApp(props: AlloyAppProps) {
   const [activityFrameIndex, setActivityFrameIndex] = createSignal(0);
   const [copyNoticeVisible, setCopyNoticeVisible] = createSignal(false);
   const activityInterval = activityAnimationInterval();
+  const liveWorkflow = createMemo(() => {
+    for (const widget of Object.values(session().widgets)) {
+      const data = widget?.data;
+      if (!data) continue;
+      const kind = data.kind;
+      if (kind !== "alloy.fusion.live" && kind !== "alloy.fission.live") continue;
+      const phase = String(data.phase || "").toUpperCase().replace(/\s+/g, "_");
+      if (["COMPLETE", "FAILED", "ABORTED", "REFUSED", "NO_CHANGES"].includes(phase)) continue;
+      const running = Array.isArray(data.agents) &&
+        data.agents.some((agent) => agent.status === "running" || agent.status === "pending");
+      if (running || phase) {
+        const label = kind === "alloy.fusion.live" ? "FUSION" : "FISSION";
+        return { kind, phase: data.phase || "running", label: `${label} · ${data.phase || "running"}` };
+      }
+    }
+    return null;
+  });
   const activityActive = createMemo(() =>
     session().isStreaming ||
     session().isCompacting ||
     session().isRetrying ||
+    liveWorkflow() !== null ||
     Object.values(session().toolExecutions).some((tool) => tool.status === "running"),
   );
   let scroll!: ScrollBoxRenderable;
@@ -1163,7 +1187,10 @@ export function AlloyApp(props: AlloyAppProps) {
           }
         }
         const handled = await runResolution(resolveSubmission(next.value, {
+          // Queue as steer while streaming OR while workflows/tools are active
+          // (fission/fusion often leave isStreaming false mid-run).
           isStreaming: session().isStreaming,
+          isBusy: session().isStreaming || activityActive() || liveWorkflow() !== null,
           commands: session().commands,
           models: session().availableModels,
         }));
@@ -1171,10 +1198,18 @@ export function AlloyApp(props: AlloyAppProps) {
       }
     } finally {
       submitting = false;
-      if (failedComposerValue !== undefined && !composer.plainText) {
-        composer.setText(failedComposerValue);
-        composer.gotoBufferEnd();
-        setComposerText(failedComposerValue);
+      if (failedComposerValue !== undefined) {
+        // Always restore failed submits so messages are never silently dropped.
+        if (!composer.plainText) {
+          composer.setText(failedComposerValue);
+          composer.gotoBufferEnd();
+          setComposerText(failedComposerValue);
+        }
+        reduce({
+          type: "backend_error",
+          error:
+            "Message was not accepted (session busy or request failed). Restored in the composer — press Enter to retry.",
+        });
       }
     }
   }
@@ -1182,6 +1217,7 @@ export function AlloyApp(props: AlloyAppProps) {
   function submitComposer(): void {
     const value = composer.plainText;
     if (!value.trim()) return;
+    // Keep focus snappy: clear only after we've captured text; queue handles re-entry.
     commandHistory.push(value);
     clearComposer();
     void submitValue(value, true);
@@ -1307,7 +1343,7 @@ export function AlloyApp(props: AlloyAppProps) {
       event.preventDefault();
       event.stopPropagation();
       if (extensionDialog() || localDialog()) void dismissDialog(false);
-      else if (session().isStreaming) void request({ type: "abort" });
+      else if (session().isStreaming || liveWorkflow()) void request({ type: "abort" });
       else props.onExit(0);
       return;
     }
@@ -1620,10 +1656,10 @@ export function AlloyApp(props: AlloyAppProps) {
             ? activityFrame(activityFrameIndex(), ACTIVITY_TRACK_WIDTH)
             : "·".repeat(ACTIVITY_TRACK_WIDTH)}{" "}
           <span style={{ fg: activityActive() ? theme.text : theme.dim }}>
-            {activityLabel(session(), toolExecutions())}
+            {activityLabel({ ...session(), workflowLabel: liveWorkflow()?.label }, toolExecutions())}
           </span>
         </text>
-        <text fg={theme.dim}>{session().isStreaming ? "Ctrl+C abort" : "Ctrl+C exit"}</text>
+        <text fg={theme.dim}>{session().isStreaming || liveWorkflow() ? "Ctrl+C abort" : "Ctrl+C exit"}</text>
       </box>
       <For each={belowWidgets()}>
         {(widget) => (

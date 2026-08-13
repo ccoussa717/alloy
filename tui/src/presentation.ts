@@ -6,6 +6,7 @@ export interface ActivityState {
   isCompacting: boolean;
   isRetrying: boolean;
   retry: RetryState | null;
+  workflowLabel?: string;
 }
 
 /** Default footer track width (was 8; 25% smaller → 6). */
@@ -55,6 +56,8 @@ export function activityLabel(state: ActivityState, tools: ToolExecution[]): str
     const error = redactDisplayText(state.retry.errorMessage).replace(/\s+/g, " ").trim();
     return `Retrying ${attempt}${error ? ` · ${error}` : ""}`;
   }
+  const workflow = String(state.workflowLabel || "").trim();
+  if (workflow) return workflow;
   const running = tools.find((tool) => tool.status === "running");
   if (running) return `Working · ${toolSummary(running.toolName, running.args)}`;
   if (state.isStreaming) return "Working";

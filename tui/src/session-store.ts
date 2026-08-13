@@ -375,7 +375,7 @@ const LIVE_STATUSES = new Set(["pending", "running", "ok", "fail", "skip"]);
 const LIVE_EVENT_STATUSES = new Set(["running", "complete", "failed"]);
 
 function parseLiveEvents(eventsValue: unknown): FusionLiveEventState[] | undefined {
-  if (eventsValue !== undefined && !Array.isArray(eventsValue)) return undefined;
+  if (eventsValue !== undefined && !Array.isArray(eventsValue)) return [];
   const events: FusionLiveEventState[] = [];
   for (const item of (eventsValue || []).slice(0, 3)) {
     const event = sidebarRecord(item);
@@ -386,7 +386,7 @@ function parseLiveEvents(eventsValue: unknown): FusionLiveEventState[] | undefin
       typeof event.status !== "string" ||
       !LIVE_EVENT_STATUSES.has(event.status)
     ) {
-      return undefined;
+      continue;
     }
     events.push({
       tool: widgetText(event.tool, 64),
@@ -666,20 +666,21 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
           autoCompactionEnabled: data.autoCompactionEnabled,
           messageCount: data.messageCount,
           pendingMessageCount: data.pendingMessageCount,
-          backendError: null,
         };
       }
       case "get_messages": {
         const data = message.data as { messages?: SessionMessage[] };
         const messages = Array.isArray(data.messages) ? data.messages.map((item) => ({ ...item })) : [];
+        const runningTools = Object.fromEntries(
+          Object.entries(state.toolExecutions).filter(([, tool]) => tool.status === "running"),
+        );
         return {
           ...state,
           messages,
           messageCount: messages.length,
-          toolExecutions: {},
+          toolExecutions: runningTools,
           transcriptTools: transcriptToolStates(messages),
-          currentAssistantMessageId: null,
-          backendError: null,
+          currentAssistantMessageId: state.currentAssistantMessageId,
         };
       }
       case "get_commands": {
@@ -734,7 +735,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
       return snapshot?.sessionId === state.sessionId ? { ...state, sidebarSnapshot: snapshot } : state;
     }
     case "agent_start":
-      return { ...state, isStreaming: true, toolExecutions: {}, backendError: null };
+      return { ...state, isStreaming: true, backendError: null };
     case "agent_end":
     case "agent_settled":
       return { ...state, isStreaming: false, currentAssistantMessageId: null };
@@ -925,6 +926,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
           const placement = message.widgetPlacement === "belowEditor" || message.widgetPlacement === "aboveEditor"
             ? message.widgetPlacement
             : previous?.placement ?? "aboveEditor";
+          const nextData = data ?? previous?.data;
           return {
             ...state,
             widgets: {
@@ -932,7 +934,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
               [key]: {
                 lines: message.widgetLines.filter((item): item is string => typeof item === "string"),
                 placement,
-                ...(data ? { data } : {}),
+                ...(nextData ? { data: nextData } : {}),
               },
             },
           };
