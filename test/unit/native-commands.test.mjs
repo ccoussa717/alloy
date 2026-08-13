@@ -334,6 +334,7 @@ test("hotkeys shows OpenTUI bindings as a read-only list", async () => {
   assert.deepEqual(ctx.selections[0], { title: "OpenTUI hotkeys", options: OPEN_TUI_HOTKEYS });
   assert.ok(OPEN_TUI_HOTKEYS.some((line) => /Shift\+Tab.*Build.*Plan/i.test(line)));
   assert.ok(OPEN_TUI_HOTKEYS.some((line) => /Ctrl\+C.*abort.*exit/i.test(line)));
+  assert.ok(OPEN_TUI_HOTKEYS.some((line) => /Esc.*Abort the thinking model/i.test(line)));
 });
 
 test("handlers report errors without claiming success", async () => {
