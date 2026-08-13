@@ -135,7 +135,8 @@ describe("orchestration route selection", () => {
     assert.equal(decision.fallbackUsed, true);
   });
 
-  it("fails closed when the orchestrator requests an unconfigured model", () => {
+  it("honors an eligible requested model outside the role primary/fallback list", () => {
+    // /fusion setup (and similar) may pin exact routes that are not the role primary.
     const decision = routeAgentTask({
       task: "Research the provider API",
       requestedModel: "openai/gpt-unconfigured",
@@ -145,9 +146,24 @@ describe("orchestration route selection", () => {
       remainingBudgetUsd: 5,
     });
 
+    assert.equal(decision.ok, true);
+    assert.equal(decision.model, "openai/gpt-unconfigured");
+    assert.equal(decision.reason, "requested-model");
+    assert.equal(decision.fallbackUsed, false);
+  });
+
+  it("still rejects an ineligible requested model outside the role list", () => {
+    const decision = routeAgentTask({
+      task: "Research the provider API",
+      requestedModel: "openai/gpt-unconfigured",
+      policy,
+      providerAllow: ["xai", "anthropic", "openai"],
+      candidates: [candidate("openai/gpt-unconfigured", { authenticated: false })],
+      remainingBudgetUsd: 5,
+    });
+
     assert.equal(decision.ok, false);
-    assert.equal(decision.reason, "requested model is not configured for research");
-    assert.deepEqual(decision.rejected, []);
+    assert.ok(decision.rejected.some((item) => item.model === "openai/gpt-unconfigured"));
   });
 
   it("fails closed on an unknown explicitly requested role", () => {

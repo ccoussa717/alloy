@@ -4,6 +4,11 @@ import { OPENTUI_COMMANDS } from "../../lib/opentui-commands.mjs";
 
 export interface CommandContext {
   isStreaming: boolean;
+  /**
+   * True when the session is streaming OR a long workflow (fission/fusion/tools)
+   * is active. Used so typed follow-ups queue as steer instead of a competing prompt.
+   */
+  isBusy?: boolean;
   commands: SlashCommand[];
   models: ModelInfo[];
 }
@@ -107,12 +112,14 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
   const args = firstWhitespace === -1 ? "" : value.slice(firstWhitespace).trim();
 
   if (name === "/quit" || name === "/exit" || name === "/q") return { kind: "exit", clearInput: true };
+  const busy = context.isBusy === true || context.isStreaming === true;
+
   if (name === "/help") {
     const message = args ? `/help ${args}` : "/help";
     return request({
       type: "prompt",
       message,
-      ...(context.isStreaming ? { streamingBehavior: "steer" } : {}),
+      ...(busy ? { streamingBehavior: "steer" } : {}),
     }, { refresh: true });
   }
   if (name === "/new") return request({ type: "new_session" }, { refresh: true });
@@ -154,9 +161,9 @@ export function resolveSubmission(input: string, context: CommandContext): Submi
     return request({
       type: "prompt",
       message,
-      ...(context.isStreaming ? { streamingBehavior: "steer" } : {}),
+      ...(busy ? { streamingBehavior: "steer" } : {}),
     }, { refresh: true });
   }
 
-  return request({ type: context.isStreaming ? "steer" : "prompt", message: value });
+  return request({ type: busy ? "steer" : "prompt", message: value });
 }

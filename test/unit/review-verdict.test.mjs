@@ -19,4 +19,5 @@ test("parseReviewVerdict last-line PASS/FAIL", () => {
 
 test("parseReviewVerdict unknown", () => {
   assert.equal(auto.parseReviewVerdict("no clear call"), "UNKNOWN");
+  assert.equal(auto.parseReviewVerdict("this would PASS with tests"), "UNKNOWN");
 });

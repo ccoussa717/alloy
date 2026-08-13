@@ -44,6 +44,14 @@ describe("resolveSubmission", () => {
     });
   });
 
+  it("steers while isBusy even if isStreaming is false (workflow runs)", () => {
+    expect(resolveSubmission("queue me", { ...context, isStreaming: false, isBusy: true })).toEqual({
+      kind: "request",
+      request: { type: "steer", message: "queue me" },
+      clearInput: true,
+    });
+  });
+
   it("maps local session commands to RPC without claiming completion", () => {
     expect(resolveSubmission("/new", context)).toEqual({
       kind: "request",

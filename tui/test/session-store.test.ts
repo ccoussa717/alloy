@@ -418,7 +418,7 @@ describe("session store events", () => {
       success: true,
       data: { messages: [] },
     });
-    expect(state.toolExecutions).toEqual({});
+    expect(state.toolExecutions["tool-1"]?.status).toBe("running");
   });
 
   it("finalizes Markdown streams and never downgrades terminal transcript tool state", () => {
@@ -644,10 +644,9 @@ describe("extension UI events", () => {
         agents: [{ role: "architect", status: "running" }],
       },
     });
-    expect(state.widgets["alloy-agents"]).toEqual({
-      lines: ["Still usable"],
-      placement: "aboveEditor",
-    });
+    expect(state.widgets["alloy-agents"]?.lines).toEqual(["Still usable"]);
+    expect(state.widgets["alloy-agents"]?.placement).toBe("aboveEditor");
+    expect(state.widgets["alloy-agents"]?.data?.kind).toBe("alloy.fusion.live");
   });
 
   it("stores validated Fission live widget data with reviewer panes", () => {

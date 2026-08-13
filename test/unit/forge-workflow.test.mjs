@@ -144,6 +144,37 @@ test("forge continues when pre-build fission is NO_CHANGES", async () => {
   assert.equal(summary.fissionPlan.status, "NO_CHANGES");
 });
 
+test("forge fails when post-diff fission is INCOMPLETE even if auto passed", async () => {
+  const { deps, calls } = makeForgeDeps({
+    deps: {
+      runFissionWithDependencies: async (opts, phaseDeps = {}) => {
+        const n = (calls.fission += 1);
+        const phase = n === 1 ? "fission-plan" : "fission-diff";
+        const runDir = phaseDeps.createRunDir
+          ? phaseDeps.createRunDir("/tmp", phase)
+          : `/tmp/${phase}`;
+        if (n === 1) {
+          return { status: "COMPLETE", verdict: "PASS", message: "ok", runDir, error: null };
+        }
+        return {
+          status: "INCOMPLETE",
+          verdict: "INCOMPLETE",
+          message: "judge empty",
+          runDir,
+          error: "empty_output",
+        };
+      },
+    },
+  });
+  const summary = await runForgeWithDependencies(
+    { request: "ship it", cwd: "/tmp" },
+    deps,
+  );
+  assert.equal(calls.auto, 1);
+  assert.equal(summary.pass, false);
+  assert.equal(summary.error, "empty_output");
+});
+
 test("forge fails when post-diff fission FAIL even if auto passed", async () => {
   const { deps, calls } = makeForgeDeps({ fissionDiffFail: true });
   const summary = await runForgeWithDependencies(

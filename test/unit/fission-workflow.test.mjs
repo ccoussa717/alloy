@@ -188,7 +188,7 @@ function assertCompleteShape(result) {
   assert.deepEqual(Object.keys(result).sort(), [
     "blockingSeverity", "clusters", "error", "evidenceComplete", "judge", "kind",
     "message", "mode", "modelDiversity", "packetDigest", "panel", "rejectedFindings",
-    "request", "requestedReviewers", "reviewers", "runDir", "runId", "sourceDigest",
+    "repoFallbackReason", "request", "requestedReviewers", "reviewers", "runDir", "runId", "sourceDigest",
     "status", "unresolvedFindings", "usage", "validatedFindings", "verdict",
   ].sort());
 }
@@ -223,6 +223,12 @@ describe("Fission pure contracts", () => {
     ]);
     assert.throws(
       () => resolveFissionRoles({ fission: { roles: ["not_real"] } }, 1),
+      /reviewer_roles/,
+    );
+    assert.throws(
+      () => resolveFissionRoles({
+        fission: { roles: ["cynical_customer", "cynical_customer"] },
+      }, 2),
       /reviewer_roles/,
     );
   });
