@@ -66,9 +66,10 @@ function suggestionScore(query: string, suggestion: CommandSuggestion): number |
 }
 
 export function commandSuggestions(input: string, commands: SlashCommand[], limit = 50): CommandSuggestion[] {
-  const match = input.match(/^\/([^\s/]*)$/);
+  const match = input.match(/^\/([^\s/]*)(?:( )(.*))?$/);
   if (!match) return [];
   const query = (match[1] ?? "").toLowerCase();
+  const hasArgs = match[2] !== undefined;
   const merged = new Map<string, CommandSuggestion>();
   const reservedLocalNames = new Set(LOCAL_COMMANDS.flatMap((command) => [command.name, ...command.aliases]));
   for (const command of LOCAL_COMMANDS) merged.set(command.name, command);
@@ -82,10 +83,19 @@ export function commandSuggestions(input: string, commands: SlashCommand[], limi
       source: command.source ?? "extension",
     });
   }
-  return [...merged.values()]
+  const scored = [...merged.values()]
     .map((suggestion) => ({ suggestion, score: suggestionScore(query, suggestion) }))
     .filter((entry): entry is { suggestion: CommandSuggestion; score: number } => entry.score !== null)
-    .sort((a, b) => a.score - b.score || a.suggestion.name.localeCompare(b.suggestion.name))
+    .sort((a, b) => a.score - b.score || a.suggestion.name.localeCompare(b.suggestion.name));
+  // After a space keep the exact command visible so the palette does not die
+  // when completion inserts `/{name} ` or the operator starts typing args.
+  if (hasArgs) {
+    return scored
+      .filter((entry) => entry.score === 0)
+      .slice(0, Math.max(0, limit))
+      .map((entry) => entry.suggestion);
+  }
+  return scored
     .slice(0, Math.max(0, limit))
     .map((entry) => entry.suggestion);
 }
@@ -95,7 +105,7 @@ export function commandCompletion(suggestion: Pick<CommandSuggestion, "name">): 
 }
 
 export function isExactCommandSuggestion(input: string, suggestion: Pick<CommandSuggestion, "name" | "aliases">): boolean {
-  const value = input.match(/^\/([^\s/]*)$/)?.[1]?.toLowerCase();
+  const value = input.match(/^\/([^\s/]*)(?:\s.*)?$/)?.[1]?.toLowerCase();
   return value === suggestion.name || suggestion.aliases.includes(value ?? "");
 }
 

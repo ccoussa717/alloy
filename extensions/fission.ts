@@ -155,6 +155,11 @@ function formatFissionStatus(config: any) {
     }
   }
   lines.push(`Judge: ${fission.judgeModel || "not configured"}`);
+  lines.push(
+    "",
+    "Repo mode reviews the dirty tree vs HEAD, not the whole repository.",
+    "Subject mode reviews the request text. Confirm fallback before spend.",
+  );
   if (fission.modelFamilies && Object.keys(fission.modelFamilies).length) {
     lines.push(
       "",
@@ -191,13 +196,16 @@ export function formatFissionLines(result: any) {
   const usage = result.usage || {};
   const modeLabel =
     result.mode === "subject"
-      ? "subject (freeform)"
+      ? "subject (freeform request text)"
       : result.mode === "repo"
-        ? "repo (dirty tree)"
+        ? "repo (dirty tree vs HEAD — not a whole-repo review)"
         : result.mode || "—";
   const reviewerCount = Array.isArray(result.reviewers) ? result.reviewers.length : 0;
+  const headline = result.error
+    ? `Fission ${result.status} · ${result.error}`
+    : `Fission ${result.verdict || "NO VERDICT"} / ${result.status}`;
   const lines = [
-    `Fission ${result.verdict || "NO VERDICT"} / ${result.status}`,
+    headline,
     `Mode: ${modeLabel}`,
     ...(result.repoFallbackReason
       ? [`Repo fallback: dirty-tree evidence incomplete (${result.repoFallbackReason}); reviewed request text instead.`]

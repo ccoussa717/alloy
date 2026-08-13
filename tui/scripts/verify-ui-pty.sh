@@ -302,15 +302,17 @@ tmux send-keys -t "$SESSION" -l "/pl"
 slash_hints="$(wait_for_text "$SESSION" 'Switch to Plan mode')"
 assert_contains "$slash_hints" "/plan" "partial slash input shows hydrated command hints"
 tmux send-keys -t "$SESSION" Tab
-tab_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+tab_completion="$(wait_for_text "$SESSION" '/plan')"
 assert_contains "$tab_completion" "/plan" "Tab completes a partial slash command"
+assert_contains "$tab_completion" "Switch to Plan mode" "exact command stays visible after Tab inserts a trailing space"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
 
 tmux send-keys -t "$SESSION" -l "/pl"
 wait_for_text "$SESSION" 'Switch to Plan mode' >/dev/null
 tmux send-keys -t "$SESSION" Enter
-enter_completion="$(wait_for_absence "$SESSION" 'Switch to Plan mode')"
+enter_completion="$(wait_for_text "$SESSION" '/plan')"
 assert_contains "$enter_completion" "/plan" "Enter completes a partial slash command"
+assert_contains "$enter_completion" "Switch to Plan mode" "exact command stays visible after Enter completion"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace
 
 tmux send-keys -t "$SESSION" -l "/m"
@@ -328,7 +330,7 @@ wait_for_text "$SESSION" '> /mode' >/dev/null
 tmux send-keys -t "$SESSION" Down
 wait_for_text "$SESSION" '> /model' >/dev/null
 tmux send-keys -t "$SESSION" Tab
-selected_completion="$(wait_for_absence "$SESSION" 'Select Alloy mode')"
+selected_completion="$(wait_for_text "$SESSION" '/model')"
 assert_contains "$selected_completion" "/model" "Tab completes the selected non-first slash hint"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux send-keys -t "$SESSION" -l "/m"
@@ -374,7 +376,7 @@ wait_for_absence "$SESSION" 'Up/Down select' >/dev/null
 resized_hints="$(wait_for_text "$SESSION" '> /approval')"
 assert_contains "$resized_hints" "Ready" "resized slash hints preserve status visibility"
 tmux send-keys -t "$SESSION" Tab
-resized_completion="$(wait_for_absence "$SESSION" '> /approval')"
+resized_completion="$(wait_for_text "$SESSION" '/approval')"
 assert_contains "$resized_completion" "/approval" "resize clamps selection to the visible slash hint"
 tmux send-keys -t "$SESSION" BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace BSpace
 tmux resize-window -t "$SESSION" -x 80 -y 24

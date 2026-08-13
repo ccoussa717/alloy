@@ -224,8 +224,10 @@ describe("commandSuggestions", () => {
 
   it("does not suggest after arguments or for ordinary prompts", () => {
     expect(commandSuggestions("hello", commands)).toEqual([]);
-    expect(commandSuggestions("/plan now", commands)).toEqual([]);
+    expect(commandSuggestions("/plan now", commands).map((item) => item.name)).toEqual(["plan"]);
+    expect(commandSuggestions("/plan ", commands).map((item) => item.name)).toEqual(["plan"]);
     expect(commandSuggestions("/plan\nnext", commands)).toEqual([]);
+    expect(commandSuggestions("/unknown now", commands)).toEqual([]);
   });
 
   it("honors the visible suggestion limit", () => {

@@ -13,8 +13,27 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { detectProject, planDiagnostics, runDiagnostics } = require(
   join(root, "lib", "diagnostics.mjs"),
 );
+const { formatLaunchPreview } = require(join(root, "lib", "launch-preview.mjs"));
 
 export function registerDiagnostics(pi: ExtensionAPI) {
+  pi.registerCommand("status", {
+    description: "Preview what Fusion / Fission / Auto will launch",
+    handler: async (_args, ctx) => {
+      let lines;
+      try {
+        lines = formatLaunchPreview(ctx.cwd || process.cwd());
+      } catch (error) {
+        lines = [
+          "Cannot build a launch preview.",
+          String((error as Error)?.message || error),
+          "Fix ~/.pi/alloy/config.json or remove it so Alloy can recreate defaults.",
+        ];
+      }
+      if (ctx.hasUI) await ctx.ui.select("Alloy status", lines);
+      else console.log(lines.join("\n"));
+    },
+  });
+
   pi.registerCommand("diagnose", {
     description: "Run project diagnostics (typecheck/lint/test when detected)",
     handler: async (args, ctx) => {

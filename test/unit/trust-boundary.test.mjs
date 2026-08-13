@@ -26,6 +26,9 @@ process.env.PI_CODING_AGENT_DIR = join(home, ".pi", "agent");
 
 const { DEFAULT_CONFIG, ensureDefaultConfig, loadConfig, loadConfigDetailed, loadGlobalConfig, mergeProjectConfigTightenOnly, saveGlobalFissionConfig, saveGlobalFusionConfig, saveJson, GLOBAL_ONLY_SANDBOX_KEYS } =
   await import(pathToFileURL(join(root, "lib/config.mjs")).href);
+const { formatLaunchPreview } = await import(
+  pathToFileURL(join(root, "lib/launch-preview.mjs")).href
+);
 const { loadMcpConfig, listAutoConnectServers, listMcpServers } = await import(
   pathToFileURL(join(root, "lib/mcp-config.mjs")).href
 );
@@ -265,6 +268,31 @@ describe("trust boundary", () => {
     writeProjectAlloy({ permissionProfile: "ask-all" });
     const detail = loadConfigDetailed(project, { trusted: true });
     assert.equal(detail.config.permissionProfile, "ask-all");
+  });
+
+  it("trusted project cannot loosen forceSandbox or worktree isolation", () => {
+    const locked = {
+      ...DEFAULT_CONFIG,
+      auto: { useWorktree: true, forceSandbox: true },
+    };
+    const loosened = mergeProjectConfigTightenOnly(locked, {
+      auto: { forceSandbox: false, useWorktree: false },
+    });
+    assert.equal(loosened.config.auto.forceSandbox, true);
+    assert.equal(loosened.config.auto.useWorktree, true);
+    assert.ok(loosened.rejected.some((item) => /forceSandbox/.test(item)));
+    assert.ok(loosened.rejected.some((item) => /useWorktree/.test(item)));
+  });
+
+  it("corrupt global config refuses factory defaults that would re-enable MCP", () => {
+    const path = join(home, ".pi", "alloy", "config.json");
+    const previous = readFileSync(path, "utf8");
+    try {
+      writeFileSync(path, "{not-json");
+      assert.throws(() => loadGlobalConfig(), /Corrupt/);
+    } finally {
+      writeFileSync(path, previous);
+    }
   });
 
   it("malformed trusted project MCP enablement fails closed", () => {
@@ -627,5 +655,14 @@ describe("trust boundary", () => {
     } finally {
       writeFileSync(path, valid);
     }
+  });
+
+  it("launch preview names factory vs setup routes and dirty-tree repo mode", () => {
+    const lines = formatLaunchPreview(project).join("\n");
+    assert.match(lines, /Launch preview/);
+    assert.match(lines, /dirty tree vs HEAD/);
+    assert.match(lines, /Fusion/);
+    assert.match(lines, /Fission/);
+    assert.match(lines, /Auto \/ Forge/);
   });
 });

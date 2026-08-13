@@ -355,15 +355,34 @@ export function installRuntimeCredential(
   });
 }
 
+export function applyRuntimeCredentialHandoff(
+  pi: ExtensionAPI,
+  envelope: string,
+  model?: string | null,
+): { ok: true } | { ok: false; error: unknown } {
+  try {
+    installRuntimeCredential(pi, envelope, model);
+    return { ok: true };
+  } catch (error) {
+    console.error(
+      "Alloy child-enforcer: runtime credential handoff failed closed",
+    );
+    return { ok: false, error };
+  }
+}
+
 export default function childEnforcerExtension(pi: ExtensionAPI) {
   const manifest = loadManifest();
   if (process.env.ALLOY_CHILD_CREDENTIAL_STDIN === "1") {
-    try {
-      installRuntimeCredential(pi, readFileSync(0, "utf8"), manifest?.model);
-    } catch {
-      console.error(
-        "Alloy child-enforcer: runtime credential handoff failed closed",
-      );
+    const handoff = applyRuntimeCredentialHandoff(
+      pi,
+      readFileSync(0, "utf8"),
+      manifest?.model,
+    );
+    if (!handoff.ok) {
+      // Fail closed: a child that asked for a runtime key must not continue
+      // without it (no host-key fallback, no unauthenticated provider).
+      process.exit(1);
     }
   }
   if (!manifest) {
