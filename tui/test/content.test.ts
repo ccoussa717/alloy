@@ -459,6 +459,47 @@ describe("messageBlocks", () => {
     expect((block as Extract<TranscriptBlock, { kind: "fusion" }>).error).toMatch(/malformed.*unknown.*duplicate architect/i)
   })
 
+  test("hydrates alloy_fission tool details into a fission transcript block", () => {
+    const blocks = messageBlocks({
+      role: "tool",
+      toolName: "alloy_fission",
+      content: [{ type: "text", text: "Fission INCOMPLETE · source_drift" }],
+      details: {
+        kind: "fission",
+        status: "INCOMPLETE",
+        verdict: "INCOMPLETE",
+        error: "source_drift",
+        request: "audit the tree",
+        mode: "repo",
+        reviewers: [
+          {
+            alias: "R1",
+            role: "security",
+            actualModel: "xai/grok-4.5",
+            status: "ok",
+            output: { findings: [], coverage: ["auth"] },
+          },
+        ],
+        judge: {
+          requestedModel: "anthropic/claude-opus-4-8",
+          status: "fail",
+          error: "provider_usage_exhausted",
+        },
+      },
+    })
+
+    expect(blocks.some((block) => block.kind === "tool-result")).toBe(true)
+    const fission = blocks.find((block) => block.kind === "fission")
+    expect(fission).toMatchObject({
+      kind: "fission",
+      status: "INCOMPLETE",
+      error: "source_drift",
+      mode: "repo",
+      reviewers: [{ alias: "R1", model: "xai/grok-4.5" }],
+      judge: { error: "provider_usage_exhausted" },
+    })
+  })
+
   test("turns malformed and future content into inspectable unknown blocks", () => {
     const circular: Record<string, unknown> = { type: "future", payload: { answer: 42 } }
     circular.self = circular

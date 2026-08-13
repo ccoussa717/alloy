@@ -506,7 +506,9 @@ describe("extension UI events", () => {
       method: "notify",
       message: "Saved",
     });
-    expect(state.notifications).toEqual([{ id: "notice-1", message: "Saved", type: "info" }]);
+    expect(state.notifications).toHaveLength(1);
+    expect(state.notifications[0]).toMatchObject({ id: "notice-1", message: "Saved", type: "info" });
+    expect(typeof state.notifications[0]?.createdAt).toBe("number");
     expect(state.toasts).toBe(state.notifications);
 
     state = reduceRpcMessage(state, {
@@ -824,5 +826,31 @@ describe("extension UI events", () => {
     }).notifications[0]?.message ?? "";
     expect(notification).toContain("[REDACTED]");
     expect(notification).not.toContain("backend-secret-token");
+  });
+
+  it("dismisses and expires info notifications without dropping errors", () => {
+    let state = createInitialState();
+    state = reduceRpcMessage(state, {
+      type: "extension_ui_request",
+      id: "info-1",
+      method: "notify",
+      message: "hello",
+    });
+    state = reduceRpcMessage(state, {
+      type: "extension_ui_request",
+      id: "err-1",
+      method: "notify",
+      notifyType: "error",
+      message: "boom",
+    });
+    const createdAt = state.notifications[0]?.createdAt ?? 0;
+    state = reduceRpcMessage(state, {
+      type: "expire_notifications",
+      now: createdAt + 9_000,
+      ttlMs: 8_000,
+    });
+    expect(state.notifications.map((item) => item.id)).toEqual(["err-1"]);
+    state = reduceRpcMessage(state, { type: "dismiss_notification" });
+    expect(state.notifications).toEqual([]);
   });
 });

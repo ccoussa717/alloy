@@ -82,6 +82,12 @@ export async function launchFreeAgent(
   if (!launch.ok) {
     throw new Error(`Agent routing failed: ${launch.decision.reason}`);
   }
+  const requested = typeof params.model === "string" ? params.model.trim() : "";
+  if (requested && launch.spec.model !== requested) {
+    throw new Error(
+      `Requested model ${requested} was not used (routed to ${launch.spec.model || "default"}). Refusing silent replace — check /login or /status.`,
+    );
+  }
   onPrepared?.(launch);
   const parentOpts = parentSpawnOpts();
   return spawn({

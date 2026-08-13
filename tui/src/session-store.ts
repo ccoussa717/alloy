@@ -139,6 +139,7 @@ export interface NotificationState {
   id: string;
   message: string;
   type: "info" | "warning" | "error";
+  createdAt?: number;
 }
 
 export interface RetryState {
@@ -900,6 +901,7 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
             id,
             message: redactDisplayText(asString(message.message)),
             type: message.notifyType === "warning" || message.notifyType === "error" ? message.notifyType : "info",
+            createdAt: Date.now(),
           };
           const notifications = [...state.notifications, notification];
           return { ...state, notifications, toasts: notifications };
@@ -959,6 +961,24 @@ export function reduceRpcMessage(state: SessionState, message: RpcMessage): Sess
       return { ...state, backendError: errorText(message.error, "Backend error") };
     case "fatal_error":
       return { ...state, fatalError: errorText(message.error, "Fatal backend error") };
+    case "dismiss_notification": {
+      const id = asString(message.id);
+      const notifications = id
+        ? state.notifications.filter((item) => item.id !== id)
+        : state.notifications.slice(0, -1);
+      return { ...state, notifications, toasts: notifications };
+    }
+    case "expire_notifications": {
+      const now = typeof message.now === "number" && Number.isFinite(message.now) ? message.now : Date.now();
+      const ttl = typeof message.ttlMs === "number" && message.ttlMs > 0 ? message.ttlMs : 8_000;
+      const notifications = state.notifications.filter((item) => {
+        if (item.type !== "info") return true;
+        if (typeof item.createdAt !== "number") return true;
+        return now - item.createdAt < ttl;
+      });
+      if (notifications.length === state.notifications.length) return state;
+      return { ...state, notifications, toasts: notifications };
+    }
     default:
       return state;
   }

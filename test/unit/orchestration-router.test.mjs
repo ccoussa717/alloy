@@ -132,7 +132,26 @@ describe("orchestration route selection", () => {
     assert.equal(decision.ok, true);
     assert.equal(decision.model, "anthropic/claude-sonnet-4-6");
     assert.equal(decision.reason, "requested-model");
-    assert.equal(decision.fallbackUsed, true);
+    assert.equal(decision.fallbackUsed, false);
+    assert.deepEqual(decision.candidates, ["anthropic/claude-sonnet-4-6"]);
+  });
+
+  it("refuses to silently replace an ineligible requested model with a role fallback", () => {
+    const decision = routeAgentTask({
+      task: "Research the provider API",
+      requestedModel: "xai/grok-4.5",
+      policy,
+      providerAllow: ["xai", "anthropic"],
+      candidates: [
+        candidate("xai/grok-4.5", { authenticated: false }),
+        candidate("anthropic/claude-sonnet-4-6"),
+      ],
+      remainingBudgetUsd: 5,
+    });
+
+    assert.equal(decision.ok, false);
+    assert.ok(decision.rejected.some((item) => item.model === "xai/grok-4.5"));
+    assert.notEqual(decision.model, "anthropic/claude-sonnet-4-6");
   });
 
   it("honors an eligible requested model outside the role primary/fallback list", () => {

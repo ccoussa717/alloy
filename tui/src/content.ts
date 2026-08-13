@@ -615,9 +615,10 @@ function presentFissionResult(result: UnknownRecord): UnknownRecord {
 function hydrateFissionDetails(details: UnknownRecord | undefined): UnknownRecord | undefined {
   if (!details) return details
   if (stringField(details, "bodyStorage") !== "artifact") {
-    // Already a presentation payload, or inline transport with reviewers.
-    if (Array.isArray(field(details, "reviewers"))) return details
     if (stringField(details, "kind") === "fission") return presentFissionResult(details)
+    if (Array.isArray(field(details, "reviewers"))) {
+      return presentFissionResult({ ...details, kind: "fission" })
+    }
     return details
   }
   try {
@@ -862,7 +863,17 @@ export function messageBlocks(message: unknown, options: MessageBlockOptions = {
           details,
         }, "custom")
       : []
-    return [block, ...fusion, ...contentMedia(field(value, "content"))]
+    const fission = toolName === "alloy_fission" && details && (
+      stringField(details, "kind") === "fission" || Array.isArray(field(details, "reviewers"))
+    )
+      ? customBlocks({
+          role: "custom",
+          customType: "alloy-fission",
+          content: field(value, "content"),
+          details,
+        }, "custom")
+      : []
+    return [block, ...fusion, ...fission, ...contentMedia(field(value, "content"))]
   }
 
   if (messageRole(value) === "custom") return customBlocks(value, role)

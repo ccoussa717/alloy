@@ -7,6 +7,33 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.17] - 2026-08-13
+
+### Fixed
+- **Lease handoff fails closed.** A child that requires a runtime credential
+  exits instead of continuing after a failed key install.
+- **Trusted project config cannot loosen isolation.** `.pi/alloy.json` may not
+  set `auto.forceSandbox=false` or `auto.useWorktree=false` against a tighter
+  global. Corrupt project JSON is ignored instead of merged.
+- **Corrupt `config.json` no longer loads factory defaults.** A broken operator
+  file throws instead of silently re-enabling MCP and factory Claude.
+- **`/agent model=` is exact.** An explicit requested model is not replaced by
+  a role fallback. Routing fails closed if that model is ineligible.
+- **INCOMPLETE is no longer one bucket.** Fission headlines and schema messages
+  name the reason (`source_drift`, packet evidence, repo not ready, etc.).
+- **Repo fission is honest.** Status, results, and `/status` say dirty-tree vs
+  HEAD — not a whole-repository review.
+- **Slash palette survives a space.** Completing `/fission ` keeps the command
+  visible instead of killing autocomplete.
+- **Dialog Enter no longer submits the composer.** Notifications dismiss with
+  Esc and info toasts expire; failed submits restore or name the dropped text.
+- **`alloy_fission` hydrates.** Tool results render the fission transcript, not
+  a stub line dump.
+
+### Added
+- **`/status` launch preview** across Fusion, Fission, and Auto — setup-pinned
+  routes vs factory defaults.
+
 ## [1.1.16] - 2026-08-13
 
 ### Fixed

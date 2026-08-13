@@ -33,7 +33,7 @@ export const OPEN_TUI_HOTKEYS = [
   "Ctrl+Shift+A Open the most recent sub-agent transcript",
   "Up/Down      Move through extension command choices",
   "Y/N          Confirm or deny a confirmation dialog",
-  "Esc          Cancel the current dialog",
+  "Esc          Cancel the current dialog or dismiss a notification",
 ];
 
 export function flattenSessionTree(tree: SessionTreeNode[]): FlatSessionTreeEntry[] {

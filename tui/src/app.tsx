@@ -434,10 +434,12 @@ function FissionResult(props: {
   return (
     <box flexDirection="column" gap={1}>
       <text fg={theme.accent}>
-        FISSION // {props.block.verdict || props.block.status}
+        FISSION // {props.block.error
+          ? `${props.block.status} · ${props.block.error}`
+          : (props.block.verdict || props.block.status)}
       </text>
       <text fg={theme.dim}>
-        {[props.block.runId, props.block.mode, props.block.request]
+        {[props.block.runId, props.block.mode === "repo" ? "repo (dirty tree)" : props.block.mode, props.block.request]
           .filter(Boolean)
           .join(" · ")}
       </text>
@@ -981,6 +983,13 @@ export function AlloyApp(props: AlloyAppProps) {
     const timer = setInterval(() => setActivityFrameIndex((frame) => frame + 1), activityInterval);
     onCleanup(() => clearInterval(timer));
   });
+  createEffect(() => {
+    if (session().notifications.length === 0) return;
+    const timer = setInterval(() => {
+      reduce({ type: "expire_notifications", now: Date.now(), ttlMs: 8_000 });
+    }, 1_000);
+    onCleanup(() => clearInterval(timer));
+  });
 
   const extensionDialog = createMemo(() => activeExtensionDialog(session()));
   const aboveWidgets = createMemo(() => Object.values(session().widgets).filter((widget) => widget.placement === "aboveEditor"));
@@ -1035,7 +1044,7 @@ export function AlloyApp(props: AlloyAppProps) {
     // Only arm extension *select* panels (help/status lists). Local model pickers
     // and confirm/input must accept Enter immediately for PTY + snappy UX.
     if (key && key !== previousDialogKey && dialog?.method === "select") {
-      setDialogEnterArmedAt(Date.now() + 280);
+      setDialogEnterArmedAt(Date.now() + 400);
     } else if (key && key !== previousDialogKey) {
       setDialogEnterArmedAt(0);
     }
@@ -1199,22 +1208,31 @@ export function AlloyApp(props: AlloyAppProps) {
     } finally {
       submitting = false;
       if (failedComposerValue !== undefined) {
-        // Always restore failed submits so messages are never silently dropped.
-        if (!composer.plainText) {
+        const current = composer.plainText ?? "";
+        if (!current.trim()) {
           composer.setText(failedComposerValue);
           composer.gotoBufferEnd();
           setComposerText(failedComposerValue);
+          reduce({
+            type: "backend_error",
+            error:
+              "Message was not accepted (session busy or request failed). Restored in the composer — press Enter to retry.",
+          });
+        } else {
+          const snippet = failedComposerValue.length > 80
+            ? `${failedComposerValue.slice(0, 77)}…`
+            : failedComposerValue;
+          reduce({
+            type: "backend_error",
+            error: `Message was not accepted. Left your new draft in place. Retry: ${snippet}`,
+          });
         }
-        reduce({
-          type: "backend_error",
-          error:
-            "Message was not accepted (session busy or request failed). Restored in the composer — press Enter to retry.",
-        });
       }
     }
   }
 
   function submitComposer(): void {
+    if (extensionDialog() || localDialog()) return;
     const value = composer.plainText;
     if (!value.trim()) return;
     // Keep focus snappy: clear only after we've captured text; queue handles re-entry.
@@ -1400,7 +1418,14 @@ export function AlloyApp(props: AlloyAppProps) {
     }
     // After autocomplete handling: Up/Down cycle submitted command history.
     if (handleComposerHistory(event)) return;
-    if (!extensionDialog() && !localDialog()) return;
+    if (!extensionDialog() && !localDialog()) {
+      if (event.name === "escape" && notifications().length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        reduce({ type: "dismiss_notification" });
+      }
+      return;
+    }
     if (event.name === "escape") {
       event.preventDefault();
       void dismissDialog();
@@ -1553,6 +1578,7 @@ export function AlloyApp(props: AlloyAppProps) {
               <text wrapMode="char" fg={notification.type === "error" ? theme.error : notification.type === "warning" ? theme.warning : theme.muted}>{notification.message}</text>
             )}
           </For>
+          <text fg={theme.dim}>Esc dismiss</text>
         </scrollbox>
       </Show>
       <Show when={aboveWidgets().length > 0}>

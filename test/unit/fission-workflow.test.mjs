@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
   FISSION_ROLES,
   buildModelDiversity,
+  classifyWorkflowException,
   createFissionResult,
   parseFissionRequest,
   resolveFissionModels,
@@ -194,6 +195,13 @@ function assertCompleteShape(result) {
 }
 
 describe("Fission pure contracts", () => {
+  it("classifies thrown child errors without special-casing test strings", () => {
+    assert.equal(classifyWorkflowException(new Error("boom")), "child_failed");
+    assert.equal(classifyWorkflowException(new Error("source_drift")), "source_drift");
+    assert.equal(classifyWorkflowException(new Error("strict_json: nope")), "reviewer_schema");
+    assert.equal(classifyWorkflowException(new Error("provider_usage_exhausted")), "provider_usage_exhausted");
+  });
+
   it("exports exact frozen default role packs for counts one through five", () => {
     assert.deepEqual(FISSION_ROLES, {
       1: ["general_adversarial"],
