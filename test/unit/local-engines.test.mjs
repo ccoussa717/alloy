@@ -160,7 +160,14 @@ test("discoverOllamaModels maps tags and show metadata", async () => {
   assert.equal(m.contextWindow, 4096); // num_ctx wins over model_info
   assert.equal(m.cost.input, 0);
   assert.equal(m.compat.supportsDeveloperRole, false);
+  assert.equal(m.compat.supportsReasoningEffort, true);
   assert.equal(m.compat.maxTokensField, "max_tokens");
+  assert.deepEqual(m.thinkingLevelMap, {
+    off: "none",
+    low: "low",
+    medium: "medium",
+    high: "high",
+  });
 });
 
 test("discoverOllamaModels uses optional auth without exposing it in results", async () => {
@@ -178,6 +185,8 @@ test("discoverOllamaModels uses optional auth without exposing it in results", a
   });
   assert.equal(result.ok, true);
   assert.deepEqual(seen, ["Bearer top-secret", "Bearer top-secret"]);
+  assert.equal(result.models[0].reasoning, false);
+  assert.equal(result.models[0].thinkingLevelMap, undefined);
   assert.equal(JSON.stringify(result).includes("top-secret"), false);
 });
 
@@ -336,6 +345,8 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
   assert.equal(loaded.provider, "llama.cpp-local");
   assert.equal(loaded.contextWindow, 4096);
   assert.ok(loaded.baseUrl.endsWith("/v1"));
+  assert.equal(loaded.compat.supportsReasoningEffort, false);
+  assert.equal(loaded.thinkingLevelMap, undefined);
 });
 
 test("discoverLlamaCppModels prefers its specific key and valid fallback catalog", async () => {

@@ -77,7 +77,8 @@ test("extension load registers catalogs before session_start", async () => {
             api: "openai-completions",
             provider: "ollama",
             baseUrl: "http://127.0.0.1:11434/v1",
-            reasoning: false,
+            reasoning: true,
+            thinkingLevelMap: { off: "none", low: "low", medium: "medium", high: "high" },
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 8192,
@@ -101,6 +102,12 @@ test("extension load registers catalogs before session_start", async () => {
   assert.equal(registrations[0].id, "ollama");
   assert.equal(registrations[0].cfg.apiKey, "$OLLAMA_API_KEY");
   assert.equal(registrations[0].cfg.models[0].id, "m1");
+  assert.deepEqual(registrations[0].cfg.models[0].thinkingLevelMap, {
+    off: "none",
+    low: "low",
+    medium: "medium",
+    high: "high",
+  });
   // Nested provider models must not carry provider/api/baseUrl fields
   assert.equal(registrations[0].cfg.models[0].provider, undefined);
   assert.equal(registrations[0].cfg.models[0].api, undefined);
