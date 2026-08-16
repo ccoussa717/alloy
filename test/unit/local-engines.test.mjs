@@ -181,21 +181,53 @@ test("discoverOllamaModels uses optional auth without exposing it in results", a
   assert.equal(JSON.stringify(result).includes("top-secret"), false);
 });
 
-test("OLLAMA_CONTEXT_LENGTH fills missing metadata but does not replace reported context", async () => {
+test("explicit Ollama num_ctx wins over service and architecture context", async () => {
   const fetchImpl = mockFetch(async (url) => {
     if (url.endsWith("/api/tags")) {
-      return new Response(JSON.stringify({ models: [{ name: "reported" }] }), { status: 200 });
+      return new Response(JSON.stringify({ models: [{ name: "explicit" }] }), { status: 200 });
     }
-    return new Response(
-      JSON.stringify({ model_info: { "model.context_length": 128000 } }),
-      { status: 200 },
-    );
+    return new Response(JSON.stringify({
+      parameters: "num_ctx 32768\n",
+      model_info: { "model.context_length": 262144 },
+    }), { status: 200 });
   });
   const result = await mod.discoverOllamaModels({
     fetchImpl,
-    env: { OLLAMA_CONTEXT_LENGTH: "4096" },
+    env: { OLLAMA_CONTEXT_LENGTH: "8192" },
   });
+  assert.equal(result.models[0].contextWindow, 32768);
+  assert.equal(result.models[0].maxTokens, 32768);
+});
+
+test("Ollama service context wins over architecture metadata", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "service-default" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      model_info: { "model.context_length": 262144 },
+    }), { status: 200 });
+  });
+  const result = await mod.discoverOllamaModels({
+    fetchImpl,
+    env: { OLLAMA_CONTEXT_LENGTH: "8192" },
+  });
+  assert.equal(result.models[0].contextWindow, 8192);
+  assert.equal(result.models[0].maxTokens, 8192);
+});
+
+test("Ollama architecture context is the fallback without runtime settings", async () => {
+  const fetchImpl = mockFetch(async (url) => {
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({ models: [{ name: "architecture" }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({
+      model_info: { "model.context_length": 128000 },
+    }), { status: 200 });
+  });
+  const result = await mod.discoverOllamaModels({ fetchImpl, env: {} });
   assert.equal(result.models[0].contextWindow, 128000);
+  assert.equal(result.models[0].maxTokens, 32768);
 });
 
 test("discoverOllamaModels rejects malformed catalogs and model ids", async () => {
