@@ -54,6 +54,13 @@ function modelId(model: Record<string, unknown>): string | undefined {
   return typeof model.id === "string" && model.id.trim() ? model.id : undefined;
 }
 
+function discoveredModels(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(objectValue)
+    .filter((model): model is Record<string, unknown> => Boolean(model && modelId(model)));
+}
+
 function mergeCompat(base: unknown, override: unknown) {
   const left = objectValue(base);
   const right = objectValue(override);
@@ -88,7 +95,12 @@ function mergeRegisterModels(
   manualProvider?: ManualProvider,
 ) {
   const live = toRegisterModels(discovered);
-  if (!manualProvider || !Array.isArray(manualProvider.models)) return live;
+  if (!manualProvider) return live;
+  const liveWithCompat = live.map((model) => ({
+    ...model,
+    compat: mergeCompat(model.compat, manualProvider.compat),
+  }));
+  if (!Array.isArray(manualProvider.models)) return liveWithCompat;
 
   const manualById = new Map<string, Record<string, unknown>>();
   const manualOrder: string[] = [];
@@ -103,7 +115,7 @@ function mergeRegisterModels(
   }
 
   const seen = new Set<string>();
-  const merged = live.map((model) => {
+  const merged = liveWithCompat.map((model) => {
     const id = modelId(model)!;
     seen.add(id);
     const manual = manualById.get(id);
@@ -213,18 +225,18 @@ export async function registerLocalEngines(
   let registered = 0;
   const unavailable: string[] = [];
   for (const { key, id } of entries) {
-    const result = bundle[key];
-    const manual = manualProviders.get(id);
-    const discovered = result?.ok && Array.isArray(result.models) ? result.models : [];
-    if (!discovered.length) {
-      if (!manual) unavailable.push(id);
-      continue;
-    }
-    const models = mergeRegisterModels(discovered, manual);
-    const firstBase =
-      result?.models?.[0]?.baseUrl ||
-      localEngines.ensureOpenAiV1BaseUrl(result?.baseUrl);
     try {
+      const result = bundle?.[key];
+      const manual = manualProviders.get(id);
+      const discovered = result?.ok ? discoveredModels(result.models) : [];
+      if (!discovered.length) {
+        if (!manual) unavailable.push(id);
+        continue;
+      }
+      const models = mergeRegisterModels(discovered, manual);
+      const firstBase =
+        discovered[0]?.baseUrl ||
+        localEngines.ensureOpenAiV1BaseUrl(result?.baseUrl);
       const manualBaseUrl = typeof manual?.baseUrl === "string" ? manual.baseUrl : undefined;
       const manualApiKey = typeof manual?.apiKey === "string" ? manual.apiKey : undefined;
       const manualApi = typeof manual?.api === "string" ? manual.api : undefined;

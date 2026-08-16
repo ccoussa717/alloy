@@ -139,6 +139,45 @@ test("registration failures are isolated per provider", async () => {
   assert.equal(attempted[2].config.apiKey, "$LM_STUDIO_API_KEY");
 });
 
+test("malformed discovered models do not suppress later local providers", async () => {
+  const registrations = [];
+  const handlers = new Map();
+  await registerLocalEngines(fakePi(registrations, [], handlers), {
+    discover: async () => ({
+      ollama: {
+        ok: true,
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        models: [null],
+      },
+      llamaCpp: {
+        ok: true,
+        provider: "llama.cpp-local",
+        baseUrl: "http://127.0.0.1:8080",
+        models: [discoveredModel("llama", {
+          provider: "llama.cpp-local",
+          baseUrl: "http://127.0.0.1:8080/v1",
+        })],
+      },
+      lmStudio: {
+        ok: true,
+        provider: "lm-studio",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        models: [discoveredModel("studio", {
+          provider: "lm-studio",
+          baseUrl: "http://127.0.0.1:1234/v1",
+        })],
+      },
+    }),
+    loadConfig: () => ({}),
+    manualProviders: () => new Map(),
+    env: {},
+  });
+
+  assert.deepEqual(registrations.map(({ id }) => id), ["llama.cpp-local", "lm-studio"]);
+  assert.equal(typeof handlers.get("session_start"), "function");
+});
+
 test("discovery failure leaves hosted extension startup intact", async () => {
   const registrations = [];
   const unregistrations = [];
@@ -164,7 +203,7 @@ test("manual Ollama metadata overrides live discovery without hiding new models"
   const registrations = [];
   const manualProviders = new Map([["ollama", {
     baseUrl: "http://manual.invalid/v1",
-    api: "openai-completions",
+    api: "openai-responses",
     apiKey: "$MANUAL_OLLAMA_KEY",
     headers: { "X-Manual": "yes" },
     authHeader: true,
@@ -193,8 +232,24 @@ test("manual Ollama metadata overrides live discovery without hiding new models"
   assert.equal(ollama.config.models[0].contextWindow, 65536);
   assert.equal(ollama.config.baseUrl, "http://manual.invalid/v1");
   assert.equal(ollama.config.apiKey, "$MANUAL_OLLAMA_KEY");
+  assert.equal(ollama.config.api, "openai-responses");
   assert.deepEqual(ollama.config.headers, { "X-Manual": "yes" });
   assert.equal(ollama.config.authHeader, true);
+});
+
+test("manual provider compat applies when its model list is omitted", async () => {
+  const registrations = [];
+  await registerLocalEngines(fakePi(registrations), {
+    discover: async () => discoveryBundle([discoveredModel("live-only")]),
+    loadConfig: () => ({}),
+    manualProviders: () => new Map([["ollama", {
+      compat: { maxTokensField: "max_tokens" },
+    }]]),
+    env: {},
+  });
+
+  const ollama = registrations.find(({ id }) => id === "ollama");
+  assert.equal(ollama.config.models[0].compat.maxTokensField, "max_tokens");
 });
 
 test("failed or empty discovery leaves a manual provider registered by Pi", async () => {
