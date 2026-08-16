@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.20] - 2026-08-15
+
+### Fixed
+- **New Ollama models no longer disappear behind a manual catalog.** Alloy
+  merges live discovery with `models.json`: manual model metadata and provider
+  settings still win, while newly pulled and manual-only models both remain
+  available. Invalid manual configuration fails closed through Pi's canonical
+  loader.
+
 ## [1.1.19] - 2026-08-13
 
 ### Changed
