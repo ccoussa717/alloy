@@ -39,6 +39,7 @@ function toRegisterModels(models: Array<Record<string, unknown>>) {
     cost: m.cost,
     contextWindow: m.contextWindow,
     maxTokens: m.maxTokens,
+    thinkingLevelMap: m.thinkingLevelMap,
     compat: m.compat,
   }));
 }

@@ -305,6 +305,7 @@ export function installRuntimeCredential(
               ? model.name
               : modelId,
           reasoning: Boolean(model.reasoning),
+          thinkingLevelMap: model.thinkingLevelMap,
           input: Array.isArray(model.input) ? model.input : ["text"],
           cost:
             model.cost && typeof model.cost === "object"

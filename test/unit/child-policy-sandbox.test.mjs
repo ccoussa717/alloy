@@ -825,7 +825,14 @@ describe("credential isolation — host auth.json unreadability", () => {
         model: {
           id: "qwen3.6:27b",
           name: "qwen3.6:27b",
-          reasoning: false,
+          reasoning: true,
+          thinkingLevelMap: {
+            off: "none",
+            low: "low",
+            medium: "medium",
+            high: "high",
+          },
+          compat: { supportsReasoningEffort: true },
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 128_000,
@@ -844,6 +851,14 @@ describe("credential isolation — host auth.json unreadability", () => {
     assert.equal(calls[0][1].api, "openai-completions");
     assert.equal(calls[0][1].apiKey, "ollama");
     assert.equal(calls[0][1].models[0].id, "qwen3.6:27b");
+    assert.equal(calls[0][1].models[0].contextWindow, 128_000);
+    assert.deepEqual(calls[0][1].models[0].thinkingLevelMap, {
+      off: "none",
+      low: "low",
+      medium: "medium",
+      high: "high",
+    });
+    assert.equal(calls[0][1].models[0].compat.supportsReasoningEffort, true);
     assert.equal(typeof calls[0][1].streamSimple, "function");
     // Cloud providers must not smuggle arbitrary baseUrl via transport.
     assert.throws(
@@ -858,6 +873,19 @@ describe("credential isolation — host auth.json unreadability", () => {
           },
         }),
       /only allowed for local engines/i,
+    );
+    assert.throws(
+      () =>
+        buildChildRuntimeCredentialEnvelope({
+          provider: "ollama",
+          apiKey: "ollama",
+          transport: {
+            baseUrl: "http://127.0.0.1:11434/v1",
+            api: "openai-completions",
+            model: { id: "bad-map", thinkingLevelMap: [] },
+          },
+        }),
+      /invalid local engine transport thinkingLevelMap/i,
     );
   });
 
