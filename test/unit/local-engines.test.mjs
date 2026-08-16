@@ -168,6 +168,7 @@ test("discoverOllamaModels maps tags and show metadata", async () => {
     medium: "medium",
     high: "high",
   });
+  assert.notEqual(m.thinkingLevelMap, mod.OLLAMA_THINKING_LEVEL_MAP);
 });
 
 test("discoverOllamaModels uses optional auth without exposing it in results", async () => {

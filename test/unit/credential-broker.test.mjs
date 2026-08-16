@@ -633,6 +633,7 @@ test("session credential broker leases local engine access like /model", async (
       medium: "medium",
       high: "high",
     },
+    compat: { supportsReasoningEffort: true },
   });
   const lease = await broker.resolveSessionCredentialLease(["ollama/llama3.2"], {
     find: () => model,
@@ -668,7 +669,7 @@ test("session credential broker leases local engine access like /model", async (
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
       maxTokens: 32_768,
-      compat: undefined,
+      compat: { supportsReasoningEffort: true },
     },
   });
   assert.deepEqual(lease.providers, ["ollama"]);

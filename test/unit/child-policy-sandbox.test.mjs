@@ -832,6 +832,7 @@ describe("credential isolation — host auth.json unreadability", () => {
             medium: "medium",
             high: "high",
           },
+          compat: { supportsReasoningEffort: true },
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 128_000,
@@ -857,6 +858,7 @@ describe("credential isolation — host auth.json unreadability", () => {
       medium: "medium",
       high: "high",
     });
+    assert.equal(calls[0][1].models[0].compat.supportsReasoningEffort, true);
     assert.equal(typeof calls[0][1].streamSimple, "function");
     // Cloud providers must not smuggle arbitrary baseUrl via transport.
     assert.throws(
@@ -871,6 +873,19 @@ describe("credential isolation — host auth.json unreadability", () => {
           },
         }),
       /only allowed for local engines/i,
+    );
+    assert.throws(
+      () =>
+        buildChildRuntimeCredentialEnvelope({
+          provider: "ollama",
+          apiKey: "ollama",
+          transport: {
+            baseUrl: "http://127.0.0.1:11434/v1",
+            api: "openai-completions",
+            model: { id: "bad-map", thinkingLevelMap: [] },
+          },
+        }),
+      /invalid local engine transport thinkingLevelMap/i,
     );
   });
 
