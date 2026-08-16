@@ -175,6 +175,75 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
   assert.equal(inferenceHeaders.at(-1), "Bearer inference-secret");
 });
 
+test("real Alloy merges live and manual Ollama catalogs", async (t) => {
+  const ollama = await listen((request, response) => {
+    if (request.url === "/api/tags") {
+      json(response, { models: [{ name: "existing-live" }, { name: "new-live" }] });
+      return;
+    }
+    if (request.url === "/api/show") {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const { name } = JSON.parse(body);
+        json(response, { parameters: `num_ctx ${name === "existing-live" ? 8192 : 4096}\n` });
+      });
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  t.after(() => new Promise((resolveClose) => ollama.server.close(resolveClose)));
+
+  const home = await mkdtemp(join(tmpdir(), "alloy-local-merge-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const agentDir = join(home, ".pi", "agent");
+  const alloyHome = join(home, ".pi", "alloy");
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(alloyHome, { recursive: true });
+  await writeFile(join(agentDir, "models.json"), JSON.stringify({
+    providers: {
+      ollama: {
+        baseUrl: `${ollama.url}/v1`,
+        api: "openai-completions",
+        apiKey: "ollama",
+        models: [
+          { id: "existing-live", name: "Manual Existing", contextWindow: 65536 },
+          { id: "manual-only", name: "Manual Alias" },
+        ],
+      },
+    },
+  }));
+
+  const childEnv = {
+    ...process.env,
+    HOME: home,
+    PI_CODING_AGENT_DIR: agentDir,
+    ALLOY_HOME: alloyHome,
+    OLLAMA_BASE_URL: ollama.url,
+  };
+  for (const name of [
+    "ALLOY_PI_BIN",
+    "OLLAMA_HOST",
+    "OLLAMA_API_KEY",
+    "LLAMA_BASE_URL",
+    "LLAMA_CPP_BASE_URL",
+    "LLAMA_API_KEY",
+    "LLAMA_CPP_API_KEY",
+    "LM_STUDIO_BASE_URL",
+    "LM_STUDIO_API_KEY",
+  ]) {
+    delete childEnv[name];
+  }
+
+  const result = await runAlloy(["--list-models"], childEnv);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /ollama\s+existing-live/);
+  assert.match(result.stdout, /ollama\s+new-live/);
+  assert.match(result.stdout, /ollama\s+manual-only/);
+  assert.doesNotMatch(result.stderr, /Failed to load extension|Provider .* error/i);
+});
+
 test("disabled discovery preserves a manual models.json provider", async (t) => {
   const home = await mkdtemp(join(tmpdir(), "alloy-local-manual-"));
   t.after(() => rm(home, { recursive: true, force: true }));
