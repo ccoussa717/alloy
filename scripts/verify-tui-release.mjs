@@ -18,11 +18,12 @@ const EXPECTED = {
   },
   overrides: {
     "@babel/core": "7.29.7",
+    "brace-expansion": "5.0.9",
     minimatch: "10.2.5",
   },
   securityResolutions: {
     "@babel/core": "7.29.7",
-    "brace-expansion": "5.0.8",
+    "brace-expansion": "5.0.9",
     minimatch: "10.2.5",
     seroval: "1.5.6",
     "seroval-plugins": "1.5.6",

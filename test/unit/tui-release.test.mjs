@@ -181,7 +181,7 @@ describe("TUI release gate", () => {
     const installed = join(testCase.directory, "installed");
     for (const [name, version] of Object.entries({
       "@babel/core": "7.29.7",
-      "brace-expansion": "5.0.8",
+      "brace-expansion": "5.0.9",
       minimatch: "10.2.5",
       seroval: "1.5.6",
       "seroval-plugins": "1.5.6",

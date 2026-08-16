@@ -1,6 +1,6 @@
 {
   "name": "alloy-agent",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "description": "Alloy multi-provider coding agent with an OpenCode-derived Solid/OpenTUI frontend and Pi runtime.",
   "private": true,
   "type": "module",
@@ -95,7 +95,8 @@
     "typebox": "1.1.38"
   },
   "overrides": {
-    "brace-expansion": "5.0.8",
+    "brace-expansion": "5.0.9",
+    "undici": "8.10.0",
     "@earendil-works/pi-coding-agent": {
       "@earendil-works/pi-agent-core": "0.82.1",
       "@earendil-works/pi-ai": "0.82.1",

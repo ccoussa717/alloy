@@ -1,12 +1,12 @@
 {
   "name": "alloy-agent",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "alloy-agent",
-      "version": "1.1.21",
+      "version": "1.1.22",
       "license": "MIT",
       "dependencies": {
         "@earendil-works/pi-agent-core": "0.82.1",
@@ -897,15 +897,6 @@
       "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==",
       "license": "ISC"
     },
-    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici": {
-      "version": "8.5.0",
-      "resolved": "https://registry.npmjs.org/undici/-/undici-8.5.0.tgz",
-      "integrity": "sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==",
-      "license": "MIT",
-      "engines": {
-        "node": ">=22.19.0"
-      }
-    },
     "node_modules/@earendil-works/pi-tui": {
       "version": "0.82.1",
       "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz",
@@ -1361,9 +1352,9 @@
       "license": "MIT"
     },
     "node_modules/brace-expansion": {
-      "version": "5.0.8",
-      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.8.tgz",
-      "integrity": "sha512-JZyDyq3D4AUifKTPOB7DELf6XsB3WdPuNxCtob1vFXPsSXhdAiHBWJ/tJ8HAc9aH84BK+5JFZLNkJKx3G9kzQg==",
+      "version": "5.0.9",
+      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.9.tgz",
+      "integrity": "sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==",
       "license": "MIT",
       "dependencies": {
         "balanced-match": "^4.0.2"
@@ -1710,9 +1701,9 @@
       "license": "MIT"
     },
     "node_modules/fast-uri": {
-      "version": "3.1.4",
-      "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.4.tgz",
-      "integrity": "sha512-8JnbkQ4juDyvYs4mgFGQqg4yCYtFDtUtmp2QIQq11ZZe5CFQ5wcqm1rqDgAh/QdMySuBnPzMUiJUNZG5N/AiQw==",
+      "version": "3.1.5",
+      "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.5.tgz",
+      "integrity": "sha512-gHwA1O9LDIcKunMKhObS/HimwtehO1nPUECKAu5TpKgaO19fcWEl4bliWe1jWxVFvIXztJjjQ4L8XQ1EU9f7Jw==",
       "funding": [
         {
           "type": "github",
@@ -1948,9 +1939,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.12.32",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.12.32.tgz",
-      "integrity": "sha512-XcuyW9qE2kJn07PkecMOBd5Vq/hMy7mmGw+idz1yblbg9N17ijJODrvPkn7/dwL3Kulj8LcRJ69DLOWf91dRUg==",
+      "version": "4.13.2",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.2.tgz",
+      "integrity": "sha512-JydRilDRkYBQMt9qR9U92mXxmbGqsqSn/IKOrh4e7/gEbn+0zSr8igTu0obwJoNGN4sez28DIql7FBHWydoJpA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -2034,9 +2025,9 @@
       "license": "ISC"
     },
     "node_modules/ip-address": {
-      "version": "10.2.0",
-      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.2.0.tgz",
-      "integrity": "sha512-/+S6j4E9AHvW9SWMSEY9Xfy66O5PWvVEJ08O0y5JGyEKQpojb0K0GKpz/v5HJ/G0vi3D2sjGK78119oXZeE0qA==",
+      "version": "10.5.0",
+      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.5.0.tgz",
+      "integrity": "sha512-R5SnVLJmgYYvf2F2ZgwSBnelz5G4q5AxIC277GDfUaNbrZKNANcBC7RHqYYePlszf4kBolVkJauG0ZjHHFh55g==",
       "license": "MIT",
       "engines": {
         "node": ">= 12"
@@ -2726,6 +2717,15 @@
       "resolved": "https://registry.npmjs.org/typebox/-/typebox-1.1.38.tgz",
       "integrity": "sha512-pZ0aQPmMmXoUvSbeuWf/Hzsc+avNw/Zd6VeE8CFgkVGWyuHPJvqeJJDeJqLve+K70LvjYIoleGcoJHPT17cWoA==",
       "license": "MIT"
+    },
+    "node_modules/undici": {
+      "version": "8.10.0",
+      "resolved": "https://registry.npmjs.org/undici/-/undici-8.10.0.tgz",
+      "integrity": "sha512-HvltHd7avK13QIw/oLe4qoOLyoVSoafqJ2jYOrtMRBkbYT31eiBQ8O0ehRKZiEZCMEyLFQNIADpgCWC5fALvYQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=22.19.0"
+      }
     },
     "node_modules/undici-types": {
       "version": "8.3.0",

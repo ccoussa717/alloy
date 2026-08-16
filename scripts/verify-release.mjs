@@ -289,8 +289,12 @@ for (const [name, version] of Object.entries(pkg.dependencies || {})) {
   }
 }
 
-if (pkg.overrides?.["brace-expansion"] !== "5.0.8") {
-  fail("brace-expansion must be overridden to patched version 5.0.8");
+if (pkg.overrides?.["brace-expansion"] !== "5.0.9") {
+  fail("brace-expansion must be overridden to patched version 5.0.9");
+}
+
+if (pkg.overrides?.undici !== "8.10.0") {
+  fail("undici must be overridden to patched version 8.10.0");
 }
 
 if (existsSync(lockPath)) {
@@ -341,11 +345,21 @@ if (existsSync(lockPath)) {
       }
     }
   }
-  const braceEntries = Object.entries(lock.packages || {}).filter(([path]) =>
-    /(?:^|\/)node_modules\/brace-expansion$/.test(path)
-  );
-  if (braceEntries.length === 0 || braceEntries.some(([, entry]) => entry?.version !== "5.0.8")) {
-    fail("every installed brace-expansion node must resolve to patched version 5.0.8");
+  const securityResolutions = {
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.5",
+    hono: "4.13.2",
+    "ip-address": "10.5.0",
+    undici: "8.10.0",
+  };
+  for (const [name, version] of Object.entries(securityResolutions)) {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const entries = Object.entries(lock.packages || {}).filter(([path]) =>
+      new RegExp(`(?:^|/)node_modules/${escapedName}$`).test(path)
+    );
+    if (entries.length === 0 || entries.some(([, entry]) => entry?.version !== version)) {
+      fail(`every installed ${name} node must resolve to patched version ${version}`);
+    }
   }
   for (const [name, version] of Object.entries(pkg.dependencies || {})) {
     const entry = lock.packages?.[`node_modules/${name}`];
