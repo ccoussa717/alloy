@@ -1,5 +1,8 @@
 // test/unit/local-engines-extension.test.mjs
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { registerLocalEngines } from "../../extensions/local-engines.ts";
 
@@ -202,6 +205,7 @@ test("discovery failure leaves hosted extension startup intact", async () => {
 test("manual Ollama metadata overrides live discovery without hiding new models", async () => {
   const registrations = [];
   const manualProviders = new Map([["ollama", {
+    name: "Private Ollama",
     baseUrl: "http://manual.invalid/v1",
     api: "openai-responses",
     apiKey: "$MANUAL_OLLAMA_KEY",
@@ -230,11 +234,81 @@ test("manual Ollama metadata overrides live discovery without hiding new models"
   ]);
   assert.equal(ollama.config.models[0].name, "Manual Existing");
   assert.equal(ollama.config.models[0].contextWindow, 65536);
+  assert.equal(ollama.config.name, "Private Ollama");
   assert.equal(ollama.config.baseUrl, "http://manual.invalid/v1");
   assert.equal(ollama.config.apiKey, "$MANUAL_OLLAMA_KEY");
   assert.equal(ollama.config.api, "openai-responses");
   assert.deepEqual(ollama.config.headers, { "X-Manual": "yes" });
   assert.equal(ollama.config.authHeader, true);
+});
+
+test("canonical manual config loading accepts commented models.json", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "alloy-model-config-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "models.json");
+  await writeFile(path, `{
+    // Pi accepts comments in models.json.
+    "providers": {
+      "ollama": {
+        "name": "Commented Ollama",
+        "baseUrl": "http://manual.invalid/v1",
+        "api": "openai-completions",
+        "models": [{ "id": "manual" }]
+      }
+    }
+  }`);
+
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  const registrations = [];
+  await registerLocalEngines(fakePi(registrations), {
+    discover: async () => discoveryBundle([discoveredModel("live")]),
+    loadConfig: () => ({}),
+    env: {},
+  });
+
+  const ollama = registrations.find(({ id }) => id === "ollama");
+  assert.equal(ollama.config.name, "Commented Ollama");
+  assert.deepEqual(ollama.config.models.map(({ id }) => id), ["live", "manual"]);
+});
+
+test("invalid canonical manual config fails local registration closed", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "alloy-invalid-model-config-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "models.json");
+  await writeFile(path, JSON.stringify({
+    providers: {
+      ollama: {
+        baseUrl: 42,
+        apiKey: "must-not-activate",
+        models: [{ id: "manual" }],
+      },
+    },
+  }));
+  const registrations = [];
+  const unregistrations = [];
+  const handlers = new Map();
+
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  try {
+    await registerLocalEngines(fakePi(registrations, unregistrations, handlers), {
+      discover: async () => discoveryBundle([discoveredModel("live")]),
+      loadConfig: () => ({}),
+      env: {},
+    });
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+  await handlers.get("session_start")({}, { ui: { setStatus() {} } });
+
+  assert.deepEqual(registrations, []);
+  assert.deepEqual(unregistrations, []);
 });
 
 test("manual provider compat applies when its model list is omitted", async () => {
@@ -304,6 +378,54 @@ test("discovered order is stable and the last duplicate manual model wins", asyn
   assert.deepEqual(duplicate.compat, {
     supportsDeveloperRole: false,
     maxTokensField: "max_tokens",
+  });
+});
+
+test("compat preserves Pi nested keys across discovery, provider, and model layers", async () => {
+  const registrations = [];
+  await registerLocalEngines(fakePi(registrations), {
+    discover: async () => discoveryBundle([discoveredModel("layered", {
+      compat: {
+        supportsDeveloperRole: false,
+        chatTemplateKwargs: { discovered: true },
+        openRouterRouting: { allow_fallbacks: true, order: ["discovered"] },
+        vercelGatewayRouting: { only: ["discovered"] },
+      },
+    })]),
+    loadConfig: () => ({}),
+    manualProviders: () => new Map([["ollama", {
+      compat: {
+        chatTemplateKwargs: { provider: "kept" },
+        openRouterRouting: { require_parameters: true },
+        vercelGatewayRouting: { order: ["provider"] },
+      },
+      models: [{
+        id: "layered",
+        compat: {
+          chatTemplateKwargs: { model: 1 },
+          openRouterRouting: { zdr: true },
+          vercelGatewayRouting: { only: ["model"] },
+        },
+      }],
+    }]]),
+    env: {},
+  });
+
+  const compat = registrations.find(({ id }) => id === "ollama").config.models[0].compat;
+  assert.deepEqual(compat.chatTemplateKwargs, {
+    discovered: true,
+    provider: "kept",
+    model: 1,
+  });
+  assert.deepEqual(compat.openRouterRouting, {
+    allow_fallbacks: true,
+    order: ["discovered"],
+    require_parameters: true,
+    zdr: true,
+  });
+  assert.deepEqual(compat.vercelGatewayRouting, {
+    only: ["model"],
+    order: ["provider"],
   });
 });
 

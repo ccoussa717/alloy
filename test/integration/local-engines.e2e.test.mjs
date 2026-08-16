@@ -176,8 +176,7 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
 });
 
 test("real Alloy merges live and manual Ollama catalogs", async (t) => {
-  const inferenceModels = [];
-  const ollama = await listen((request, response) => {
+  const discovery = await listen((request, response) => {
     if (request.url === "/api/tags") {
       json(response, { models: [{ name: "existing-live" }, { name: "new-live" }] });
       return;
@@ -192,12 +191,22 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
       });
       return;
     }
-    if (request.url === "/v1/chat/completions") {
+    response.writeHead(404).end();
+  });
+  t.after(() => new Promise((resolveClose) => discovery.server.close(resolveClose)));
+
+  const inferenceRequests = [];
+  const manual = await listen((request, response) => {
+    if (request.url === "/manual/v1/chat/completions") {
       let body = "";
       request.setEncoding("utf8");
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
-        inferenceModels.push(JSON.parse(body).model);
+        inferenceRequests.push({
+          model: JSON.parse(body).model,
+          authorization: request.headers.authorization,
+          manualHeader: request.headers["x-manual-transport"],
+        });
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         response.write('data: {"id":"chatcmpl-merge","object":"chat.completion.chunk","created":0,"model":"new-live","choices":[{"index":0,"delta":{"role":"assistant","content":"merged-live-ok"},"finish_reason":null}]}\n\n');
         response.write('data: {"id":"chatcmpl-merge","object":"chat.completion.chunk","created":0,"model":"new-live","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
@@ -207,7 +216,7 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
     }
     response.writeHead(404).end();
   });
-  t.after(() => new Promise((resolveClose) => ollama.server.close(resolveClose)));
+  t.after(() => new Promise((resolveClose) => manual.server.close(resolveClose)));
 
   const home = await mkdtemp(join(tmpdir(), "alloy-local-merge-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -215,26 +224,30 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
   const alloyHome = join(home, ".pi", "alloy");
   await mkdir(agentDir, { recursive: true });
   await mkdir(alloyHome, { recursive: true });
-  await writeFile(join(agentDir, "models.json"), JSON.stringify({
-    providers: {
-      ollama: {
-        baseUrl: `${ollama.url}/v1`,
-        api: "openai-completions",
-        apiKey: "ollama",
-        models: [
-          { id: "existing-live", name: "Manual Existing", contextWindow: 65536 },
-          { id: "manual-only", name: "Manual Alias" },
-        ],
-      },
-    },
-  }));
+  await writeFile(join(agentDir, "models.json"), `{
+    // Exercise Pi's canonical commented-JSON loader in the real process.
+    "providers": {
+      "ollama": {
+        "name": "Manual Transport Ollama",
+        "baseUrl": "${manual.url}/manual/v1",
+        "api": "openai-completions",
+        "apiKey": "manual-auth-token",
+        "authHeader": true,
+        "headers": { "X-Manual-Transport": "configured-header" },
+        "models": [
+          { "id": "existing-live", "name": "Manual Existing", "contextWindow": 65536 },
+          { "id": "manual-only", "name": "Manual Alias" }
+        ]
+      }
+    }
+  }`);
 
   const childEnv = {
     ...process.env,
     HOME: home,
     PI_CODING_AGENT_DIR: agentDir,
     ALLOY_HOME: alloyHome,
-    OLLAMA_BASE_URL: ollama.url,
+    OLLAMA_BASE_URL: discovery.url,
   };
   for (const name of [
     "ALLOY_PI_BIN",
@@ -264,7 +277,12 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
   assert.equal(inference.code, 0, inference.stderr);
   assert.match(inference.stdout, /merged-live-ok/);
   assert.equal(inference.stderr, "");
-  assert.deepEqual(inferenceModels, ["new-live"]);
+  assert.deepEqual(inferenceRequests, [{
+    model: "new-live",
+    authorization: "Bearer manual-auth-token",
+    manualHeader: "configured-header",
+  }]);
+  assert.equal(`${result.stdout}${result.stderr}${inference.stdout}${inference.stderr}`.includes("manual-auth-token"), false);
 });
 
 test("disabled discovery preserves a manual models.json provider", async (t) => {

@@ -5,13 +5,14 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamSimple as streamOpenAiCompatible } from "@earendil-works/pi-ai/compat";
-import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const piDist = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
+const modelConfigUrl = pathToFileURL(join(piDist, "core", "model-config.js")).href;
 const localEngines = require(join(root, "lib", "local-engines.mjs"));
 const { loadGlobalConfig } = require(join(root, "lib", "config.mjs"));
 const { getPiAgentDir } = require(join(root, "lib", "paths.mjs"));
@@ -26,7 +27,7 @@ export type LocalEnginesDependencies = {
   discover?: DiscoverFn;
   loadConfig?: () => unknown;
   env?: NodeJS.ProcessEnv;
-  manualProviders?: () => Map<string, ManualProvider>;
+  manualProviders?: () => Map<string, ManualProvider> | undefined | Promise<Map<string, ManualProvider> | undefined>;
 };
 
 function toRegisterModels(models: Array<Record<string, unknown>>) {
@@ -64,7 +65,16 @@ function discoveredModels(value: unknown): Array<Record<string, unknown>> {
 function mergeCompat(base: unknown, override: unknown) {
   const left = objectValue(base);
   const right = objectValue(override);
-  return left || right ? { ...left, ...right } : undefined;
+  if (!right) return left;
+  const merged = { ...left, ...right };
+  for (const key of ["openRouterRouting", "vercelGatewayRouting", "chatTemplateKwargs"]) {
+    const baseNested = objectValue(left?.[key]);
+    const overrideNested = objectValue(right[key]);
+    if (baseNested || overrideNested) {
+      merged[key] = { ...baseNested, ...overrideNested };
+    }
+  }
+  return merged;
 }
 
 function mergeModel(
@@ -162,21 +172,14 @@ function providerHasApiKey(id: string, env: NodeJS.ProcessEnv) {
   return false;
 }
 
-function loadManualProviders() {
+async function loadManualProviders() {
   try {
-    const parsed = JSON.parse(readFileSync(join(getPiAgentDir(), "models.json"), "utf8"));
-    const providers = parsed?.providers;
-    if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
-      return new Map<string, ManualProvider>();
-    }
-    return new Map(
-      Object.entries(providers).filter(
-        (entry): entry is [string, ManualProvider] =>
-          Boolean(entry[0]) && typeof entry[1] === "object" && entry[1] !== null && !Array.isArray(entry[1]),
-      ),
-    );
+    const { ModelConfig } = await import(modelConfigUrl);
+    const config = await ModelConfig.load(join(getPiAgentDir(), "models.json"));
+    if (config.getError()) return undefined;
+    return new Map(config.getProviderIds().map((id: string) => [id, config.getProvider(id)]));
   } catch {
-    return new Map<string, ManualProvider>();
+    return undefined;
   }
 }
 
@@ -187,7 +190,8 @@ export async function registerLocalEngines(
   const discover = dependencies.discover ?? localEngines.discoverLocalEngines;
   const loadConfig = dependencies.loadConfig ?? loadGlobalConfig;
   const env = dependencies.env ?? process.env;
-  const manualProviders = (dependencies.manualProviders ?? loadManualProviders)();
+  const manualProviders = await (dependencies.manualProviders ?? loadManualProviders)();
+  const manualConfigValid = manualProviders !== undefined;
   let bundle;
   try {
     const config = loadConfig();
@@ -226,6 +230,7 @@ export async function registerLocalEngines(
   const unavailable: string[] = [];
   for (const { key, id } of entries) {
     try {
+      if (!manualConfigValid) continue;
       const result = bundle?.[key];
       const manual = manualProviders.get(id);
       const discovered = result?.ok ? discoveredModels(result.models) : [];
@@ -244,7 +249,9 @@ export async function registerLocalEngines(
       const manualAuthHeader = typeof manual?.authHeader === "boolean" ? manual.authHeader : undefined;
       const hasApiKey = Boolean(manualApiKey) || providerHasApiKey(id, env);
       pi.registerProvider(id, {
-        name: DISPLAY[id] || id,
+        name: typeof manual?.name === "string" && manual.name.trim()
+          ? manual.name
+          : DISPLAY[id] || id,
         baseUrl: manualBaseUrl || firstBase,
         apiKey: manualApiKey || providerApiKey(id, env),
         api: manualApi || "openai-completions",
