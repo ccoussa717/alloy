@@ -42,8 +42,9 @@ catalog merely because live discovery failed.
 - For a successful discovery result, convert discovered models to Pi's nested
   model shape, merge them by exact model ID, and overlay matching manual model
   fields.
-- If a manual provider is being merged, call `unregisterProvider(id)` before
-  registering the merged provider. Registration occurs once per provider.
+- Register the merged catalog through Pi's extension layer. Pi composes this
+  layer over `models.json`; no unregister cycle or config-file rewrite is
+  required.
 - Preserve the existing auto-discovered provider defaults when no manual
   provider exists.
 - Keep existing failure isolation: a conflict or registration failure for one
@@ -56,8 +57,8 @@ or Ollama daemon change is introduced.
 
 - Only provider objects and model objects with valid non-empty string IDs
   participate in a merge.
-- Unknown manual fields are preserved so Pi-compatible custom configuration is
-  not silently discarded.
+- Pi-supported manual model metadata and provider transport/auth settings are
+  preserved. Unknown or schema-invalid fields are outside this merge contract.
 - A manual `models` value that is absent or malformed contributes no overrides;
   live discovery may still register normally.
 - Duplicate manual model IDs collapse deterministically, with the last manual
