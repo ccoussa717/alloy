@@ -176,6 +176,7 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
 });
 
 test("real Alloy merges live and manual Ollama catalogs", async (t) => {
+  const inferenceModels = [];
   const ollama = await listen((request, response) => {
     if (request.url === "/api/tags") {
       json(response, { models: [{ name: "existing-live" }, { name: "new-live" }] });
@@ -188,6 +189,19 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
       request.on("end", () => {
         const { name } = JSON.parse(body);
         json(response, { parameters: `num_ctx ${name === "existing-live" ? 8192 : 4096}\n` });
+      });
+      return;
+    }
+    if (request.url === "/v1/chat/completions") {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        inferenceModels.push(JSON.parse(body).model);
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write('data: {"id":"chatcmpl-merge","object":"chat.completion.chunk","created":0,"model":"new-live","choices":[{"index":0,"delta":{"role":"assistant","content":"merged-live-ok"},"finish_reason":null}]}\n\n');
+        response.write('data: {"id":"chatcmpl-merge","object":"chat.completion.chunk","created":0,"model":"new-live","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+        response.end("data: [DONE]\n\n");
       });
       return;
     }
@@ -242,6 +256,15 @@ test("real Alloy merges live and manual Ollama catalogs", async (t) => {
   assert.match(result.stdout, /ollama\s+new-live/);
   assert.match(result.stdout, /ollama\s+manual-only/);
   assert.doesNotMatch(result.stderr, /Failed to load extension|Provider .* error/i);
+
+  const inference = await runAlloy(
+    ["--model", "ollama/new-live", "--no-session", "-p", "hello"],
+    childEnv,
+  );
+  assert.equal(inference.code, 0, inference.stderr);
+  assert.match(inference.stdout, /merged-live-ok/);
+  assert.equal(inference.stderr, "");
+  assert.deepEqual(inferenceModels, ["new-live"]);
 });
 
 test("disabled discovery preserves a manual models.json provider", async (t) => {
