@@ -108,7 +108,7 @@ function releaseFixture(overrides = {}) {
       "@earendil-works/pi-coding-agent": TEST_PI_FORK_URL,
       "@earendil-works/pi-tui": TEST_PI_TUI_FORK_URL,
     },
-    overrides: { "brace-expansion": "5.0.8" },
+    overrides: { "brace-expansion": "5.0.9", undici: "8.10.0" },
     alloy: {
       piFork: {
         version: "0.82.1",
@@ -148,11 +148,19 @@ function releaseFixture(overrides = {}) {
             : TEST_INTEGRITY,
     };
   }
-  packages["node_modules/brace-expansion"] = {
-    version: "5.0.8",
-    resolved: "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.8.tgz",
-    integrity: TEST_INTEGRITY,
-  };
+  for (const [name, version] of Object.entries({
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.5",
+    hono: "4.13.2",
+    "ip-address": "10.5.0",
+    undici: "8.10.0",
+  })) {
+    packages[`node_modules/${name}`] = {
+      version,
+      resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`,
+      integrity: TEST_INTEGRITY,
+    };
+  }
   Object.assign(packages, overrides.packages || {});
   writeFileSync(join(directory, "package.json"), JSON.stringify(pkg));
   writeFileSync(
@@ -471,20 +479,46 @@ globalThis.fetch = async (input, options) => {
     assert.notEqual(run(process.execPath, [script], { cwd: directory }).status, 0);
   });
 
-  it("rejects a vulnerable brace-expansion override or installed node", () => {
+  it("rejects vulnerable dependency overrides or installed nodes", () => {
     const metadata = releaseFixture();
     const packagePath = join(metadata, "package.json");
     const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
-    pkg.overrides["brace-expansion"] = "5.0.7";
+    pkg.overrides["brace-expansion"] = "5.0.8";
     writeFileSync(packagePath, JSON.stringify(pkg));
     assert.notEqual(run(process.execPath, [script], { cwd: metadata }).status, 0);
 
-    const installed = releaseFixture();
-    const lockPath = join(installed, "npm-shrinkwrap.json");
-    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
-    lock.packages["node_modules/brace-expansion"].version = "5.0.7";
-    writeFileSync(lockPath, JSON.stringify(lock));
-    assert.notEqual(run(process.execPath, [script], { cwd: installed }).status, 0);
+    for (const [name, version] of Object.entries({
+      "brace-expansion": "5.0.8",
+      "fast-uri": "3.1.4",
+      hono: "4.12.32",
+      "ip-address": "10.2.0",
+      undici: "8.8.0",
+    })) {
+      const installed = releaseFixture();
+      const lockPath = join(installed, "npm-shrinkwrap.json");
+      const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+      lock.packages[`node_modules/${name}`].version = version;
+      writeFileSync(lockPath, JSON.stringify(lock));
+      assert.notEqual(run(process.execPath, [script], { cwd: installed }).status, 0);
+    }
+
+    const nested = releaseFixture({
+      packages: {
+        "node_modules/example/node_modules/undici": {
+          version: "8.8.0",
+          resolved: "https://registry.npmjs.org/undici/-/undici-8.8.0.tgz",
+          integrity: TEST_INTEGRITY,
+        },
+      },
+    });
+    assert.notEqual(run(process.execPath, [script], { cwd: nested }).status, 0);
+
+    const vulnerableUndici = releaseFixture();
+    const vulnerableUndiciPackagePath = join(vulnerableUndici, "package.json");
+    const vulnerableUndiciPackage = JSON.parse(readFileSync(vulnerableUndiciPackagePath, "utf8"));
+    vulnerableUndiciPackage.overrides.undici = "8.8.0";
+    writeFileSync(vulnerableUndiciPackagePath, JSON.stringify(vulnerableUndiciPackage));
+    assert.notEqual(run(process.execPath, [script], { cwd: vulnerableUndici }).status, 0);
   });
 });
 
