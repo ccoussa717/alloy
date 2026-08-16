@@ -155,6 +155,15 @@ explicit `num_ctx` still takes precedence. When Alloy targets a remote Ollama
 server, set or unset the client variable to match that server rather than a
 different local service.
 
+Context resolution uses explicit model `num_ctx`, then `OLLAMA_CONTEXT_LENGTH`,
+then architecture metadata, and finally Alloy's 128,000-token discovery default.
+
+For Ollama models that report thinking support, Alloy sends `/thinking off` as
+`reasoning_effort: "none"` and passes `low`, `medium`, and `high` through to
+Ollama. Unmapped standard levels such as `minimal` also pass through unchanged;
+whether they work depends on the selected Ollama model and server. Other
+local-engine providers retain conservative reasoning defaults.
+
 No OAuth. Optional keys apply to discovery and inference without being printed.
 For keyless engines, Alloy's internal configuration marker is never sent as an
 `Authorization` header. When an API-key environment variable is set, inference
@@ -189,7 +198,7 @@ endpoint URLs.
 Each engine receives one aggregate probe deadline. Discovery reads at most 4 MiB
 per response and publishes at most 512 models per engine. Ollama metadata
 enrichment stops issuing requests when the engine deadline expires; remaining
-catalog entries retain conservative defaults.
+catalog entries use a 128,000-token context window and 32,768-token output cap.
 
 Use `/providers` for a short status report and `/doctor` for versions, provider
 status, model defaults, economics, Docker, and paths. Neither command prints

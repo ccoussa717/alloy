@@ -10,10 +10,10 @@ and releases use [semantic versioning](https://semver.org/).
 ## [1.1.21] - 2026-08-16
 
 ### Fixed
-- **Local Ollama agents no longer silently run out of context.** Alloy now
-  distinguishes the server's runtime context from a model's architectural
-  maximum, preserves explicit per-model `num_ctx`, and sends Ollama reasoning
-  effort controls including `none`.
+- **Local Ollama agents can now budget against the server's runtime context.**
+  Alloy distinguishes that limit from a model's architectural maximum when an
+  explicit `num_ctx` or matching `OLLAMA_CONTEXT_LENGTH` is available, and sends
+  Ollama reasoning effort controls including `none`.
 
 ## [1.1.20] - 2026-08-15
 
