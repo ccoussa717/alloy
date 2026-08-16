@@ -177,6 +177,15 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
     reasoningEffort: "none",
   });
 
+  for (const level of ["low", "medium", "high"]) {
+    const reasoned = await runAlloy(
+      ["--model", "ollama/ollama-test", "--thinking", level, "--no-session", "-p", "hello"],
+      childEnv,
+    );
+    assert.equal(reasoned.code, 0, reasoned.stderr);
+    assert.equal(inferenceRequests.at(-1).reasoningEffort, level);
+  }
+
   const keyed = await runAlloy(
     ["--model", "ollama/ollama-test", "--no-session", "-p", "hello"],
     { ...childEnv, OLLAMA_API_KEY: "inference-secret" },

@@ -150,7 +150,8 @@ the supported default** - no API keys are required for local engines on
 Ollama does not expose its server-wide default context length through its model
 catalog API. If the Ollama server sets `OLLAMA_CONTEXT_LENGTH`, export the same
 value in Alloy's environment so models without an explicit Modelfile `num_ctx`
-are reported accurately. An explicit `num_ctx` still takes precedence.
+are reported accurately, then restart Alloy to refresh its startup catalog. An
+explicit `num_ctx` still takes precedence.
 
 No OAuth. Optional keys apply to discovery and inference without being printed.
 For keyless engines, Alloy's internal configuration marker is never sent as an

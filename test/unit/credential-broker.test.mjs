@@ -625,7 +625,15 @@ test("isTrustedSessionModelRoute accepts discovered local engines", () => {
 });
 
 test("session credential broker leases local engine access like /model", async () => {
-  const model = localOllamaModel();
+  const model = localOllamaModel({
+    reasoning: true,
+    thinkingLevelMap: {
+      off: "none",
+      low: "low",
+      medium: "medium",
+      high: "high",
+    },
+  });
   const lease = await broker.resolveSessionCredentialLease(["ollama/llama3.2"], {
     find: () => model,
     getApiKeyAndHeaders: async () => ({
@@ -649,7 +657,13 @@ test("session credential broker leases local engine access like /model", async (
     model: {
       id: "llama3.2",
       name: "llama3.2",
-      reasoning: false,
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "none",
+        low: "low",
+        medium: "medium",
+        high: "high",
+      },
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,

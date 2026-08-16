@@ -102,6 +102,7 @@ test("extension load registers catalogs before session_start", async () => {
   assert.equal(registrations[0].id, "ollama");
   assert.equal(registrations[0].cfg.apiKey, "$OLLAMA_API_KEY");
   assert.equal(registrations[0].cfg.models[0].id, "m1");
+  assert.equal(registrations[0].cfg.models[0].contextWindow, 8192);
   assert.deepEqual(registrations[0].cfg.models[0].thinkingLevelMap, {
     off: "none",
     low: "low",
