@@ -3,6 +3,54 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerLocalEngines } from "../../extensions/local-engines.ts";
 
+function fakePi(registrations, unregistrations = [], handlers = new Map()) {
+  return {
+    registerProvider(id, config) { registrations.push({ id, config }); },
+    unregisterProvider(id) { unregistrations.push(id); },
+    on(event, handler) { handlers.set(event, handler); },
+  };
+}
+
+function discoveredModel(id, overrides = {}) {
+  return {
+    id,
+    name: id,
+    api: "openai-completions",
+    provider: "ollama",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 8192,
+    maxTokens: 8192,
+    compat: { supportsDeveloperRole: false },
+    ...overrides,
+  };
+}
+
+function discoveryBundle(ollamaModels, ollama = undefined) {
+  return {
+    ollama: ollama ?? {
+      ok: true,
+      provider: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      models: ollamaModels,
+    },
+    llamaCpp: {
+      ok: false,
+      provider: "llama.cpp-local",
+      baseUrl: "http://127.0.0.1:8080",
+      models: [],
+    },
+    lmStudio: {
+      ok: false,
+      provider: "lm-studio",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      models: [],
+    },
+  };
+}
+
 test("extension load registers catalogs before session_start", async () => {
   const registrations = [];
   const unregistrations = [];
@@ -112,26 +160,96 @@ test("discovery failure leaves hosted extension startup intact", async () => {
   assert.deepEqual(unregistrations, ["ollama", "llama.cpp-local", "lm-studio"]);
 });
 
-test("manual models.json providers take precedence over successful discovery", async () => {
+test("manual Ollama metadata overrides live discovery without hiding new models", async () => {
   const registrations = [];
-  await registerLocalEngines(
-    {
-      registerProvider(id) { registrations.push(id); },
-      unregisterProvider() {},
-      on() {},
-    },
-    {
-      discover: async () => ({
-        ollama: { ok: true, provider: "ollama", baseUrl: "http://127.0.0.1:11434", models: [{ id: "auto" }] },
-        llamaCpp: { ok: false, provider: "llama.cpp-local", baseUrl: "http://127.0.0.1:8080", models: [] },
-        lmStudio: { ok: false, provider: "lm-studio", baseUrl: "http://127.0.0.1:1234/v1", models: [] },
-      }),
+  const manualProviders = new Map([["ollama", {
+    baseUrl: "http://manual.invalid/v1",
+    api: "openai-completions",
+    apiKey: "$MANUAL_OLLAMA_KEY",
+    headers: { "X-Manual": "yes" },
+    authHeader: true,
+    compat: { supportsDeveloperRole: false },
+    models: [
+      { id: "existing", name: "Manual Existing", contextWindow: 65536 },
+      { id: "manual-only", name: "Manual Alias", maxTokens: 2048 },
+    ],
+  }]]);
+
+  await registerLocalEngines(fakePi(registrations), {
+    discover: async () => discoveryBundle([
+      discoveredModel("existing", { contextWindow: 8192 }),
+      discoveredModel("new-live"),
+    ]),
+    loadConfig: () => ({}),
+    manualProviders: () => manualProviders,
+    env: {},
+  });
+
+  const ollama = registrations.find(({ id }) => id === "ollama");
+  assert.deepEqual(ollama.config.models.map(({ id }) => id), [
+    "existing", "new-live", "manual-only",
+  ]);
+  assert.equal(ollama.config.models[0].name, "Manual Existing");
+  assert.equal(ollama.config.models[0].contextWindow, 65536);
+  assert.equal(ollama.config.baseUrl, "http://manual.invalid/v1");
+  assert.equal(ollama.config.apiKey, "$MANUAL_OLLAMA_KEY");
+  assert.deepEqual(ollama.config.headers, { "X-Manual": "yes" });
+  assert.equal(ollama.config.authHeader, true);
+});
+
+test("failed or empty discovery leaves a manual provider registered by Pi", async () => {
+  for (const ollama of [
+    { ok: false, provider: "ollama", baseUrl: "http://127.0.0.1:11434", models: [], error: "offline" },
+    { ok: true, provider: "ollama", baseUrl: "http://127.0.0.1:11434", models: [] },
+  ]) {
+    const registrations = [];
+    const unregistrations = [];
+    const handlers = new Map();
+    await registerLocalEngines(fakePi(registrations, unregistrations, handlers), {
+      discover: async () => discoveryBundle([], ollama),
       loadConfig: () => ({}),
-      manualProviderIds: () => new Set(["ollama"]),
+      manualProviders: () => new Map([["ollama", { models: [{ id: "manual" }] }]]),
       env: {},
-    },
-  );
-  assert.deepEqual(registrations, []);
+    });
+    await handlers.get("session_start")({}, { ui: { setStatus() {} } });
+    assert.equal(registrations.some(({ id }) => id === "ollama"), false);
+    assert.equal(unregistrations.includes("ollama"), false);
+  }
+});
+
+test("discovered order is stable and the last duplicate manual model wins", async () => {
+  const registrations = [];
+  await registerLocalEngines(fakePi(registrations), {
+    discover: async () => discoveryBundle([
+      discoveredModel("first"),
+      discoveredModel("duplicate"),
+      discoveredModel("last"),
+    ]),
+    loadConfig: () => ({}),
+    manualProviders: () => new Map([["ollama", {
+      compat: { supportsDeveloperRole: false, maxTokensField: "max_tokens" },
+      models: [
+        { id: "manual-first", name: "Manual First" },
+        { id: "duplicate", name: "Older Duplicate", compat: { supportsDeveloperRole: true } },
+        { id: "manual-last", name: "Manual Last" },
+        { id: "duplicate", name: "Newest Duplicate", maxTokens: 4096 },
+      ],
+    }]]),
+    env: {},
+  });
+
+  const models = registrations.find(({ id }) => id === "ollama").config.models;
+  assert.deepEqual(models.map(({ id }) => id), [
+    "first", "duplicate", "last", "manual-first", "manual-last",
+  ]);
+  const duplicate = models.find(({ id }) => id === "duplicate");
+  assert.equal(models[0].compat.maxTokensField, "max_tokens");
+  assert.equal(duplicate.name, "Newest Duplicate");
+  assert.equal(duplicate.maxTokens, 4096);
+  assert.deepEqual(duplicate.compat, {
+    supportsDeveloperRole: false,
+    maxTokensField: "max_tokens",
+  });
 });
 
 test("session start moves off a removed local model when a fallback is available", async () => {
