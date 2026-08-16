@@ -147,6 +147,11 @@ the supported default** - no API keys are required for local engines on
 | `llama.cpp-local` | `http://127.0.0.1:8080` | `LLAMA_CPP_BASE_URL`, then `LLAMA_BASE_URL`; optional `LLAMA_CPP_API_KEY`, then `LLAMA_API_KEY` |
 | `lm-studio` | `http://127.0.0.1:1234/v1` | `LM_STUDIO_BASE_URL`; optional `LM_STUDIO_API_KEY` |
 
+Ollama does not expose its server-wide default context length through its model
+catalog API. If the Ollama server sets `OLLAMA_CONTEXT_LENGTH`, export the same
+value in Alloy's environment so models without an explicit Modelfile `num_ctx`
+are reported accurately. An explicit `num_ctx` still takes precedence.
+
 No OAuth. Optional keys apply to discovery and inference without being printed.
 For keyless engines, Alloy's internal configuration marker is never sent as an
 `Authorization` header. When an API-key environment variable is set, inference
