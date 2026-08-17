@@ -47,14 +47,14 @@ isolation and Docker for stronger containment.
 | Release installs different code | Exact dependencies, release-included shrinkwrap, packed-artifact test, npm provenance | GitHub Actions |
 | Secret enters source or history | Full-tree and full-history signature gate | security CI |
 | Fission reads a hostile repository | Operator trust prerequisite; hostile repositories are outside the product boundary | Fission trust and packet tests |
+| Fission child escapes review evidence | Read-only tools confined to the immutable packet root | Fission workflow tests |
+| Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
+| Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
 
 Fusion's provider lease is resolved through Pi at child launch, then passed to
 the isolated child as a static, provider-scoped credential. The child does not
 receive the parent's OAuth refresh token or credential store, so a token that
 expires during a routed child run is not refreshed inside that child.
-| Fission child escapes review evidence | Read-only tools confined to the immutable packet root | Fission workflow tests |
-| Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
-| Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
 
 ## Credentials
 

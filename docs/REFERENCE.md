@@ -122,6 +122,8 @@ resolve configured hosted providers through Pi. Expired access tokens refresh
 automatically, while a timeout or provider outage reports an unavailable check
 instead of instructing the user to replace valid credentials. A definitively
 rejected refresh authorization reports that the provider must be reconnected.
+Because Pi's refresh may still be holding its credential lock after Alloy's
+diagnostic timeout, wait for the check to finish or restart Alloy before retrying.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting

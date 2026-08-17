@@ -60,11 +60,14 @@ test("provider diagnostics drive Pi native OAuth refresh and persistence", async
     },
   }));
   t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
-    access_token: "refreshed-access-SECRET_MUST_NOT_APPEAR",
-    refresh_token: "rotated-refresh-SECRET_MUST_NOT_APPEAR",
-    expires_in: 3_600,
-  }), { status: 200 }));
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.equal(url, "https://platform.claude.com/v1/oauth/token");
+    return new Response(JSON.stringify({
+      access_token: "refreshed-access-SECRET_MUST_NOT_APPEAR",
+      refresh_token: "rotated-refresh-SECRET_MUST_NOT_APPEAR",
+      expires_in: 3_600,
+    }), { status: 200 });
+  });
 
   const runtime = await ModelRuntime.create({
     authPath,
@@ -140,8 +143,27 @@ test("provider diagnostics request re-login for a definitively rejected refresh 
   assert.match(xai.detail, /sign in again/i);
   assert.doesNotMatch(JSON.stringify(xai), /invalid_grant|SECRET_MUST_NOT_APPEAR/);
   assert.deepEqual(providerAuthGuidance([xai]).lines, [
-    "Run /login to reconnect 1 provider whose stored authorization was rejected.",
+    "Run /login xai to reconnect xAI (Grok); its stored authorization was rejected.",
   ]);
+});
+
+test("provider diagnostics do not treat provider 403 responses as rejected OAuth", async () => {
+  const [anthropic] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+    async getProviderAuth() {
+      throw new Error("HTTP 403: extra usage quota exhausted");
+    },
+  }, [{
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    status: "refreshable",
+    detail: "stored OAuth",
+    loginHint: "/login",
+    ok: false,
+  }]);
+
+  assert.equal(anthropic.status, "unavailable");
+  assert.doesNotMatch(anthropic.detail, /login|sign in/i);
 });
 
 test("provider diagnostics share an in-flight Pi auth refresh", async () => {
@@ -230,6 +252,23 @@ test("provider diagnostics classify Pi runtime keys as API keys", async () => {
   assert.equal(xai.status, "api_key");
 });
 
+test("Pi runtime auth source overrides stale raw OAuth metadata", async () => {
+  const [xai] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: true, source: "runtime" }),
+    getProviderAuth: async () => ({ auth: { apiKey: "synthetic" }, source: "runtime API key" }),
+  }, [{
+    id: "xai",
+    label: "xAI (Grok)",
+    status: "refreshable",
+    detail: "stale stored OAuth",
+    loginHint: "/login xai",
+    ok: false,
+  }]);
+
+  assert.equal(xai.status, "api_key");
+  assert.doesNotMatch(xai.detail, /OAuth|refreshes/i);
+});
+
 test("provider diagnostics bound stalled Pi auth resolution", async () => {
   const started = Date.now();
   const [xai] = await diagnoseProvidersWithPiAuth({
@@ -245,7 +284,10 @@ test("provider diagnostics bound stalled Pi auth resolution", async () => {
   }], 10);
 
   assert.equal(xai.ok, false);
-  assert.equal(xai.status, "unavailable");
+  assert.equal(xai.status, "timed_out");
+  assert.deepEqual(providerAuthGuidance([xai]).lines, [
+    "Pi auth timed out for xAI (Grok); wait for the check to finish or restart Alloy before retrying /doctor.",
+  ]);
   assert.ok(Date.now() - started < 1_000);
 });
 
@@ -323,6 +365,7 @@ test("provider guidance preserves both login and retry actions for mixed failure
     needsLogin: 1,
     needsReauth: 0,
     unavailable: 1,
+    timedOut: 0,
     lines: [
       "Run /login to connect 1 missing provider.",
       "Retry /doctor for 1 unavailable provider auth check.",

@@ -62,10 +62,17 @@ const inFlightAuthResolutions = new WeakMap<
   Map<string, Promise<ProviderAuthResolution>>
 >();
 
+class AuthDiagnosticTimeoutError extends Error {
+  constructor() {
+    super("Pi auth diagnostic timed out");
+    this.name = "AuthDiagnosticTimeoutError";
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("Pi auth diagnostic timed out")),
+      () => reject(new AuthDiagnosticTimeoutError()),
       timeoutMs,
     );
     promise.then(
@@ -107,12 +114,18 @@ function resolveProviderAuth(
 function authRequiresLogin(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; current && depth < 4; depth++) {
+    const code = typeof current === "object" && current !== null && "code" in current
+      ? String(current.code)
+      : "";
     const message = current instanceof Error
       ? current.message
       : typeof current === "string"
         ? current
         : "";
-    if (/invalid_grant|refresh token.*(?:expired|invalid|revoked)|\b(?:401|403)\b|unauthori[sz]ed/i.test(message)) {
+    if (
+      code.toLowerCase() === "invalid_grant" ||
+      /\binvalid_grant\b|refresh token.{0,80}\b(?:expired|invalid|revoked)\b/i.test(message)
+    ) {
       return true;
     }
     current = current instanceof Error ? current.cause : undefined;
@@ -151,37 +164,46 @@ export async function diagnoseProvidersWithPiAuth(
         };
       }
       const source = resolved.source?.toLowerCase() ?? "";
-      const oauth =
-        source.includes("oauth") ||
-        result.status === "subscription" ||
-        result.status === "refreshable";
       const apiKey =
         ["runtime", "fallback", "models_json_key", "models_json_command"].includes(
           configured.source ?? "",
         ) ||
         result.status === "api_key" ||
-        source.includes("api key");
+        source.includes("api key") ||
+        source.includes("runtime");
+      const oauth =
+        source.includes("oauth") ||
+        (!source && !apiKey && (
+          result.status === "subscription" || result.status === "refreshable"
+        ));
       return {
         ...result,
-        status: oauth
-          ? "subscription"
-          : configured.source === "environment"
+        status: configured.source === "environment"
             ? "env"
             : apiKey
               ? "api_key"
-              : "unknown",
+              : oauth
+                ? "subscription"
+                : "unknown",
         detail: `Pi native auth resolved ${oauth ? "OAuth" : "provider credentials"}${oauth ? " and refreshes it automatically" : ""}`,
         ok: true,
         freshness: undefined,
       };
     } catch (error) {
+      const timedOut = error instanceof AuthDiagnosticTimeoutError;
       const reauthRequired = authRequiresLogin(error);
       return {
         ...result,
-        status: reauthRequired ? "reauth_required" : "unavailable",
-        detail: reauthRequired
-          ? "Pi rejected the stored authorization; sign in again with /login"
-          : "Pi native auth check was unavailable; retry /doctor before changing credentials",
+        status: timedOut
+          ? "timed_out"
+          : reauthRequired
+            ? "reauth_required"
+            : "unavailable",
+        detail: timedOut
+          ? "Pi native auth check timed out; wait for it to finish or restart Alloy before retrying /doctor"
+          : reauthRequired
+            ? `Pi rejected the stored authorization; sign in again with ${result.loginHint}`
+            : "Pi native auth check was unavailable; retry /doctor before changing credentials",
         ok: false,
         freshness: undefined,
       };
@@ -190,8 +212,8 @@ export async function diagnoseProvidersWithPiAuth(
 }
 
 export function providerAuthGuidance(
-  results: ReadonlyArray<Pick<ProviderDiagnostic, "status">>,
-): { needsLogin: number; needsReauth: number; unavailable: number; lines: string[] } {
+  results: ReadonlyArray<Pick<ProviderDiagnostic, "status"> & Partial<Pick<ProviderDiagnostic, "label" | "loginHint">>>,
+): { needsLogin: number; needsReauth: number; unavailable: number; timedOut: number; lines: string[] } {
   const needsLogin = results.filter(
     (result) => result.status === "missing" || result.status === "expired",
   ).length;
@@ -201,15 +223,18 @@ export function providerAuthGuidance(
   const unavailable = results.filter(
     (result) => result.status === "unavailable",
   ).length;
+  const timedOutResults = results.filter(
+    (result) => result.status === "timed_out",
+  );
   const lines: string[] = [];
   if (needsLogin) {
     lines.push(
       `Run /login to connect ${needsLogin} missing provider${needsLogin === 1 ? "" : "s"}.`,
     );
   }
-  if (needsReauth) {
+  for (const result of results.filter((entry) => entry.status === "reauth_required")) {
     lines.push(
-      `Run /login to reconnect ${needsReauth} provider${needsReauth === 1 ? "" : "s"} whose stored authorization was rejected.`,
+      `Run ${result.loginHint ?? "/login"} to reconnect ${result.label ?? "the provider"}; its stored authorization was rejected.`,
     );
   }
   if (unavailable) {
@@ -217,7 +242,12 @@ export function providerAuthGuidance(
       `Retry /doctor for ${unavailable} unavailable provider auth check${unavailable === 1 ? "" : "s"}.`,
     );
   }
-  return { needsLogin, needsReauth, unavailable, lines };
+  for (const result of timedOutResults) {
+    lines.push(
+      `Pi auth timed out for ${result.label ?? "a provider"}; wait for the check to finish or restart Alloy before retrying /doctor.`,
+    );
+  }
+  return { needsLogin, needsReauth, unavailable, timedOut: timedOutResults.length, lines };
 }
 
 export function withClaudeOpus5(anthropic: Provider): Provider {
