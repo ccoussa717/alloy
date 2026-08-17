@@ -193,6 +193,7 @@ test("real Pi migrates local discovery and persists requested Ollama stream usag
   const persistedAssistant = sessionEntries.findLast(
     (entry) => entry.type === "message" && entry.message?.role === "assistant",
   );
+  assert.ok(persistedAssistant, "expected the Ollama assistant response to be persisted");
   assert.equal(persistedAssistant.message.usage.input, 1);
   assert.equal(persistedAssistant.message.usage.output, 1);
   assert.equal(persistedAssistant.message.usage.totalTokens, 2);
@@ -217,7 +218,6 @@ test("real Pi migrates local discovery and persists requested Ollama stream usag
 
 test("persisted Ollama usage drives Pi compaction before context exhaustion", async (t) => {
   const inferenceRequests = [];
-  let normalRequests = 0;
   const firstPrompt = "First turn contains enough words to create a compactable history boundary.";
   const secondPrompt = "Second turn also contains enough words to preserve while the first turn is summarized.";
   const thirdPrompt = "Third turn must be sent only after the persisted usage triggers compaction.";
@@ -238,14 +238,14 @@ test("persisted Ollama usage drives Pi compaction before context exhaustion", as
         const payload = JSON.parse(body);
         const userContent = payload.messages.findLast((message) => message.role === "user")?.content;
         const directUserText = typeof userContent === "string"
-          ? userContent
+          ? userContent.trim()
           : Array.isArray(userContent)
-            ? userContent.map((part) => part?.text || "").join("")
+            ? userContent.map((part) => part?.text || "").join("").trim()
             : "";
         const summarizing = ![firstPrompt, secondPrompt, thirdPrompt].includes(directUserText);
         inferenceRequests.push({ payload, directUserText, summarizing });
-        if (!summarizing) normalRequests += 1;
-        const content = summarizing ? "compact-summary" : `turn-${normalRequests}`;
+        const content = summarizing ? "compact-summary" : "turn-ok";
+        // 3800 + the 1024-token reserve exceeds the 4096-token test context.
         const promptTokens = directUserText === secondPrompt ? 3800 : 100;
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         response.write(`data: {"id":"chatcmpl-compact","object":"chat.completion.chunk","created":0,"model":"compact-test","choices":[{"index":0,"delta":{"role":"assistant","content":"${content}"},"finish_reason":null}]}\n\n`);
@@ -329,8 +329,15 @@ test("persisted Ollama usage drives Pi compaction before context exhaustion", as
   assert.ok(inferenceRequests.every(({ payload }) => payload.stream_options?.include_usage === true));
   const summaryIndex = inferenceRequests.findIndex(({ summarizing }) => summarizing);
   const thirdTurnIndex = inferenceRequests.findIndex(({ directUserText }) => directUserText === thirdPrompt);
-  assert.ok(summaryIndex >= 0);
-  assert.ok(thirdTurnIndex > summaryIndex);
+  const observedUserText = inferenceRequests.map(({ directUserText }) => directUserText);
+  assert.ok(summaryIndex >= 0, `expected summarization request; observed: ${JSON.stringify(observedUserText)}`);
+  assert.ok(
+    thirdTurnIndex > summaryIndex,
+    `expected compaction before turn three; observed: ${JSON.stringify(observedUserText)}`,
+  );
+  const thirdTurnMessages = JSON.stringify(inferenceRequests[thirdTurnIndex].payload.messages);
+  assert.match(thirdTurnMessages, /compact-summary/);
+  assert.equal(thirdTurnMessages.includes(firstPrompt), false);
 
   const entries = (await readFile(sessionPath, "utf8"))
     .trim()
