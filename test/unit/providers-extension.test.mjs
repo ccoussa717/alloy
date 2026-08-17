@@ -147,11 +147,33 @@ test("provider diagnostics request re-login for a definitively rejected refresh 
   ]);
 });
 
-test("provider diagnostics do not treat provider 403 responses as rejected OAuth", async () => {
+test("provider diagnostics classify quota failures without requesting login", async () => {
   const [anthropic] = await diagnoseProvidersWithPiAuth({
     getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
     async getProviderAuth() {
       throw new Error("HTTP 403: extra usage quota exhausted");
+    },
+  }, [{
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    status: "refreshable",
+    detail: "stored OAuth",
+    loginHint: "/login",
+    ok: false,
+  }]);
+
+  assert.equal(anthropic.status, "quota_exhausted");
+  assert.doesNotMatch(anthropic.detail, /login|sign in/i);
+  assert.deepEqual(providerAuthGuidance([anthropic]).lines, [
+    "Anthropic (Claude) is out of quota; wait for the usage window or change the provider plan.",
+  ]);
+});
+
+test("provider diagnostics keep an unrelated 403 unavailable rather than requesting login", async () => {
+  const [anthropic] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+    async getProviderAuth() {
+      throw new Error("HTTP 403 Forbidden");
     },
   }, [{
     id: "anthropic",
@@ -269,6 +291,25 @@ test("Pi runtime auth source overrides stale raw OAuth metadata", async () => {
   assert.doesNotMatch(xai.detail, /OAuth|refreshes/i);
 });
 
+test("Pi stored API key type overrides stale raw environment metadata", async () => {
+  const [anthropic] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+    getAll: () => [{ provider: "anthropic" }],
+    isUsingOAuth: () => false,
+    getProviderAuth: async () => ({ auth: { apiKey: "synthetic" }, source: "stored credential" }),
+  }, [{
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    status: "env",
+    detail: "environment key",
+    loginHint: "/login",
+    ok: true,
+  }]);
+
+  assert.equal(anthropic.status, "api_key");
+  assert.doesNotMatch(anthropic.detail, /OAuth|refreshes/i);
+});
+
 test("provider diagnostics bound stalled Pi auth resolution", async () => {
   const started = Date.now();
   const [xai] = await diagnoseProvidersWithPiAuth({
@@ -366,6 +407,7 @@ test("provider guidance preserves both login and retry actions for mixed failure
     needsReauth: 0,
     unavailable: 1,
     timedOut: 0,
+    quotaExhausted: 0,
     lines: [
       "Run /login to connect 1 missing provider.",
       "Retry /doctor for 1 unavailable provider auth check.",

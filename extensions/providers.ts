@@ -50,7 +50,7 @@ type ProviderDiagnostic = {
 type PiAuthRegistry = Pick<
   ModelRegistry,
   "getProviderAuthStatus" | "getProviderAuth"
->;
+> & Partial<Pick<ModelRegistry, "getAll" | "isUsingOAuth">>;
 
 type ProviderAuthResolution = Awaited<
   ReturnType<PiAuthRegistry["getProviderAuth"]>
@@ -133,6 +133,22 @@ function authRequiresLogin(error: unknown): boolean {
   return false;
 }
 
+function authQuotaExhausted(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === "string"
+        ? current
+        : "";
+    if (/\b(?:quota|usage limit|extra usage|billing limit)\b/i.test(message)) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export async function diagnoseProvidersWithPiAuth(
   modelRegistry: PiAuthRegistry,
   rawResults: ProviderDiagnostic[] = diagnoseProviders(),
@@ -164,16 +180,24 @@ export async function diagnoseProvidersWithPiAuth(
         };
       }
       const source = resolved.source?.toLowerCase() ?? "";
+      const providerModel = modelRegistry.getAll?.().find(
+        (model) => model.provider === result.id,
+      );
+      const piOAuth = providerModel && modelRegistry.isUsingOAuth
+        ? modelRegistry.isUsingOAuth(providerModel)
+        : undefined;
       const apiKey =
         ["runtime", "fallback", "models_json_key", "models_json_command"].includes(
           configured.source ?? "",
         ) ||
+        (configured.source === "stored" && piOAuth === false) ||
         result.status === "api_key" ||
         source.includes("api key") ||
         source.includes("runtime");
       const oauth =
-        source.includes("oauth") ||
-        (!source && !apiKey && (
+        piOAuth === true ||
+        (piOAuth === undefined && source.includes("oauth")) ||
+        (piOAuth === undefined && !source && !apiKey && (
           result.status === "subscription" || result.status === "refreshable"
         ));
       return {
@@ -192,18 +216,23 @@ export async function diagnoseProvidersWithPiAuth(
     } catch (error) {
       const timedOut = error instanceof AuthDiagnosticTimeoutError;
       const reauthRequired = authRequiresLogin(error);
+      const quotaExhausted = authQuotaExhausted(error);
       return {
         ...result,
         status: timedOut
           ? "timed_out"
           : reauthRequired
             ? "reauth_required"
-            : "unavailable",
+            : quotaExhausted
+              ? "quota_exhausted"
+              : "unavailable",
         detail: timedOut
           ? "Pi native auth check timed out; wait for it to finish or restart Alloy before retrying /doctor"
           : reauthRequired
             ? `Pi rejected the stored authorization; sign in again with ${result.loginHint}`
-            : "Pi native auth check was unavailable; retry /doctor before changing credentials",
+            : quotaExhausted
+              ? "Provider quota is exhausted; wait for the usage window or change the provider plan"
+              : "Pi native auth check was unavailable; retry /doctor before changing credentials",
         ok: false,
         freshness: undefined,
       };
@@ -213,7 +242,7 @@ export async function diagnoseProvidersWithPiAuth(
 
 export function providerAuthGuidance(
   results: ReadonlyArray<Pick<ProviderDiagnostic, "status"> & Partial<Pick<ProviderDiagnostic, "label" | "loginHint">>>,
-): { needsLogin: number; needsReauth: number; unavailable: number; timedOut: number; lines: string[] } {
+): { needsLogin: number; needsReauth: number; unavailable: number; timedOut: number; quotaExhausted: number; lines: string[] } {
   const needsLogin = results.filter(
     (result) => result.status === "missing" || result.status === "expired",
   ).length;
@@ -225,6 +254,9 @@ export function providerAuthGuidance(
   ).length;
   const timedOutResults = results.filter(
     (result) => result.status === "timed_out",
+  );
+  const quotaResults = results.filter(
+    (result) => result.status === "quota_exhausted",
   );
   const lines: string[] = [];
   if (needsLogin) {
@@ -247,7 +279,19 @@ export function providerAuthGuidance(
       `Pi auth timed out for ${result.label ?? "a provider"}; wait for the check to finish or restart Alloy before retrying /doctor.`,
     );
   }
-  return { needsLogin, needsReauth, unavailable, timedOut: timedOutResults.length, lines };
+  for (const result of quotaResults) {
+    lines.push(
+      `${result.label ?? "A provider"} is out of quota; wait for the usage window or change the provider plan.`,
+    );
+  }
+  return {
+    needsLogin,
+    needsReauth,
+    unavailable,
+    timedOut: timedOutResults.length,
+    quotaExhausted: quotaResults.length,
+    lines,
+  };
 }
 
 export function withClaudeOpus5(anthropic: Provider): Provider {
