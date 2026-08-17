@@ -40,7 +40,7 @@ isolation and Docker for stronger containment.
 | MCP bypasses policy | Native and MCP tools share the same gate | MCP and policy tests |
 | Child exceeds parent | Mechanical child policy manifest and enforcer | child-policy tests |
 | Required sandbox falls back to host | Docker path fails closed | Docker integration test |
-| Child inherits broad credentials | Provider keys stripped from env; isolated home; Fusion leases only the selected provider | child-runner and credential-broker tests |
+| Child inherits broad credentials | Provider keys stripped from env; isolated home; routed children receive only the selected provider credential over stdin | child-runner and credential-broker tests |
 | Checkpoint path escape or clobber | Authenticated anchors, containment checks, collision preflight | checkpoint tests |
 | Worktree escapes managed root | Canonical containment and hardened removal | worktree tests |
 | Doctor leaks credentials | Pi-backed resolution with redacted status only; never values | provider tests |
@@ -51,10 +51,11 @@ isolation and Docker for stronger containment.
 | Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
 | Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
 
-Fusion's provider lease is resolved through Pi at child launch, then passed to
-the isolated child as a static, provider-scoped credential. The child does not
-receive the parent's OAuth refresh token or credential store, so a token that
-expires during a routed child run is not refreshed inside that child.
+A routed child's provider lease is resolved through Pi at launch, then passed to
+the isolated child over stdin as a static, provider-scoped credential and
+registered in runtime memory. The child does not receive the parent's OAuth
+refresh token or credential store, so a token that expires during the run is not
+refreshed inside that child.
 
 ## Credentials
 
@@ -62,15 +63,13 @@ Pi owns interactive provider authentication. Alloy does not copy the host's Pi
 authentication into child homes by default. Child processes receive an
 allowlisted environment with known provider credential variables removed.
 
-Fusion is the narrow exception to credential-free child homes. For each role,
-Alloy selects only the provider entry required by that configured model and
-writes it to the child's ephemeral `auth.json` with mode `0600`. Environment-key
-references must resolve before a lease is valid. The broker payload stays in
-memory until child provisioning and must not be logged, prompted, or persisted
-in Fusion artifacts. Fusion policy manifests mechanically confine `read`,
-`grep`, `find`, and `ls` to the canonical repository root, including realpath
-checks that block symlink escapes, so model tools cannot read the lease or host
-credential paths.
+Routed children are the narrow exception to credential-free child runtimes. For
+each launch, Alloy selects only the provider credential required by the chosen
+model, passes it in a bounded envelope over child stdin, and registers it in the
+child runtime without writing an `auth.json`. Environment-key references must
+resolve before a lease is valid. The broker payload stays in memory and must not
+be logged, prompted, or persisted in workflow artifacts. Each child policy
+manifest still enforces that role's tool, mode, sandbox, and read-root limits.
 
 Remote MCP headers can expand environment variables from `~/.pi/alloy/env`.
 That file must be a regular file owned by the current user with mode `0600` and
@@ -122,7 +121,7 @@ all incomplete evidence, identity, cost, adjudication, and drift paths are
 |---|---|---|
 | Provider keys absent from child env | Yes | Yes |
 | Host Pi auth copied by default | No | No |
-| Fusion selected-provider lease | Ephemeral child `auth.json` only | Ephemeral child `auth.json` only |
+| Routed selected-provider credential | Child runtime memory only | Child runtime memory only |
 | Arbitrary same-user host paths blocked | No | Yes, outside mounts |
 | Network blocked by default | No | Yes |
 | Linux capabilities dropped | No | Yes |

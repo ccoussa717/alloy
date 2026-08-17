@@ -521,7 +521,7 @@ Alloy treats safety as state enforced by code, not a sentence in a prompt.
 | **Plan and Review** | Model tool calls are hard read-only: no bash, edits, writes, or MCP calls. Operator-invoked slash commands remain an explicit control plane. |
 | **Default approvals** | `ask-dangerous` prompts for known dangerous shell patterns, destructive Git, MCP, and tools classified as network or external actions. |
 | **Child policy ceiling** | Child manifests constrain approval profile, sandbox requirement, tools, budget, and concurrency. Model child-tool calls are denied in read-only modes; operator-invoked Auto explicitly launches Build roles and confirms first when interactive. |
-| **Credential boundary** | Child environments are allowlisted; Fusion leases only the selected provider credential into an ephemeral home. |
+| **Credential boundary** | Child environments are allowlisted; routed children receive only the selected provider credential over stdin, registered in child runtime memory. |
 | **Fission evidence** | Trusted-repository review is confined to a bounded immutable packet; exact routes, model identity, output size, usage, and source drift fail closed. |
 | **Project trust** | Project config cannot weaken the operator approval profile, global sandbox controls, MCP enablement, or budget ceilings. |
 | **Docker Bash sandbox** | Optional `network=none` container with dropped Linux capabilities and a mounted workspace; fails closed if required but unavailable. |

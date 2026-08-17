@@ -124,6 +124,12 @@ instead of instructing the user to replace valid credentials. A definitively
 rejected refresh authorization reports that the provider must be reconnected.
 Because Pi's refresh may still be holding its credential lock after Alloy's
 diagnostic timeout, wait for the check to finish or restart Alloy before retrying.
+Hosted-provider rows use these literal failure statuses: `missing` when no Pi
+authentication source is configured, `reauth_required` when the provider rejects
+the stored authorization, `timed_out` when resolution exceeds the diagnostic
+deadline, `quota_exhausted` for usage or billing limits, and `unavailable` for
+other temporary resolution failures. Resolved rows report `subscription`,
+`api_key`, `env`, or `unknown` according to Pi's active authentication source.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting
