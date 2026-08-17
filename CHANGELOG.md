@@ -7,6 +7,15 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.24] - 2026-08-16
+
+### Fixed
+- **Claude and Grok OAuth refresh no longer loops back to login.** `/doctor`
+  and `/providers` now use Pi's native auth resolver, which refreshes and
+  persists expired OAuth credentials under Pi's credential lock. Temporary
+  provider failures report retry guidance instead of claiming credentials
+  expired, while startup remains network-free.
+
 ## [1.1.23] - 2026-08-16
 
 ### Fixed

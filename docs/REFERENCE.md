@@ -114,6 +114,11 @@ Pi owns provider authentication and stores credentials in
 connects one selected provider at a time. Run it again for each additional
 provider; `/login xai` selects the Grok route directly. Provider choices show
 green `configured` or gray `not configured` status.
+The OpenTUI command adapts Pi's native auth interaction; Pi owns OAuth exchange,
+refresh, token rotation, locking, and persistence. `/doctor` and `/providers`
+resolve configured hosted providers through Pi. Expired access tokens refresh
+automatically, while a timeout or provider outage reports an unavailable check
+instead of instructing the user to replace valid credentials.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting
@@ -173,8 +178,9 @@ and had usable models at startup (llama.cpp: loaded models when status is
 advertised). Start engines before Alloy, or restart Alloy after `ollama pull` or
 a llama model load. Pi's native `llama.cpp` id and `/llama` command remain
 separate; Alloy uses `llama.cpp-local` to avoid replacing Pi's provider runtime.
-`/doctor` re-probes reachability and model counts but does not mutate the active
-session catalog.
+`/doctor` re-probes local reachability and model counts without mutating the
+active session catalog. Hosted-provider checks may persist a refreshed OAuth
+credential through Pi's native auth store.
 
 Disable all probes with `"providers": { "local": { "enabled": false } }`.
 Removing a local provider id from `providers.allow` disables its probe and hides
@@ -661,9 +667,13 @@ package root. It is runtime information, not a supported user override.
 
 ## Troubleshooting
 
-### A provider is missing or expired
+### A provider is missing, unavailable, or out of quota
 
-Run `/doctor`, then reconnect only that route with `/login` or `/login xai`.
+Run `/doctor`. Pi refreshes expired OAuth credentials automatically. Use `/login`
+or `/login xai` only when the route is missing or Pi confirms it cannot resolve a
+stored credential. If the check is unavailable, retry it without replacing the
+credential. Provider quota or extra-usage errors require waiting for the quota
+window or changing the provider plan; signing in again does not fix them.
 API keys do not authenticate `openai-codex/...`; that route uses ChatGPT/Codex
 subscription authentication.
 
