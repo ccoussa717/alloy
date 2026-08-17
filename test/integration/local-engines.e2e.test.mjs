@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -69,7 +69,7 @@ function runAlloy(args, env) {
   });
 }
 
-test("real Pi migrates the generated hosted-only allowlist before local discovery", async (t) => {
+test("real Pi migrates local discovery and persists requested Ollama stream usage", async (t) => {
   const inferenceRequests = [];
   const ollama = await listen((request, response) => {
     if (request.url === "/api/tags") {
@@ -89,10 +89,15 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
         inferenceRequests.push({
           authorization: request.headers.authorization,
           reasoningEffort: payload.reasoning_effort,
+          streamUsage: payload.stream_options?.include_usage,
         });
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[{"index":0,"delta":{"role":"assistant","content":"local-ok"},"finish_reason":null}]}\n\n');
-        response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+        response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n');
+        // Ollama 0.32.13 emits requested usage in a separate terminal chunk.
+        if (payload.stream_options?.include_usage === true) {
+          response.write('data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"ollama-test","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n');
+        }
         response.end("data: [DONE]\n\n");
       });
       return;
@@ -167,7 +172,7 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
   assert.doesNotMatch(result.stderr, /Failed to load extension|Provider .* error/i);
 
   const keyless = await runAlloy(
-    ["--model", "ollama/ollama-test", "--thinking", "off", "--no-session", "-p", "hello"],
+    ["--model", "ollama/ollama-test", "--thinking", "off", "-p", "hello"],
     childEnv,
   );
   assert.equal(keyless.code, 0, keyless.stderr);
@@ -175,7 +180,23 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
   assert.deepEqual(inferenceRequests.at(-1), {
     authorization: undefined,
     reasoningEffort: "none",
+    streamUsage: true,
   });
+  const sessionRoot = join(agentDir, "sessions");
+  const sessionFiles = (await readdir(sessionRoot, { recursive: true }))
+    .filter((entry) => entry.endsWith(".jsonl"));
+  assert.equal(sessionFiles.length, 1);
+  const sessionEntries = (await readFile(join(sessionRoot, sessionFiles[0]), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const persistedAssistant = sessionEntries.findLast(
+    (entry) => entry.type === "message" && entry.message?.role === "assistant",
+  );
+  assert.ok(persistedAssistant, "expected the Ollama assistant response to be persisted");
+  assert.equal(persistedAssistant.message.usage.input, 1);
+  assert.equal(persistedAssistant.message.usage.output, 1);
+  assert.equal(persistedAssistant.message.usage.totalTokens, 2);
 
   for (const level of ["low", "medium", "high"]) {
     const reasoned = await runAlloy(
@@ -193,6 +214,138 @@ test("real Pi migrates the generated hosted-only allowlist before local discover
   assert.equal(keyed.code, 0, keyed.stderr);
   assert.match(keyed.stdout, /local-ok/);
   assert.equal(inferenceRequests.at(-1).authorization, "Bearer inference-secret");
+});
+
+test("persisted Ollama usage drives Pi compaction before context exhaustion", async (t) => {
+  const inferenceRequests = [];
+  const firstPrompt = "First turn contains enough words to create a compactable history boundary.";
+  const secondPrompt = "Second turn also contains enough words to preserve while the first turn is summarized.";
+  const thirdPrompt = "Third turn must be sent only after the persisted usage triggers compaction.";
+  const ollama = await listen((request, response) => {
+    if (request.url === "/api/tags") {
+      json(response, { models: [{ name: "compact-test" }] });
+      return;
+    }
+    if (request.url === "/api/show") {
+      json(response, { capabilities: ["completion"], parameters: "num_ctx 4096\n" });
+      return;
+    }
+    if (request.url === "/v1/chat/completions") {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const payload = JSON.parse(body);
+        const userContent = payload.messages.findLast((message) => message.role === "user")?.content;
+        const directUserText = typeof userContent === "string"
+          ? userContent.trim()
+          : Array.isArray(userContent)
+            ? userContent.map((part) => part?.text || "").join("").trim()
+            : "";
+        const summarizing = ![firstPrompt, secondPrompt, thirdPrompt].includes(directUserText);
+        inferenceRequests.push({ payload, directUserText, summarizing });
+        const content = summarizing ? "compact-summary" : "turn-ok";
+        // 3800 + the 1024-token reserve exceeds the 4096-token test context.
+        const promptTokens = directUserText === secondPrompt ? 3800 : 100;
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write(`data: {"id":"chatcmpl-compact","object":"chat.completion.chunk","created":0,"model":"compact-test","choices":[{"index":0,"delta":{"role":"assistant","content":"${content}"},"finish_reason":null}]}\n\n`);
+        response.write('data: {"id":"chatcmpl-compact","object":"chat.completion.chunk","created":0,"model":"compact-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n');
+        if (payload.stream_options?.include_usage === true) {
+          response.write(`data: {"id":"chatcmpl-compact","object":"chat.completion.chunk","created":0,"model":"compact-test","choices":[],"usage":{"prompt_tokens":${promptTokens},"completion_tokens":1,"total_tokens":${promptTokens + 1}}}\n\n`);
+        }
+        response.end("data: [DONE]\n\n");
+      });
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  t.after(() => new Promise((resolveClose) => ollama.server.close(resolveClose)));
+
+  const home = await mkdtemp(join(tmpdir(), "alloy-local-compaction-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const agentDir = join(home, ".pi", "agent");
+  const alloyHome = join(home, ".pi", "alloy");
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(alloyHome, { recursive: true });
+  await writeFile(
+    join(agentDir, "settings.json"),
+    JSON.stringify({
+      quietStartup: true,
+      compaction: { enabled: false, reserveTokens: 1024, keepRecentTokens: 10 },
+    }),
+  );
+
+  const childEnv = {
+    ...process.env,
+    HOME: home,
+    PI_CODING_AGENT_DIR: agentDir,
+    ALLOY_HOME: alloyHome,
+    OLLAMA_BASE_URL: ollama.url,
+  };
+  for (const name of [
+    "ALLOY_PI_BIN",
+    "OLLAMA_HOST",
+    "OLLAMA_API_KEY",
+    "LLAMA_BASE_URL",
+    "LLAMA_CPP_BASE_URL",
+    "LLAMA_API_KEY",
+    "LLAMA_CPP_API_KEY",
+    "LM_STUDIO_BASE_URL",
+    "LM_STUDIO_API_KEY",
+  ]) {
+    delete childEnv[name];
+  }
+
+  const first = await runAlloy(
+    ["--model", "ollama/compact-test", "--thinking", "off", "-p", firstPrompt],
+    childEnv,
+  );
+  assert.equal(first.code, 0, first.stderr);
+
+  const sessionRoot = join(agentDir, "sessions");
+  const [sessionRelativePath] = (await readdir(sessionRoot, { recursive: true }))
+    .filter((entry) => entry.endsWith(".jsonl"));
+  assert.ok(sessionRelativePath);
+  const sessionPath = join(sessionRoot, sessionRelativePath);
+
+  const second = await runAlloy(
+    ["--model", "ollama/compact-test", "--session", sessionPath, "--thinking", "off", "-p", secondPrompt],
+    childEnv,
+  );
+  assert.equal(second.code, 0, second.stderr);
+
+  await writeFile(
+    join(agentDir, "settings.json"),
+    JSON.stringify({
+      quietStartup: true,
+      compaction: { enabled: true, reserveTokens: 1024, keepRecentTokens: 10 },
+    }),
+  );
+  const third = await runAlloy(
+    ["--model", "ollama/compact-test", "--session", sessionPath, "--thinking", "off", "-p", thirdPrompt],
+    childEnv,
+  );
+  assert.equal(third.code, 0, third.stderr);
+  assert.ok(inferenceRequests.every(({ payload }) => payload.stream_options?.include_usage === true));
+  const summaryIndex = inferenceRequests.findIndex(({ summarizing }) => summarizing);
+  const thirdTurnIndex = inferenceRequests.findIndex(({ directUserText }) => directUserText === thirdPrompt);
+  const observedUserText = inferenceRequests.map(({ directUserText }) => directUserText);
+  assert.ok(summaryIndex >= 0, `expected summarization request; observed: ${JSON.stringify(observedUserText)}`);
+  assert.ok(
+    thirdTurnIndex > summaryIndex,
+    `expected compaction before turn three; observed: ${JSON.stringify(observedUserText)}`,
+  );
+  const thirdTurnMessages = JSON.stringify(inferenceRequests[thirdTurnIndex].payload.messages);
+  assert.match(thirdTurnMessages, /compact-summary/);
+  assert.equal(thirdTurnMessages.includes(firstPrompt), false);
+
+  const entries = (await readFile(sessionPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const compaction = entries.find((entry) => entry.type === "compaction");
+  assert.ok(compaction, "expected persisted Ollama usage to trigger compaction");
+  assert.match(compaction.summary, /compact-summary/);
 });
 
 test("real Alloy merges live and manual Ollama catalogs", async (t) => {

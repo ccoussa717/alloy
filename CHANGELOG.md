@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.23] - 2026-08-16
+
+### Fixed
+- **Long Ollama sessions compact before exhausting the model context.** Alloy
+  requests and persists streaming token usage from Ollama, allowing Pi to
+  summarize growing conversations instead of silently stopping at the context
+  boundary.
+
 ## [1.1.22] - 2026-08-16
 
 ### Fixed
