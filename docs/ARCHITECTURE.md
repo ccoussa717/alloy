@@ -105,7 +105,7 @@ Children (`/auto`, `/fusion`, `/fission`, `/agent`) spawn via `lib/child-runner.
 | **Sandbox** | Orthogonal to approval. Parent sandbox or child request → Docker spawn only; fail closed if Docker missing |
 | **Env** | Allowlisted keys only; provider API keys stripped |
 | **HOME** | Isolated temp HOME / `PI_CODING_AGENT_DIR`; host `auth.json` is never mounted or copied wholesale |
-| **Fusion credentials** | Only the selected model provider entry is leased into each child's ephemeral `0600 auth.json`; read tools are repository-root confined so the lease and host auth are inaccessible |
+| **Routed credentials** | Only the selected model provider credential is handed to each child over stdin and registered in runtime memory; the host auth store is never mounted or copied |
 | **Credential boundary claim** | `docker-fs` when sandboxed (mount policy); `env-home-isolation` on host (same-uid absolute paths remain a host OS limit — not over-claimed) |
 | **Lifecycle** | Process-group kill; stream limits; policy manifest recorded per run |
 

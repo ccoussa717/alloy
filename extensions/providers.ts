@@ -4,7 +4,10 @@
  * Local engines are surfaced in doctor/providers via discovery (see local-engines).
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import type { Provider } from "@earendil-works/pi-ai";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -34,6 +37,263 @@ const { ensureMvpBuiltinCatalogs } = require(
   join(root, "lib", "model-catalog.mjs"),
 );
 
+type ProviderDiagnostic = {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  loginHint: string;
+  ok: boolean;
+  freshness?: unknown;
+};
+
+type PiAuthRegistry = Pick<
+  ModelRegistry,
+  "getProviderAuthStatus" | "getProviderAuth"
+> & Partial<Pick<ModelRegistry, "getAll" | "isUsingOAuth">>;
+
+type ProviderAuthResolution = Awaited<
+  ReturnType<PiAuthRegistry["getProviderAuth"]>
+>;
+
+const AUTH_DIAGNOSTIC_TIMEOUT_MS = 10_000;
+const inFlightAuthResolutions = new WeakMap<
+  PiAuthRegistry,
+  Map<string, Promise<ProviderAuthResolution>>
+>();
+
+class AuthDiagnosticTimeoutError extends Error {
+  constructor() {
+    super("Pi auth diagnostic timed out");
+    this.name = "AuthDiagnosticTimeoutError";
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new AuthDiagnosticTimeoutError()),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function resolveProviderAuth(
+  modelRegistry: PiAuthRegistry,
+  providerId: string,
+): Promise<ProviderAuthResolution> {
+  let providerResolutions = inFlightAuthResolutions.get(modelRegistry);
+  if (!providerResolutions) {
+    providerResolutions = new Map();
+    inFlightAuthResolutions.set(modelRegistry, providerResolutions);
+  }
+  const active = providerResolutions.get(providerId);
+  if (active) return active;
+
+  const resolution = Promise.resolve()
+    .then(() => modelRegistry.getProviderAuth(providerId))
+    .finally(() => {
+      if (providerResolutions.get(providerId) === resolution) {
+        providerResolutions.delete(providerId);
+      }
+    });
+  providerResolutions.set(providerId, resolution);
+  return resolution;
+}
+
+function authRequiresLogin(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const code = typeof current === "object" && current !== null && "code" in current
+      ? String(current.code)
+      : "";
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === "string"
+        ? current
+        : "";
+    if (
+      code.toLowerCase() === "invalid_grant" ||
+      /\binvalid_grant\b|refresh token.{0,80}\b(?:expired|invalid|revoked)\b/i.test(message)
+    ) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+function authQuotaExhausted(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === "string"
+        ? current
+        : "";
+    if (/\b(?:quota|usage limit|extra usage|billing limit)\b/i.test(message)) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+export async function diagnoseProvidersWithPiAuth(
+  modelRegistry: PiAuthRegistry,
+  rawResults: ProviderDiagnostic[] = diagnoseProviders(),
+  timeoutMs = AUTH_DIAGNOSTIC_TIMEOUT_MS,
+): Promise<ProviderDiagnostic[]> {
+  return Promise.all(rawResults.map(async (result) => {
+    try {
+      const configured = modelRegistry.getProviderAuthStatus(result.id);
+      if (!configured.configured) {
+        return {
+          ...result,
+          status: "missing",
+          detail: "not configured in Pi's native auth runtime",
+          ok: false,
+          freshness: undefined,
+        };
+      }
+      const resolved = await withTimeout(
+        resolveProviderAuth(modelRegistry, result.id),
+        timeoutMs,
+      );
+      if (!resolved?.auth) {
+        return {
+          ...result,
+          status: "unavailable",
+          detail: "Pi native auth could not resolve the configured credential; retry /doctor",
+          ok: false,
+          freshness: undefined,
+        };
+      }
+      const source = resolved.source?.toLowerCase() ?? "";
+      const providerModel = modelRegistry.getAll?.().find(
+        (model) => model.provider === result.id,
+      );
+      const piOAuth = providerModel && modelRegistry.isUsingOAuth
+        ? modelRegistry.isUsingOAuth(providerModel)
+        : undefined;
+      const apiKey =
+        ["runtime", "fallback", "models_json_key", "models_json_command"].includes(
+          configured.source ?? "",
+        ) ||
+        (configured.source === "stored" && piOAuth === false) ||
+        result.status === "api_key" ||
+        source.includes("api key") ||
+        source.includes("runtime");
+      const oauth =
+        piOAuth === true ||
+        (piOAuth === undefined && source.includes("oauth")) ||
+        (piOAuth === undefined && !source && !apiKey && (
+          result.status === "subscription" || result.status === "refreshable"
+        ));
+      return {
+        ...result,
+        status: configured.source === "environment"
+            ? "env"
+            : apiKey
+              ? "api_key"
+              : oauth
+                ? "subscription"
+                : "unknown",
+        detail: `Pi native auth resolved ${oauth ? "OAuth" : "provider credentials"}${oauth ? " and refreshes it automatically" : ""}`,
+        ok: true,
+        freshness: undefined,
+      };
+    } catch (error) {
+      const timedOut = error instanceof AuthDiagnosticTimeoutError;
+      const reauthRequired = authRequiresLogin(error);
+      const quotaExhausted = authQuotaExhausted(error);
+      return {
+        ...result,
+        status: timedOut
+          ? "timed_out"
+          : reauthRequired
+            ? "reauth_required"
+            : quotaExhausted
+              ? "quota_exhausted"
+              : "unavailable",
+        detail: timedOut
+          ? "Pi native auth check timed out; wait for it to finish or restart Alloy before retrying /doctor"
+          : reauthRequired
+            ? `Pi rejected the stored authorization; sign in again with ${result.loginHint}`
+            : quotaExhausted
+              ? "Provider quota is exhausted; wait for the usage window or change the provider plan"
+              : "Pi native auth check was unavailable; retry /doctor before changing credentials",
+        ok: false,
+        freshness: undefined,
+      };
+    }
+  }));
+}
+
+export function providerAuthGuidance(
+  results: ReadonlyArray<Pick<ProviderDiagnostic, "status"> & Partial<Pick<ProviderDiagnostic, "label" | "loginHint">>>,
+): { needsLogin: number; needsReauth: number; unavailable: number; timedOut: number; quotaExhausted: number; lines: string[] } {
+  const needsLogin = results.filter(
+    (result) => result.status === "missing" || result.status === "expired",
+  ).length;
+  const needsReauth = results.filter(
+    (result) => result.status === "reauth_required",
+  ).length;
+  const unavailable = results.filter(
+    (result) => result.status === "unavailable",
+  ).length;
+  const timedOutResults = results.filter(
+    (result) => result.status === "timed_out",
+  );
+  const quotaResults = results.filter(
+    (result) => result.status === "quota_exhausted",
+  );
+  const lines: string[] = [];
+  if (needsLogin) {
+    lines.push(
+      `Run /login to connect ${needsLogin} missing provider${needsLogin === 1 ? "" : "s"}.`,
+    );
+  }
+  for (const result of results.filter((entry) => entry.status === "reauth_required")) {
+    lines.push(
+      `Run ${result.loginHint ?? "/login"} to reconnect ${result.label ?? "the provider"}; its stored authorization was rejected.`,
+    );
+  }
+  if (unavailable) {
+    lines.push(
+      `Retry /doctor for ${unavailable} unavailable provider auth check${unavailable === 1 ? "" : "s"}.`,
+    );
+  }
+  for (const result of timedOutResults) {
+    lines.push(
+      `Pi auth timed out for ${result.label ?? "a provider"}; wait for the check to finish or restart Alloy before retrying /doctor.`,
+    );
+  }
+  for (const result of quotaResults) {
+    lines.push(
+      `${result.label ?? "A provider"} is out of quota; wait for the usage window or change the provider plan.`,
+    );
+  }
+  return {
+    needsLogin,
+    needsReauth,
+    unavailable,
+    timedOut: timedOutResults.length,
+    quotaExhausted: quotaResults.length,
+    lines,
+  };
+}
+
 export function withClaudeOpus5(anthropic: Provider): Provider {
   const fallback = ALLOY_CLAUDE_OPUS_5_MODEL;
   return {
@@ -52,7 +312,7 @@ export function registerProviders(pi: ExtensionAPI) {
     description:
       "Diagnose Alloy versions, providers, model defaults, Docker (never prints secrets)",
     handler: async (_args, ctx) => {
-      const results = diagnoseProviders();
+      const results = await diagnoseProvidersWithPiAuth(ctx.modelRegistry);
       const docker = diagnoseDocker(process.cwd());
       let localEnginesText: string | null = null;
       try {
@@ -76,9 +336,6 @@ export function registerProviders(pi: ExtensionAPI) {
       const footer = [
         "",
         "Commands:",
-        "  Claude  →  /login  → Anthropic subscription",
-        "  Codex   →  /login  → ChatGPT / Codex subscription",
-        "  Grok    →  /login xai  → Use a subscription",
         "  Sandbox →  /permissions sandbox",
         "  Help    →  /help",
         `ALLOY_ROOT=${process.env.ALLOY_ROOT || "(unset)"}`,
@@ -93,13 +350,9 @@ export function registerProviders(pi: ExtensionAPI) {
         console.log(report);
       }
 
-      const missing = results.filter((r: { ok: boolean }) => !r.ok);
-      if (missing.length) {
-        ctx.ui.notify(
-          `${missing.length} hosted provider(s) not configured or expired. Use /login.`,
-          "warning",
-        );
-      } else {
+      const guidance = providerAuthGuidance(results);
+      for (const line of guidance.lines) ctx.ui.notify(line, "warning");
+      if (!guidance.lines.length) {
         ctx.ui.notify("Hosted MVP providers look configured.", "info");
       }
     },
@@ -109,7 +362,7 @@ export function registerProviders(pi: ExtensionAPI) {
     description:
       "Show hosted MVP + local engine status (Anthropic, Codex, Grok, Ollama, …)",
     handler: async (_args, ctx) => {
-      const results = diagnoseProviders();
+      const results = await diagnoseProvidersWithPiAuth(ctx.modelRegistry);
       const items = results.map(
         (r: { ok: boolean; label: string; status: string }) =>
           `${r.ok ? "✓" : "✗"} ${r.label} — ${r.status}`,
@@ -131,8 +384,11 @@ export function registerProviders(pi: ExtensionAPI) {
       } catch {
         // discovery failures must not break /providers
       }
+      const guidance = providerAuthGuidance(results);
       items.push("---");
-      items.push("Run /login to connect a subscription");
+      items.push(...(guidance.lines.length
+        ? guidance.lines
+        : ["Hosted provider authentication resolved through Pi."]));
       items.push("Run /doctor for full detail (economics + catalog + local)");
       await ctx.ui.select("Alloy providers", items);
     },
@@ -156,8 +412,10 @@ export function registerProviders(pi: ExtensionAPI) {
     }
 
     try {
-      const results = diagnoseProviders();
-      const ok = results.filter((r: { ok: boolean }) => r.ok).length;
+      const ok = MVP_PROVIDERS.filter(
+        (provider: { id: string }) =>
+          ctx.modelRegistry.getProviderAuthStatus(provider.id).configured,
+      ).length;
       ctx.ui.setStatus("alloy-providers", `auth:${ok}/${MVP_PROVIDERS.length}`);
     } catch {
       // ignore

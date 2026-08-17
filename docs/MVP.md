@@ -1,7 +1,7 @@
 # Alloy MVP Contract
 
-**Status:** Implemented in the v0.8.4 pre-release source. This document is the product contract,
-not a backlog of unfinished ideas.
+**Status:** Implemented in the current stable source release. This document is
+the product contract, not a backlog of unfinished ideas.
 
 ## In (implemented)
 

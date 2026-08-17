@@ -7,6 +7,17 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.24] - 2026-08-16
+
+### Fixed
+- **Claude, Codex, and Grok authentication no longer loops back to login for
+  recoverable failures.** `/doctor` and `/providers` now use Pi's native auth
+  resolver, which refreshes and persists expired OAuth credentials under Pi's
+  credential lock. Temporary provider failures report retry guidance, quota
+  failures explain the actual remedy, and only rejected authorizations ask for
+  a new login. Startup remains network-free. This fixes main-session
+  diagnostics; routed child agents still receive a launch-scoped credential.
+
 ## [1.1.23] - 2026-08-16
 
 ### Fixed

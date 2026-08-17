@@ -1,6 +1,6 @@
 # Alloy reference
 
-This guide is the operational reference for the current pre-release source. For
+This guide is the operational reference for the current release and source. For
 the product overview and fastest setup path, start with the
 [README](../README.md).
 
@@ -26,7 +26,9 @@ TUI's frozen production dependencies.
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
 ```
 
-The convenience command resolves `main` once and installs that exact commit.
+The convenience command fetches the installer from `main`, then installs the
+latest stable GitHub release tag. Set `ALLOY_CHANNEL=main` for the tip of `main`,
+or `ALLOY_REF` for an explicit tag or commit.
 Writable, regular Bash and Zsh startup files load the generated environment
 after a restart. For another shell, symlinked dotfiles, or an unexported custom
 `ZDOTDIR`, add `~/.local/bin` to `PATH` or run `~/.local/bin/alloy` directly. For
@@ -114,6 +116,20 @@ Pi owns provider authentication and stores credentials in
 connects one selected provider at a time. Run it again for each additional
 provider; `/login xai` selects the Grok route directly. Provider choices show
 green `configured` or gray `not configured` status.
+The OpenTUI command adapts Pi's native auth interaction; Pi owns OAuth exchange,
+refresh, token rotation, locking, and persistence. `/doctor` and `/providers`
+resolve configured hosted providers through Pi. Expired access tokens refresh
+automatically, while a timeout or provider outage reports an unavailable check
+instead of instructing the user to replace valid credentials. A definitively
+rejected refresh authorization reports that the provider must be reconnected.
+Because Pi's refresh may still be holding its credential lock after Alloy's
+diagnostic timeout, wait for the check to finish or restart Alloy before retrying.
+Hosted-provider rows use these literal failure statuses: `missing` when no Pi
+authentication source is configured, `reauth_required` when the provider rejects
+the stored authorization, `timed_out` when resolution exceeds the diagnostic
+deadline, `quota_exhausted` for usage or billing limits, and `unavailable` for
+other temporary resolution failures. Resolved rows report `subscription`,
+`api_key`, `env`, or `unknown` according to Pi's active authentication source.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting
@@ -173,8 +189,9 @@ and had usable models at startup (llama.cpp: loaded models when status is
 advertised). Start engines before Alloy, or restart Alloy after `ollama pull` or
 a llama model load. Pi's native `llama.cpp` id and `/llama` command remain
 separate; Alloy uses `llama.cpp-local` to avoid replacing Pi's provider runtime.
-`/doctor` re-probes reachability and model counts but does not mutate the active
-session catalog.
+`/doctor` re-probes local reachability and model counts without mutating the
+active session catalog. Hosted-provider checks may persist a refreshed OAuth
+credential through Pi's native auth store.
 
 Disable all probes with `"providers": { "local": { "enabled": false } }`.
 Removing a local provider id from `providers.allow` disables its probe and hides
@@ -661,9 +678,13 @@ package root. It is runtime information, not a supported user override.
 
 ## Troubleshooting
 
-### A provider is missing or expired
+### A provider is missing, unavailable, or out of quota
 
-Run `/doctor`, then reconnect only that route with `/login` or `/login xai`.
+Run `/doctor`. Pi refreshes expired OAuth credentials automatically. Use `/login`
+or `/login xai` only when the route is missing or Pi rejects the stored
+authorization. If the check is unavailable, retry it without replacing the
+credential. Provider quota or extra-usage errors require waiting for the quota
+window or changing the provider plan; signing in again does not fix them.
 API keys do not authenticate `openai-codex/...`; that route uses ChatGPT/Codex
 subscription authentication.
 

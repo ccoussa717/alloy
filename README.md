@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/ccoussa717/alloy/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/ccoussa717/alloy/ci.yml?branch=main&amp;style=flat-square&amp;label=verify"></a>
-  <img alt="v1.1.23" src="https://img.shields.io/badge/version-1.1.23-1FE07A?style=flat-square">
+  <img alt="v1.1.24" src="https://img.shields.io/badge/version-1.1.24-1FE07A?style=flat-square">
   <img alt="Node 22.19 or newer" src="https://img.shields.io/badge/node-%3E%3D22.19-1FE07A?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1F2937?style=flat-square"></a>
 </p>
@@ -83,7 +83,7 @@ When no release exists yet, it falls back to the tip of `main`. Pin explicitly:
 
 ```bash
 # Pin to a release tag
-curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v1.1.23/install.sh | ALLOY_REF=v1.1.23 bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v1.1.24/install.sh | ALLOY_REF=v1.1.24 bash
 
 # Always install tip of main
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | ALLOY_CHANNEL=main bash
@@ -110,9 +110,15 @@ On first run, connect one OAuth provider and select a model:
 ```
 
 Run `/login` again for each additional provider. The selector labels every route
-`configured` or `not configured`. Green `configured` means Alloy found valid
-local credential or configuration evidence; an actual prompt is the end-to-end
-authentication check. Use `/doctor` when setup or model discovery fails.
+`configured` or `not configured`. Green `configured` means Alloy found a stored
+credential or configured authentication source; an actual prompt is the
+end-to-end authentication check. Use `/doctor` when setup or model discovery
+fails.
+Alloy's OpenTUI prompt is only an adapter: Pi performs OAuth login, refresh,
+token rotation, and credential persistence. `/doctor` asks Pi to resolve each
+configured provider, so expired access tokens refresh automatically. A temporary
+provider outage reports retry guidance rather than asking you to sign in again;
+a definitively rejected authorization asks you to reconnect that provider.
 
 OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
 so Alloy does not accept API keys in an interactive prompt. Use provider
@@ -515,7 +521,7 @@ Alloy treats safety as state enforced by code, not a sentence in a prompt.
 | **Plan and Review** | Model tool calls are hard read-only: no bash, edits, writes, or MCP calls. Operator-invoked slash commands remain an explicit control plane. |
 | **Default approvals** | `ask-dangerous` prompts for known dangerous shell patterns, destructive Git, MCP, and tools classified as network or external actions. |
 | **Child policy ceiling** | Child manifests constrain approval profile, sandbox requirement, tools, budget, and concurrency. Model child-tool calls are denied in read-only modes; operator-invoked Auto explicitly launches Build roles and confirms first when interactive. |
-| **Credential boundary** | Child environments are allowlisted; Fusion leases only the selected provider credential into an ephemeral home. |
+| **Credential boundary** | Child environments are allowlisted; routed children receive only the selected provider credential over stdin, registered in child runtime memory. |
 | **Fission evidence** | Trusted-repository review is confined to a bounded immutable packet; exact routes, model identity, output size, usage, and source drift fail closed. |
 | **Project trust** | Project config cannot weaken the operator approval profile, global sandbox controls, MCP enablement, or budget ceilings. |
 | **Docker Bash sandbox** | Optional `network=none` container with dropped Linux capabilities and a mounted workspace; fails closed if required but unavailable. |
@@ -552,7 +558,7 @@ troubleshooting.
 
 ## Project status
 
-Alloy **1.1.23** is the current release (installer **stable** channel → latest
+Alloy **1.1.24** is the current release (installer **stable** channel → latest
 GitHub release). Runtime pins: Pi 0.82.1, Node.js ≥22.19, Bun 1.3.14, OpenTUI
 0.4.5, Solid 1.9.12. Default UI is the OpenCode-derived shell;
 `--legacy-pi-ui` is temporary rollback only. Install via `install.sh` or a

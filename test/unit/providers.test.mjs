@@ -54,6 +54,49 @@ test("detects auth.json subscription-like credentials", () => {
   }
 });
 
+test("reports expired canonical OAuth with a refresh token as pending Pi verification", () => {
+  const expiredAccess = "expired-access-SECRET_MUST_NOT_APPEAR";
+  const refresh = "refresh-SECRET_MUST_NOT_APPEAR";
+  writeFileSync(
+    join(agentDir, "auth.json"),
+    JSON.stringify({
+      anthropic: {
+        type: "oauth",
+        access: expiredAccess,
+        refresh,
+        expires: Date.now() - 60_000,
+      },
+    }),
+    "utf8",
+  );
+
+  const anthropic = mod.diagnoseProviders().find((result) => result.id === "anthropic");
+  assert.equal(anthropic.ok, false);
+  assert.equal(anthropic.status, "refreshable");
+  assert.match(anthropic.detail, /Pi.*doctor.*refresh/i);
+  assert.doesNotMatch(mod.formatDoctorReport([anthropic]), /fix: \/login/);
+  assert.doesNotMatch(JSON.stringify(anthropic), /SECRET_MUST_NOT_APPEAR/);
+});
+
+test("keeps expired OAuth without a refresh token unhealthy", () => {
+  writeFileSync(
+    join(agentDir, "auth.json"),
+    JSON.stringify({
+      xai: {
+        type: "oauth",
+        access: "expired-access-SECRET_MUST_NOT_APPEAR",
+        expires: Date.now() - 60_000,
+      },
+    }),
+    "utf8",
+  );
+
+  const xai = mod.diagnoseProviders().find((result) => result.id === "xai");
+  assert.equal(xai.ok, false);
+  assert.equal(xai.status, "expired");
+  assert.doesNotMatch(JSON.stringify(xai), /SECRET_MUST_NOT_APPEAR/);
+});
+
 test("env key path reports name only, never value", () => {
   writeFileSync(join(agentDir, "auth.json"), "{}", "utf8");
   const envSecret = "env-path-SECRET_MUST_NOT_APPEAR_9876543210";
