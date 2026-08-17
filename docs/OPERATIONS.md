@@ -21,9 +21,10 @@ curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | 
 - [ ] The host is macOS or glibc-based Linux; Alpine and other musl-based Linux
   distributions are unsupported.
 
-The pre-release command fetches a mutable installer from `main`, then resolves
-and installs one exact source commit. Pin both the raw installer URL and
-`ALLOY_REF` to the same full commit SHA when both must be immutable.
+The normal command fetches a mutable installer from `main`, then resolves and
+installs the latest stable GitHub release tag. Set `ALLOY_CHANNEL=main` for the
+tip of `main`. Pin both the raw installer URL and `ALLOY_REF` to the same full
+commit SHA when both must be immutable.
 Contributors should use `npm ci && npm run tui:install && npm link` from a clone.
 Do not use `npm install` because release dependencies are governed by
 `npm-shrinkwrap.json` and `tui/bun.lock`.
@@ -33,7 +34,9 @@ Do not use `npm install` because release dependencies are governed by
 - [ ] Run `/login` once for each hosted subscription provider you intend to use.
 - [ ] For local models, start Ollama, llama.cpp, or LM Studio before Alloy; no
   login is required for keyless loopback servers.
-- [ ] Run `/doctor`; it must report credential shape without secret values.
+- [ ] Run `/doctor`; it must resolve hosted credentials through Pi, refresh
+  OAuth when needed, distinguish rejected authorization from temporary
+  unavailability, and never expose secret values.
 - [ ] Treat green `configured` as local evidence, then send a prompt to verify
   end-to-end authentication.
 - [ ] Confirm `/whoami` reports harness facts rather than model guesses.

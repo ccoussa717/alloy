@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import {
+  ModelRegistry,
+  ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 
 import {
   diagnoseProvidersWithPiAuth,
@@ -41,6 +48,49 @@ test("provider diagnostics use Pi native auth resolution for refreshable OAuth",
   assert.deepEqual(calls, [["status", "anthropic"], ["auth", "anthropic"]]);
 });
 
+test("provider diagnostics drive Pi native OAuth refresh and persistence", async (t) => {
+  const agentDir = mkdtempSync(join(tmpdir(), "alloy-pi-auth-"));
+  const authPath = join(agentDir, "auth.json");
+  writeFileSync(authPath, JSON.stringify({
+    anthropic: {
+      type: "oauth",
+      access: "expired-access-SECRET_MUST_NOT_APPEAR",
+      refresh: "original-refresh-SECRET_MUST_NOT_APPEAR",
+      expires: Date.now() - 60_000,
+    },
+  }));
+  t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    access_token: "refreshed-access-SECRET_MUST_NOT_APPEAR",
+    refresh_token: "rotated-refresh-SECRET_MUST_NOT_APPEAR",
+    expires_in: 3_600,
+  }), { status: 200 }));
+
+  const runtime = await ModelRuntime.create({
+    authPath,
+    modelsPath: null,
+    allowModelNetwork: false,
+  });
+  const [anthropic] = await diagnoseProvidersWithPiAuth(
+    new ModelRegistry(runtime),
+    [{
+      id: "anthropic",
+      label: "Anthropic (Claude)",
+      status: "refreshable",
+      detail: "stored OAuth",
+      loginHint: "/login",
+      ok: false,
+    }],
+  );
+
+  const persisted = JSON.parse(readFileSync(authPath, "utf8")).anthropic;
+  assert.equal(anthropic.status, "subscription");
+  assert.equal(anthropic.ok, true);
+  assert.equal(persisted.access, "refreshed-access-SECRET_MUST_NOT_APPEAR");
+  assert.equal(persisted.refresh, "rotated-refresh-SECRET_MUST_NOT_APPEAR");
+  assert.doesNotMatch(JSON.stringify(anthropic), /SECRET_MUST_NOT_APPEAR/);
+});
+
 test("provider diagnostics fail closed and redact Pi refresh errors", async () => {
   const raw = [
     {
@@ -57,7 +107,7 @@ test("provider diagnostics fail closed and redact Pi refresh errors", async () =
       return { configured: true, source: "stored" };
     },
     async getProviderAuth() {
-      throw new Error("invalid_grant SECRET_MUST_NOT_APPEAR");
+      throw new Error("temporary provider outage SECRET_MUST_NOT_APPEAR");
     },
   };
 
@@ -67,7 +117,83 @@ test("provider diagnostics fail closed and redact Pi refresh errors", async () =
   assert.equal(xai.status, "unavailable");
   assert.match(xai.detail, /retry.*doctor/i);
   assert.doesNotMatch(xai.detail, /login/i);
+  assert.doesNotMatch(JSON.stringify(xai), /temporary provider outage|SECRET_MUST_NOT_APPEAR/);
+});
+
+test("provider diagnostics request re-login for a definitively rejected refresh token", async () => {
+  const [xai] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+    async getProviderAuth() {
+      throw new Error("invalid_grant SECRET_MUST_NOT_APPEAR");
+    },
+  }, [{
+    id: "xai",
+    label: "xAI (Grok)",
+    status: "refreshable",
+    detail: "stored OAuth",
+    loginHint: "/login xai",
+    ok: false,
+  }]);
+
+  assert.equal(xai.ok, false);
+  assert.equal(xai.status, "reauth_required");
+  assert.match(xai.detail, /sign in again/i);
   assert.doesNotMatch(JSON.stringify(xai), /invalid_grant|SECRET_MUST_NOT_APPEAR/);
+  assert.deepEqual(providerAuthGuidance([xai]).lines, [
+    "Run /login to reconnect 1 provider whose stored authorization was rejected.",
+  ]);
+});
+
+test("provider diagnostics share an in-flight Pi auth refresh", async () => {
+  let resolveAuth;
+  let resolutionCalls = 0;
+  const modelRegistry = {
+    getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+    getProviderAuth() {
+      resolutionCalls++;
+      return new Promise((resolve) => {
+        resolveAuth = resolve;
+      });
+    },
+  };
+  const raw = [{
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    status: "refreshable",
+    detail: "stored OAuth",
+    loginHint: "/login",
+    ok: false,
+  }];
+
+  const first = diagnoseProvidersWithPiAuth(modelRegistry, raw, 1_000);
+  const second = diagnoseProvidersWithPiAuth(modelRegistry, raw, 1_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resolutionCalls, 1);
+  resolveAuth({ auth: { apiKey: "synthetic" }, source: "OAuth" });
+  const [[firstResult], [secondResult]] = await Promise.all([first, second]);
+  assert.equal(firstResult.ok, true);
+  assert.equal(secondResult.ok, true);
+});
+
+test("missing provider auth does not invoke Pi auth resolution", async () => {
+  let resolutionCalls = 0;
+  const [anthropic] = await diagnoseProvidersWithPiAuth({
+    getProviderAuthStatus: () => ({ configured: false }),
+    async getProviderAuth() {
+      resolutionCalls++;
+      return { auth: { apiKey: "synthetic" } };
+    },
+  }, [{
+    id: "anthropic",
+    label: "Anthropic (Claude)",
+    status: "missing",
+    detail: "not configured",
+    loginHint: "/login",
+    ok: false,
+  }]);
+
+  assert.equal(anthropic.status, "missing");
+  assert.equal(resolutionCalls, 0);
 });
 
 test("provider diagnostics accept Pi auth results without an optional source label", async () => {
@@ -195,6 +321,7 @@ test("provider guidance preserves both login and retry actions for mixed failure
     { status: "subscription" },
   ]), {
     needsLogin: 1,
+    needsReauth: 0,
     unavailable: 1,
     lines: [
       "Run /login to connect 1 missing provider.",
@@ -234,6 +361,41 @@ test("registered providers view shows retry guidance without unconditional login
   const output = dialogs.flatMap(({ items }) => items).join("\n");
   assert.match(output, /Retry \/doctor for 1 unavailable provider auth check/);
   assert.doesNotMatch(output, /Run \/login to connect a subscription/);
+});
+
+test("registered doctor view does not append unconditional provider login commands", async () => {
+  const commands = new Map();
+  registerProviders({
+    registerCommand(name, spec) {
+      commands.set(name, spec);
+    },
+    registerProvider() {},
+    on() {},
+  });
+  const dialogs = [];
+  const notifications = [];
+  await commands.get("doctor").handler("", {
+    hasUI: true,
+    modelRegistry: {
+      getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
+      getProviderAuth: async () => {
+        throw new Error("temporary provider outage");
+      },
+    },
+    ui: {
+      async select(title, items) {
+        dialogs.push({ title, items });
+      },
+      notify(message, type) {
+        notifications.push({ message, type });
+      },
+    },
+  });
+
+  const report = dialogs.flatMap(({ items }) => items).join("\n");
+  assert.doesNotMatch(report, /Claude\s+→\s+\/login/);
+  assert.doesNotMatch(report, /Grok\s+→\s+\/login xai/);
+  assert.match(notifications.map(({ message }) => message).join("\n"), /Retry \/doctor/);
 });
 
 test("session startup stays network-free and keeps Pi's built-in Claude Opus 5", async () => {

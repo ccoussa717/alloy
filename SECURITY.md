@@ -2,12 +2,13 @@
 
 ## Supported versions
 
-Alloy has no npm release yet. This policy applies to the canonical source
-repository and its pre-release `main` branch.
+Alloy is distributed through tagged GitHub source releases, not npm. This policy
+applies to the latest stable source release and the canonical `main` branch.
 
 | Version | Supported |
 |---|---|
-| Pre-release `main` | Best effort |
+| Latest stable source release | Supported |
+| `main` | Best effort |
 
 ## Report a vulnerability
 

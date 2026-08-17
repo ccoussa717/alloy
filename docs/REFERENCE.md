@@ -1,6 +1,6 @@
 # Alloy reference
 
-This guide is the operational reference for the current pre-release source. For
+This guide is the operational reference for the current release and source. For
 the product overview and fastest setup path, start with the
 [README](../README.md).
 
@@ -26,7 +26,9 @@ TUI's frozen production dependencies.
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
 ```
 
-The convenience command resolves `main` once and installs that exact commit.
+The convenience command fetches the installer from `main`, then installs the
+latest stable GitHub release tag. Set `ALLOY_CHANNEL=main` for the tip of `main`,
+or `ALLOY_REF` for an explicit tag or commit.
 Writable, regular Bash and Zsh startup files load the generated environment
 after a restart. For another shell, symlinked dotfiles, or an unexported custom
 `ZDOTDIR`, add `~/.local/bin` to `PATH` or run `~/.local/bin/alloy` directly. For
@@ -118,7 +120,8 @@ The OpenTUI command adapts Pi's native auth interaction; Pi owns OAuth exchange,
 refresh, token rotation, locking, and persistence. `/doctor` and `/providers`
 resolve configured hosted providers through Pi. Expired access tokens refresh
 automatically, while a timeout or provider outage reports an unavailable check
-instead of instructing the user to replace valid credentials.
+instead of instructing the user to replace valid credentials. A definitively
+rejected refresh authorization reports that the provider must be reconnected.
 Sign-in URLs, instructions, and device codes remain visible throughout login
 and in later prompts so they can be selected while entering the authorization
 response. Device-code flows continue polling in the background after presenting
@@ -670,8 +673,8 @@ package root. It is runtime information, not a supported user override.
 ### A provider is missing, unavailable, or out of quota
 
 Run `/doctor`. Pi refreshes expired OAuth credentials automatically. Use `/login`
-or `/login xai` only when the route is missing or Pi confirms it cannot resolve a
-stored credential. If the check is unavailable, retry it without replacing the
+or `/login xai` only when the route is missing or Pi rejects the stored
+authorization. If the check is unavailable, retry it without replacing the
 credential. Provider quota or extra-usage errors require waiting for the quota
 window or changing the provider plan; signing in again does not fix them.
 API keys do not authenticate `openai-codex/...`; that route uses ChatGPT/Codex

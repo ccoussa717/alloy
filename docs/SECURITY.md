@@ -43,10 +43,15 @@ isolation and Docker for stronger containment.
 | Child inherits broad credentials | Provider keys stripped from env; isolated home; Fusion leases only the selected provider | child-runner and credential-broker tests |
 | Checkpoint path escape or clobber | Authenticated anchors, containment checks, collision preflight | checkpoint tests |
 | Worktree escapes managed root | Canonical containment and hardened removal | worktree tests |
-| Doctor leaks credentials | Presence and shape only; never values | provider tests |
+| Doctor leaks credentials | Pi-backed resolution with redacted status only; never values | provider tests |
 | Release installs different code | Exact dependencies, release-included shrinkwrap, packed-artifact test, npm provenance | GitHub Actions |
 | Secret enters source or history | Full-tree and full-history signature gate | security CI |
 | Fission reads a hostile repository | Operator trust prerequisite; hostile repositories are outside the product boundary | Fission trust and packet tests |
+
+Fusion's provider lease is resolved through Pi at child launch, then passed to
+the isolated child as a static, provider-scoped credential. The child does not
+receive the parent's OAuth refresh token or credential store, so a token that
+expires during a routed child run is not refreshed inside that child.
 | Fission child escapes review evidence | Read-only tools confined to the immutable packet root | Fission workflow tests |
 | Fission route silently changes | Exact-route admission plus observed provider/model attestation; no fallback | Fission routing tests |
 | Fission output evades bounds | Complete serialized assistant-message output limit before parsing or retention | child-runner and Fission tests |
@@ -151,13 +156,14 @@ Host mode must never be described as filesystem isolation.
   reachability and residual-risk decision; it does not waive the artifact gate.
 - GitHub Actions generates a CycloneDX SBOM for each release candidate.
 - npm publication requires provenance.
-- The convenience installer is fetched from mutable `main` during pre-release,
-  then resolves `main` once and downloads that exact source commit. It
-  checksum-verifies any downloaded Node.js runtime, and npm verifies the
-  shrinkwrapped dependency integrities. Review the installer before piping it
-  or pin both the raw installer URL and `ALLOY_REF` to the same full commit SHA
-  when the script and source must be immutable together. This source path is
-  not a tagged release or npm package.
+- The convenience installer is fetched from mutable `main`, then resolves the
+  latest stable GitHub release tag by default. `ALLOY_CHANNEL=main` selects the
+  tip of `main`; `ALLOY_REF` pins an explicit tag or commit. It checksum-verifies
+  any downloaded Node.js runtime, and npm verifies the shrinkwrapped dependency
+  integrities. Review the installer before piping it or pin both the raw
+  installer URL and `ALLOY_REF` to the same full commit SHA when the script and
+  source must be immutable together. This remains a source distribution, not an
+  npm package.
 - Docker and CI images should be pinned to reviewed release versions. Digest
   pinning remains preferred where the hosting platform supports maintenance of
   those pins.

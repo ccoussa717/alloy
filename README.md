@@ -110,13 +110,15 @@ On first run, connect one OAuth provider and select a model:
 ```
 
 Run `/login` again for each additional provider. The selector labels every route
-`configured` or `not configured`. Green `configured` means Alloy found valid
-local credential or configuration evidence; an actual prompt is the end-to-end
-authentication check. Use `/doctor` when setup or model discovery fails.
+`configured` or `not configured`. Green `configured` means Alloy found a stored
+credential or configured authentication source; an actual prompt is the
+end-to-end authentication check. Use `/doctor` when setup or model discovery
+fails.
 Alloy's OpenTUI prompt is only an adapter: Pi performs OAuth login, refresh,
 token rotation, and credential persistence. `/doctor` asks Pi to resolve each
 configured provider, so expired access tokens refresh automatically. A temporary
-provider outage reports retry guidance rather than asking you to sign in again.
+provider outage reports retry guidance rather than asking you to sign in again;
+a definitively rejected authorization asks you to reconnect that provider.
 
 OpenTUI login intentionally supports OAuth only. RPC text input is not masked,
 so Alloy does not accept API keys in an interactive prompt. Use provider

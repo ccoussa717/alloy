@@ -52,7 +52,15 @@ type PiAuthRegistry = Pick<
   "getProviderAuthStatus" | "getProviderAuth"
 >;
 
+type ProviderAuthResolution = Awaited<
+  ReturnType<PiAuthRegistry["getProviderAuth"]>
+>;
+
 const AUTH_DIAGNOSTIC_TIMEOUT_MS = 10_000;
+const inFlightAuthResolutions = new WeakMap<
+  PiAuthRegistry,
+  Map<string, Promise<ProviderAuthResolution>>
+>();
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -73,6 +81,45 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+function resolveProviderAuth(
+  modelRegistry: PiAuthRegistry,
+  providerId: string,
+): Promise<ProviderAuthResolution> {
+  let providerResolutions = inFlightAuthResolutions.get(modelRegistry);
+  if (!providerResolutions) {
+    providerResolutions = new Map();
+    inFlightAuthResolutions.set(modelRegistry, providerResolutions);
+  }
+  const active = providerResolutions.get(providerId);
+  if (active) return active;
+
+  const resolution = Promise.resolve()
+    .then(() => modelRegistry.getProviderAuth(providerId))
+    .finally(() => {
+      if (providerResolutions.get(providerId) === resolution) {
+        providerResolutions.delete(providerId);
+      }
+    });
+  providerResolutions.set(providerId, resolution);
+  return resolution;
+}
+
+function authRequiresLogin(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth++) {
+    const message = current instanceof Error
+      ? current.message
+      : typeof current === "string"
+        ? current
+        : "";
+    if (/invalid_grant|refresh token.*(?:expired|invalid|revoked)|\b(?:401|403)\b|unauthori[sz]ed/i.test(message)) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export async function diagnoseProvidersWithPiAuth(
   modelRegistry: PiAuthRegistry,
   rawResults: ProviderDiagnostic[] = diagnoseProviders(),
@@ -91,7 +138,7 @@ export async function diagnoseProvidersWithPiAuth(
         };
       }
       const resolved = await withTimeout(
-        modelRegistry.getProviderAuth(result.id),
+        resolveProviderAuth(modelRegistry, result.id),
         timeoutMs,
       );
       if (!resolved?.auth) {
@@ -127,11 +174,14 @@ export async function diagnoseProvidersWithPiAuth(
         ok: true,
         freshness: undefined,
       };
-    } catch {
+    } catch (error) {
+      const reauthRequired = authRequiresLogin(error);
       return {
         ...result,
-        status: "unavailable",
-        detail: "Pi native auth check was unavailable; retry /doctor before changing credentials",
+        status: reauthRequired ? "reauth_required" : "unavailable",
+        detail: reauthRequired
+          ? "Pi rejected the stored authorization; sign in again with /login"
+          : "Pi native auth check was unavailable; retry /doctor before changing credentials",
         ok: false,
         freshness: undefined,
       };
@@ -141,9 +191,12 @@ export async function diagnoseProvidersWithPiAuth(
 
 export function providerAuthGuidance(
   results: ReadonlyArray<Pick<ProviderDiagnostic, "status">>,
-): { needsLogin: number; unavailable: number; lines: string[] } {
+): { needsLogin: number; needsReauth: number; unavailable: number; lines: string[] } {
   const needsLogin = results.filter(
     (result) => result.status === "missing" || result.status === "expired",
+  ).length;
+  const needsReauth = results.filter(
+    (result) => result.status === "reauth_required",
   ).length;
   const unavailable = results.filter(
     (result) => result.status === "unavailable",
@@ -154,12 +207,17 @@ export function providerAuthGuidance(
       `Run /login to connect ${needsLogin} missing provider${needsLogin === 1 ? "" : "s"}.`,
     );
   }
+  if (needsReauth) {
+    lines.push(
+      `Run /login to reconnect ${needsReauth} provider${needsReauth === 1 ? "" : "s"} whose stored authorization was rejected.`,
+    );
+  }
   if (unavailable) {
     lines.push(
       `Retry /doctor for ${unavailable} unavailable provider auth check${unavailable === 1 ? "" : "s"}.`,
     );
   }
-  return { needsLogin, unavailable, lines };
+  return { needsLogin, needsReauth, unavailable, lines };
 }
 
 export function withClaudeOpus5(anthropic: Provider): Provider {
@@ -204,9 +262,6 @@ export function registerProviders(pi: ExtensionAPI) {
       const footer = [
         "",
         "Commands:",
-        "  Claude  →  /login  → Anthropic subscription",
-        "  Codex   →  /login  → ChatGPT / Codex subscription",
-        "  Grok    →  /login xai  → Use a subscription",
         "  Sandbox →  /permissions sandbox",
         "  Help    →  /help",
         `ALLOY_ROOT=${process.env.ALLOY_ROOT || "(unset)"}`,
