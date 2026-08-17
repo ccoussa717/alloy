@@ -161,6 +161,7 @@ test("discoverOllamaModels maps tags and show metadata", async () => {
   assert.equal(m.cost.input, 0);
   assert.equal(m.compat.supportsDeveloperRole, false);
   assert.equal(m.compat.supportsReasoningEffort, true);
+  assert.equal(m.compat.supportsUsageInStreaming, true);
   assert.equal(m.compat.maxTokensField, "max_tokens");
   assert.deepEqual(m.thinkingLevelMap, {
     off: "none",
@@ -347,6 +348,7 @@ test("discoverLlamaCppModels keeps only loaded models when status present", asyn
   assert.equal(loaded.contextWindow, 4096);
   assert.ok(loaded.baseUrl.endsWith("/v1"));
   assert.equal(loaded.compat.supportsReasoningEffort, false);
+  assert.equal(loaded.compat.supportsUsageInStreaming, false);
   assert.equal(loaded.thinkingLevelMap, undefined);
 });
 
@@ -410,6 +412,7 @@ test("discoverLmStudioModels maps OpenAI model list", async () => {
   assert.equal(result.models[0].provider, "lm-studio");
   assert.equal(result.models[0].cost.output, 0);
   assert.equal(result.models[0].maxTokens, 4096);
+  assert.equal(result.models[0].compat.supportsUsageInStreaming, false);
 });
 
 test("discoverLmStudioModels rejects a malformed model catalog", async () => {
