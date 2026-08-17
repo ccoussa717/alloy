@@ -4,7 +4,10 @@
  * Local engines are surfaced in doctor/providers via discovery (see local-engines).
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import type { Provider } from "@earendil-works/pi-ai";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -34,6 +37,131 @@ const { ensureMvpBuiltinCatalogs } = require(
   join(root, "lib", "model-catalog.mjs"),
 );
 
+type ProviderDiagnostic = {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  loginHint: string;
+  ok: boolean;
+  freshness?: unknown;
+};
+
+type PiAuthRegistry = Pick<
+  ModelRegistry,
+  "getProviderAuthStatus" | "getProviderAuth"
+>;
+
+const AUTH_DIAGNOSTIC_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("Pi auth diagnostic timed out")),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function diagnoseProvidersWithPiAuth(
+  modelRegistry: PiAuthRegistry,
+  rawResults: ProviderDiagnostic[] = diagnoseProviders(),
+  timeoutMs = AUTH_DIAGNOSTIC_TIMEOUT_MS,
+): Promise<ProviderDiagnostic[]> {
+  return Promise.all(rawResults.map(async (result) => {
+    try {
+      const configured = modelRegistry.getProviderAuthStatus(result.id);
+      if (!configured.configured) {
+        return {
+          ...result,
+          status: "missing",
+          detail: "not configured in Pi's native auth runtime",
+          ok: false,
+          freshness: undefined,
+        };
+      }
+      const resolved = await withTimeout(
+        modelRegistry.getProviderAuth(result.id),
+        timeoutMs,
+      );
+      if (!resolved?.auth) {
+        return {
+          ...result,
+          status: "unavailable",
+          detail: "Pi native auth could not resolve the configured credential; retry /doctor",
+          ok: false,
+          freshness: undefined,
+        };
+      }
+      const source = resolved.source?.toLowerCase() ?? "";
+      const oauth =
+        source.includes("oauth") ||
+        result.status === "subscription" ||
+        result.status === "refreshable";
+      const apiKey =
+        ["runtime", "fallback", "models_json_key", "models_json_command"].includes(
+          configured.source ?? "",
+        ) ||
+        result.status === "api_key" ||
+        source.includes("api key");
+      return {
+        ...result,
+        status: oauth
+          ? "subscription"
+          : configured.source === "environment"
+            ? "env"
+            : apiKey
+              ? "api_key"
+              : "unknown",
+        detail: `Pi native auth resolved ${oauth ? "OAuth" : "provider credentials"}${oauth ? " and refreshes it automatically" : ""}`,
+        ok: true,
+        freshness: undefined,
+      };
+    } catch {
+      return {
+        ...result,
+        status: "unavailable",
+        detail: "Pi native auth check was unavailable; retry /doctor before changing credentials",
+        ok: false,
+        freshness: undefined,
+      };
+    }
+  }));
+}
+
+export function providerAuthGuidance(
+  results: ReadonlyArray<Pick<ProviderDiagnostic, "status">>,
+): { needsLogin: number; unavailable: number; lines: string[] } {
+  const needsLogin = results.filter(
+    (result) => result.status === "missing" || result.status === "expired",
+  ).length;
+  const unavailable = results.filter(
+    (result) => result.status === "unavailable",
+  ).length;
+  const lines: string[] = [];
+  if (needsLogin) {
+    lines.push(
+      `Run /login to connect ${needsLogin} missing provider${needsLogin === 1 ? "" : "s"}.`,
+    );
+  }
+  if (unavailable) {
+    lines.push(
+      `Retry /doctor for ${unavailable} unavailable provider auth check${unavailable === 1 ? "" : "s"}.`,
+    );
+  }
+  return { needsLogin, unavailable, lines };
+}
+
 export function withClaudeOpus5(anthropic: Provider): Provider {
   const fallback = ALLOY_CLAUDE_OPUS_5_MODEL;
   return {
@@ -52,7 +180,7 @@ export function registerProviders(pi: ExtensionAPI) {
     description:
       "Diagnose Alloy versions, providers, model defaults, Docker (never prints secrets)",
     handler: async (_args, ctx) => {
-      const results = diagnoseProviders();
+      const results = await diagnoseProvidersWithPiAuth(ctx.modelRegistry);
       const docker = diagnoseDocker(process.cwd());
       let localEnginesText: string | null = null;
       try {
@@ -93,13 +221,9 @@ export function registerProviders(pi: ExtensionAPI) {
         console.log(report);
       }
 
-      const missing = results.filter((r: { ok: boolean }) => !r.ok);
-      if (missing.length) {
-        ctx.ui.notify(
-          `${missing.length} hosted provider(s) not configured or expired. Use /login.`,
-          "warning",
-        );
-      } else {
+      const guidance = providerAuthGuidance(results);
+      for (const line of guidance.lines) ctx.ui.notify(line, "warning");
+      if (!guidance.lines.length) {
         ctx.ui.notify("Hosted MVP providers look configured.", "info");
       }
     },
@@ -109,7 +233,7 @@ export function registerProviders(pi: ExtensionAPI) {
     description:
       "Show hosted MVP + local engine status (Anthropic, Codex, Grok, Ollama, …)",
     handler: async (_args, ctx) => {
-      const results = diagnoseProviders();
+      const results = await diagnoseProvidersWithPiAuth(ctx.modelRegistry);
       const items = results.map(
         (r: { ok: boolean; label: string; status: string }) =>
           `${r.ok ? "✓" : "✗"} ${r.label} — ${r.status}`,
@@ -131,8 +255,11 @@ export function registerProviders(pi: ExtensionAPI) {
       } catch {
         // discovery failures must not break /providers
       }
+      const guidance = providerAuthGuidance(results);
       items.push("---");
-      items.push("Run /login to connect a subscription");
+      items.push(...(guidance.lines.length
+        ? guidance.lines
+        : ["Hosted provider authentication resolved through Pi."]));
       items.push("Run /doctor for full detail (economics + catalog + local)");
       await ctx.ui.select("Alloy providers", items);
     },
@@ -156,8 +283,10 @@ export function registerProviders(pi: ExtensionAPI) {
     }
 
     try {
-      const results = diagnoseProviders();
-      const ok = results.filter((r: { ok: boolean }) => r.ok).length;
+      const ok = MVP_PROVIDERS.filter(
+        (provider: { id: string }) =>
+          ctx.modelRegistry.getProviderAuthStatus(provider.id).configured,
+      ).length;
       ctx.ui.setStatus("alloy-providers", `auth:${ok}/${MVP_PROVIDERS.length}`);
     } catch {
       // ignore
