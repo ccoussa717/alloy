@@ -7,6 +7,16 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.25] - 2026-08-17
+
+### Fixed
+- **Long local-model turns recover instead of ending on a one-token fragment.**
+  When context pressure makes a provider stop below the configured output
+  limit, Alloy now compacts the session and retries the interrupted turn once.
+  Genuine output-limit completions remain terminal, non-token OpenAI failures
+  are not retried, and a response is preserved when there is not enough history
+  to compact.
+
 ## [1.1.24] - 2026-08-16
 
 ### Fixed

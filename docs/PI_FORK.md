@@ -17,12 +17,12 @@ RPC modes also invoke Pi directly, without the OpenTUI frontend.
 |---|---|
 | Package version | `0.82.1` |
 | Fork | https://github.com/ccoussa717/pi |
-| Source commit | `e144aea1a7ce8cf7235c130487e4f5c4011588d5` |
-| Release | `alloy-tui-v0.82.1.7` |
+| Source commit | `efd4e85da934ffa1e4161d0a08bd861ca8401ba4` |
+| Release | `alloy-tui-v0.82.1.9` |
 
 | Package | Artifact | SHA-256 | npm integrity |
 |---|---|---|---|
-| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `74a526dd025fb1cb7161013c095cfa753d47d01b00eb5d325cf28af7840b16ae` | `sha512-loPday6lSj5zJPR/BSA0lKUEazsWHn4cGbq8o7UnSsD7dL5bqwJUkNRmnVyCEOcsGSrn4PhZ2n+8RbBpH+9tsg==` |
+| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `0da9289c9c76b4c5762d0dfa37910cea3a4b2307e373f293a01cdbd813288be9` | `sha512-bRgcHLQKyDsCa+FwB/s3f7a02ogtAKXNcJZ3YoJg5abl/VCa8JZvomYmjw6HvTbb/lGCfbE01o6gQReDZ5oiHw==` |
 | `@earendil-works/pi-tui` | `earendil-works-pi-tui-0.82.1.tgz` | `6c939c4515c6742895e4d4c6e5926a5c735a7789d20250284dbef510efa5959c` | `sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==` |
 
 `package.json` records the same values under `alloy.piFork`.
@@ -61,7 +61,11 @@ This is a deliberate dependency refresh, not a claim that the fork's nested
 shrinkwrap is inherited. Acceptance requires the root integrity gate, unit and
 integration suites, packed install, source installer, provider compatibility,
 and live PTY viewport checks. Alloy overrides the fork's vulnerable
-`brace-expansion` 5.0.7 node with patched 5.0.8 in the root shrinkwrap.
+`brace-expansion` 5.0.7 node with patched 5.0.9 in the root shrinkwrap.
+
+Release `alloy-tui-v0.82.1.9` supersedes `.8`. The `.8` coding-agent artifact
+imports a workspace-only Pi AI export and cannot start against Alloy's registry
+Pi AI dependency, so it must never be used as an upgrade or rollback input.
 
 ## Upgrade
 
@@ -92,4 +96,5 @@ runtime, credentials, tools, policy, sessions, and extensions remain the same.
 For a backend/fork regression, revert the complete integration commit so package
 metadata, shrinkwrap, verifier, tests, CI, and documentation return to one
 previously reviewed runtime state. Do not delete prior release assets; they are
-rollback inputs and provenance evidence.
+provenance evidence and rollback inputs except where explicitly marked unusable
+above.
