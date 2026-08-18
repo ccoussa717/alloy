@@ -84,6 +84,10 @@ rollback input.
 8. Audit and document the full lock delta, then run `npm run ci:local`, the
    OpenTUI PTY checks, and focused legacy-renderer rollback checks.
 
+The unchanged sticky-tail wheel assertion currently fails on clean Alloy
+`v1.1.24`; [issue #71](https://github.com/ccoussa717/alloy/issues/71) tracks
+that baseline defect. It is not an accepted regression in changed PTY code.
+
 ## Rollback
 
 For an OpenTUI regression, start the same Pi backend with the prior renderer:
@@ -98,6 +102,8 @@ This is a renderer rollback, not a second supported product architecture. Pi
 runtime, credentials, tools, policy, sessions, and extensions remain the same.
 For a backend/fork regression, revert the complete integration commit so package
 metadata, shrinkwrap, verifier, tests, CI, and documentation return to one
-previously reviewed runtime state. Do not delete prior release assets; they are
-provenance evidence and rollback inputs except where explicitly marked unusable
-above.
+previously reviewed runtime state. For this release, the last known-good target
+is Alloy `v1.1.24` with Pi release `alloy-tui-v0.82.1.7` at commit
+`e144aea1a7ce8cf7235c130487e4f5c4011588d5`; neither intermediate 1.1.25 commit
+is a rollback target. Do not delete prior release assets; they are provenance
+evidence and rollback inputs except where explicitly marked unusable above.

@@ -77,7 +77,7 @@ test("prefers a nested Pi dependency and validates the package identity", () => 
   assert.equal(findPiCli([alloyRoot]), null);
 });
 
-test("installed Pi AI keeps non-token OpenAI incomplete responses terminal", async () => {
+test("installed Pi AI distinguishes token and non-token incomplete responses", async () => {
   const model = {
     id: "gpt-5-mini",
     name: "GPT-5 Mini",
@@ -136,4 +136,14 @@ test("installed Pi AI keeps non-token OpenAI incomplete responses terminal", asy
     assert.equal(message.stopReason, "error");
     assert.equal(message.errorMessage, `Response incomplete: ${reason}`);
   }
+
+  const lengthMessage = structuredClone(output);
+  await processResponsesStream(
+    incomplete("max_output_tokens"),
+    lengthMessage,
+    new AssistantMessageEventStream(),
+    model,
+  );
+  assert.equal(lengthMessage.stopReason, "length");
+  assert.equal(lengthMessage.errorMessage, undefined);
 });
