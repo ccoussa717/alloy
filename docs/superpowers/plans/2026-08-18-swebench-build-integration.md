@@ -751,7 +751,7 @@ git commit -m "build: verify SWE-bench release tooling"
 
 **Interfaces:**
 - Consumes: Tasks 1-4's npm commands and candidate wrapper.
-- Produces: maintainer-facing release instructions and one candidate dry-run after the branch is pushed.
+- Produces: reviewed maintainer-facing release instructions ready for the post-review integration gate.
 
 - [ ] **Step 1: Write documentation assertions first**
 
@@ -829,10 +829,16 @@ git add README.md docs/RELEASING.md benchmarks/swebench/README.md test/unit/sweb
 git commit -m "docs: add SWE-bench release gate"
 ```
 
-- [ ] **Step 6: Push the reviewed branch before candidate verification**
+## Post-Review Integration Gate
 
-After all task reviews and the final whole-branch review are clean, push the
-branch to the GitHub remote:
+Run this gate only after Tasks 1-5 pass their individual reviews, the full local
+verification is green, and the final whole-branch review says the branch is
+ready to integrate. These steps are not part of Task 5 and must not run before
+that review sequence completes.
+
+- [ ] **Step 1: Push the reviewed branch before candidate verification**
+
+Push the branch to the GitHub remote:
 
 ```bash
 git push -u github feat/swebench-build-integration
@@ -841,7 +847,7 @@ git push -u github feat/swebench-build-integration
 Expected: the remote advertises the exact local `HEAD` SHA. Do not create the
 pull request until the candidate dry-run passes.
 
-- [ ] **Step 7: Run the isolated candidate dry-run**
+- [ ] **Step 2: Run the isolated candidate dry-run**
 
 Before writing timestamps, run the required system clock command:
 
@@ -856,7 +862,7 @@ paths; no autonomous `-p` attempt or Docker evaluator starts; the manifest's
 candidate commit, install manifest commit, Alloy version, Pi version, model
 digest, and SWE-bench version all match.
 
-- [ ] **Step 8: Verify dry-run artifacts mechanically**
+- [ ] **Step 3: Verify dry-run artifacts mechanically**
 
 Inspect the newest `benchmarks/swebench/results/alloy-*` directory. Assert:
 
@@ -877,7 +883,7 @@ no patch or test_patch fields or gold sentinels
 The wrapper may remove the candidate installation after the runner exits, but
 the manifest must retain its verified commit and version provenance.
 
-- [ ] **Step 9: Open the pull request without running the real benchmark**
+- [ ] **Step 4: Open the pull request without running the real benchmark**
 
 Create a PR against GitHub `main` summarizing fast-test evidence and the
 candidate dry-run. State explicitly that the historical real attempt ended in
