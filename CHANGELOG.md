@@ -15,7 +15,8 @@ and releases use [semantic versioning](https://semver.org/).
   limit, Alloy now compacts the session and retries the interrupted turn once.
   Genuine output-limit completions remain terminal, non-token OpenAI failures
   are not retried, and a response is preserved when there is not enough history
-  to compact.
+  to compact. Alloy pins the matching coding-agent, AI, and TUI artifacts so
+  those provider stop reasons remain intact in an installed release.
 
 ## [1.1.24] - 2026-08-16
 

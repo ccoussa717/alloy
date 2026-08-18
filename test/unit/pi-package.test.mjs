@@ -9,6 +9,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-responses-shared";
+import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
+
 import {
   findPackageRoot,
   findPiCli,
@@ -72,4 +75,65 @@ test("prefers a nested Pi dependency and validates the package identity", () => 
     null,
   );
   assert.equal(findPiCli([alloyRoot]), null);
+});
+
+test("installed Pi AI keeps non-token OpenAI incomplete responses terminal", async () => {
+  const model = {
+    id: "gpt-5-mini",
+    name: "GPT-5 Mini",
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 400000,
+    maxTokens: 128000,
+  };
+  const output = {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+  async function* incomplete(reason) {
+    yield {
+      type: "response.incomplete",
+      sequence_number: 0,
+      response: {
+        id: `resp_${reason}`,
+        status: "incomplete",
+        incomplete_details: { reason },
+        usage: {
+          input_tokens: 30,
+          output_tokens: 1,
+          total_tokens: 31,
+          input_tokens_details: { cached_tokens: 0 },
+        },
+      },
+    };
+  }
+
+  for (const reason of ["content_filter", "max_time_limit"]) {
+    const message = structuredClone(output);
+    await processResponsesStream(
+      incomplete(reason),
+      message,
+      new AssistantMessageEventStream(),
+      model,
+    );
+    assert.equal(message.stopReason, "error");
+    assert.equal(message.errorMessage, `Response incomplete: ${reason}`);
+  }
 });
