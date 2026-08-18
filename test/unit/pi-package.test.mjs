@@ -11,6 +11,12 @@ import { join } from "node:path";
 
 import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 
 import {
   findPackageRoot,
@@ -146,4 +152,113 @@ test("installed Pi AI distinguishes token and non-token incomplete responses", a
   );
   assert.equal(lengthMessage.stopReason, "length");
   assert.equal(lengthMessage.errorMessage, undefined);
+});
+
+test("installed Pi compacts and retries one partial length stop", async (t) => {
+  const cwd = process.cwd();
+  const agentDir = join(temp, "agent-session");
+  mkdirSync(agentDir, { recursive: true });
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "synthetic-test-key";
+  t.after(() => {
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+  });
+
+  const model = {
+    id: "synthetic-overflow",
+    name: "Synthetic overflow model",
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 32768,
+    maxTokens: 4096,
+  };
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 },
+  });
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+
+  const { session } = await createAgentSession({
+    cwd,
+    agentDir,
+    model,
+    noTools: "all",
+    settingsManager,
+    sessionManager: SessionManager.inMemory(cwd),
+    resourceLoader,
+  });
+  t.after(() => session.dispose());
+
+  const responses = [
+    { text: "partial answer", stopReason: "length", output: 1 },
+    { text: "summary checkpoint", stopReason: "stop", output: 4 },
+    { text: "completed response", stopReason: "stop", output: 2 },
+  ];
+  let streamCalls = 0;
+  session.agent.streamFunction = (requestModel) => {
+    const response = responses[streamCalls++];
+    assert.ok(response, "unexpected extra model call");
+    const message = {
+      role: "assistant",
+      content: [{ type: "text", text: response.text }],
+      api: requestModel.api,
+      provider: requestModel.provider,
+      model: requestModel.id,
+      usage: {
+        input: 100,
+        output: response.output,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 100 + response.output,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: response.stopReason,
+      timestamp: Date.now() + streamCalls,
+    };
+    const stream = new AssistantMessageEventStream();
+    queueMicrotask(() => stream.push({
+      type: "done",
+      reason: message.stopReason,
+      message,
+    }));
+    return stream;
+  };
+
+  const events = [];
+  session.subscribe((event) => events.push(event));
+  await session.prompt("x".repeat(115680));
+
+  assert.equal(streamCalls, 3);
+  assert.equal(
+    events.filter((event) => event.type === "compaction_start" && event.reason === "overflow").length,
+    1,
+  );
+  const compactionEnd = events.find(
+    (event) => event.type === "compaction_end" && event.reason === "overflow",
+  );
+  assert.deepEqual(
+    { aborted: compactionEnd?.aborted, willRetry: compactionEnd?.willRetry },
+    { aborted: false, willRetry: true },
+  );
+  assert.ok(compactionEnd?.result);
+  assert.equal(events.filter((event) => event.type === "agent_end").length, 2);
+  assert.equal(
+    session.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length,
+    1,
+  );
+  assert.equal(session.getLastAssistantText(), "completed response");
 });
