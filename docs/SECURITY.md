@@ -131,15 +131,15 @@ Host mode must never be described as filesystem isolation.
 
 ## Supply chain and releases
 
-- Direct executable dependencies use exact versions. The Alloy Pi coding-agent
-  fork uses one explicitly approved GitHub release URL plus matching SHA-256 and
-  npm SHA-512 integrity metadata.
+- Direct executable dependencies use exact versions. The Alloy Pi coding-agent,
+  AI, and TUI fork artifacts use explicitly approved GitHub release URLs plus
+  matching SHA-256 and npm SHA-512 integrity metadata.
 - Release artifacts include `npm-shrinkwrap.json`, and every registry or approved
   fork artifact must carry an integrity hash.
-- Release verification resolves the fork release tag to the declared full commit,
-  downloads the artifact, and checks both its SHA-256 and npm SHA-512 digests.
-  GitHub release URLs can be replaced by maintainers, but replacement bytes fail
-  closed against both recorded hashes.
+- Release verification resolves the shared fork release tag to the declared full
+  commit, downloads all three artifacts, and checks each SHA-256 and npm SHA-512
+  digest. GitHub release URLs can be replaced by maintainers, but replacement
+  bytes fail closed against the recorded hashes.
 - npm does not import a dependency tarball's nested shrinkwrap into the consuming
   project. Alloy's root shrinkwrap is therefore the authority for source-checkout
   and source-installer graphs, including Pi transitive dependencies. It does not
