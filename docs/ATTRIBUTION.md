@@ -12,7 +12,7 @@ Alloy is a **product layer** on [Pi](https://pi.dev), specifically the npm packa
 | Copyright | Copyright (c) 2025 Mario Zechner |
 | Upstream | https://github.com/earendil-works/pi (package directory `packages/coding-agent`) |
 | Alloy fork | https://github.com/ccoussa717/pi |
-| Runtime artifact | `alloy-tui-v0.82.1.7`, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
+| Runtime artifacts | `alloy-tui-v0.82.1.10` coding-agent, AI, and TUI tarballs, pinned by URL and SHA-512 integrity in `npm-shrinkwrap.json` |
 
 See [PI_FORK.md](./PI_FORK.md) for the source commit, artifact hashes,
 dependency-graph decision, upgrade procedure, and rollback procedure.
@@ -43,11 +43,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-Alloy **redistributes Pi as package dependencies**, with the coding-agent package
-coming from an integrity-pinned release asset in the public Alloy fork. Pi source
-is not vendored in this repository. Downstream redistributors of Alloy must
-preserve Pi's MIT notice when distributing the combined work, including through
-`node_modules`, the shrinkwrap, and this file.
+Alloy **redistributes Pi as package dependencies**, with the coding-agent, AI,
+and TUI packages coming from integrity-pinned release assets in the public Alloy
+fork. Pi source is not vendored in this repository. Downstream redistributors of
+Alloy must preserve Pi's MIT notice when distributing the combined work,
+including through `node_modules`, the shrinkwrap, and this file.
 
 ## OpenCode-derived frontend
 
@@ -82,10 +82,11 @@ dependency.
 
 ## What Alloy owns (divergence from bare Pi)
 
-Alloy does **not** vendor or patch Pi sources in-tree. The public fork changes
-only interactive viewport behavior, transcript navigation, standard user
-message presentation, and the bounded structured sidebar RPC state seam. The
-remaining divergence is additive:
+Alloy does **not** vendor or patch Pi sources in-tree. The public fork carries
+narrowly reviewed changes for interactive viewport behavior, transcript
+navigation, standard user-message presentation, the bounded structured sidebar
+RPC state seam, context-limit recovery, and incomplete-response stop reasons.
+The remaining divergence is additive:
 
 | Alloy surface | Role |
 |---|---|

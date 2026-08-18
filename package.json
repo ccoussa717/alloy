@@ -1,6 +1,6 @@
 {
   "name": "alloy-agent",
-  "version": "1.1.24",
+  "version": "1.1.25",
   "description": "Alloy multi-provider coding agent with an OpenCode-derived Solid/OpenTUI frontend and Pi runtime.",
   "private": true,
   "type": "module",
@@ -88,9 +88,9 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.82.1",
-    "@earendil-works/pi-ai": "0.82.1",
-    "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-coding-agent-0.82.1.tgz",
-    "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz",
+    "@earendil-works/pi-ai": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
+    "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
+    "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
     "@modelcontextprotocol/sdk": "1.29.0",
     "typebox": "1.1.38"
   },
@@ -99,8 +99,8 @@
     "undici": "8.10.0",
     "@earendil-works/pi-coding-agent": {
       "@earendil-works/pi-agent-core": "0.82.1",
-      "@earendil-works/pi-ai": "0.82.1",
-      "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz"
+      "@earendil-works/pi-ai": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
+      "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz"
     }
   },
   "pi": {
@@ -120,12 +120,17 @@
   "alloy": {
     "piFork": {
       "version": "0.82.1",
-      "commit": "e144aea1a7ce8cf7235c130487e4f5c4011588d5",
-      "url": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-coding-agent-0.82.1.tgz",
-      "sha256": "74a526dd025fb1cb7161013c095cfa753d47d01b00eb5d325cf28af7840b16ae",
-      "integrity": "sha512-loPday6lSj5zJPR/BSA0lKUEazsWHn4cGbq8o7UnSsD7dL5bqwJUkNRmnVyCEOcsGSrn4PhZ2n+8RbBpH+9tsg==",
+      "commit": "efd4e85da934ffa1e4161d0a08bd861ca8401ba4",
+      "url": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
+      "sha256": "0da9289c9c76b4c5762d0dfa37910cea3a4b2307e373f293a01cdbd813288be9",
+      "integrity": "sha512-bRgcHLQKyDsCa+FwB/s3f7a02ogtAKXNcJZ3YoJg5abl/VCa8JZvomYmjw6HvTbb/lGCfbE01o6gQReDZ5oiHw==",
+      "ai": {
+        "url": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
+        "sha256": "ec2a9bac0a16fafcb5d3071b7a8ea058865c7ee232972fb562c55135a12a85b3",
+        "integrity": "sha512-v0fBjXGCsAk+CLgHfF4wGzRGN0eW+J2D2mX8QQR/wIBBGmljxtDVymOdflD0z7R5tQJg/GKRhO4QYjqt90/8Ag=="
+      },
       "tui": {
-        "url": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz",
+        "url": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
         "sha256": "6c939c4515c6742895e4d4c6e5926a5c735a7789d20250284dbef510efa5959c",
         "integrity": "sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ=="
       }

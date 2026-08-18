@@ -1,4 +1,4 @@
-import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type ScrollBoxRenderable, type Selection, type TextareaRenderable } from "@opentui/core";
+import { addDefaultParsers, RGBA, type CliRenderer, type KeyEvent, type MouseEvent, type ScrollBoxRenderable, type Selection, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
@@ -874,10 +874,42 @@ export function AlloyApp(props: AlloyAppProps) {
   let submitting = false;
   let lastBackendEditorText: string | undefined;
   let applyingHistoryText = false;
+  let transcriptResumeTimer: ReturnType<typeof setTimeout> | undefined;
   const commandHistory = createPersistentCommandHistory();
   const submissionQueue: Array<{ value: string; restoreOnFailure: boolean }> = [];
   const extensionTimeouts = new Map<string, { delay: number; timer: ReturnType<typeof setTimeout> }>();
   let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const pauseTranscriptFollow = () => {
+    scroll.stickyScroll = false;
+    if (transcriptResumeTimer) clearTimeout(transcriptResumeTimer);
+    transcriptResumeTimer = undefined;
+  };
+
+  const resumeTranscriptFollowAtTail = () => {
+    const maxScrollTop = Math.max(0, scroll.scrollHeight - scroll.viewport.height);
+    if (scroll.scrollTop >= maxScrollTop - 1) {
+      scroll.stickyScroll = true;
+    }
+  };
+
+  const scheduleTranscriptResumeAtTail = () => {
+    if (transcriptResumeTimer) clearTimeout(transcriptResumeTimer);
+    transcriptResumeTimer = setTimeout(() => {
+      transcriptResumeTimer = undefined;
+      resumeTranscriptFollowAtTail();
+    }, 0);
+  };
+
+  const handleTranscriptScroll = (event: MouseEvent) => {
+    if (event.modifiers.shift) return;
+    if (event.scroll?.direction === "up") {
+      pauseTranscriptFollow();
+      return;
+    }
+    if (event.scroll?.direction !== "down") return;
+    scheduleTranscriptResumeAtTail();
+  };
 
   useSelectionHandler((selection) => {
     if (!copySelectionToClipboard(renderer, selection)) return;
@@ -890,6 +922,7 @@ export function AlloyApp(props: AlloyAppProps) {
   });
   onCleanup(() => {
     if (copyNoticeTimer) clearTimeout(copyNoticeTimer);
+    if (transcriptResumeTimer) clearTimeout(transcriptResumeTimer);
   });
 
   const reduce = (message: RpcMessage) => {
@@ -950,6 +983,7 @@ export function AlloyApp(props: AlloyAppProps) {
   });
 
   onMount(() => {
+    scroll.stickyScroll = true;
     const focusTimer = setTimeout(() => composer?.focus(), 0);
     const scrollTimer = setTimeout(() => scroll?.scrollTo(scroll.scrollHeight), 50);
     onCleanup(() => {
@@ -1175,6 +1209,8 @@ export function AlloyApp(props: AlloyAppProps) {
       return true;
     }
 
+    scroll.stickyScroll = true;
+    scroll?.scrollTo(scroll.scrollHeight);
     const response = await request(resolution.request);
     if (!response?.success) return false;
     if (resolution.refresh) await refresh();
@@ -1182,7 +1218,6 @@ export function AlloyApp(props: AlloyAppProps) {
       setDialogResult(response.data);
       setLocalDialog(resolution.resultDialog);
     }
-    setTimeout(() => scroll?.scrollTo(scroll.scrollHeight), 0);
     return true;
   }
 
@@ -1399,12 +1434,14 @@ export function AlloyApp(props: AlloyAppProps) {
     }
     if (event.name === "pageup" || (event.ctrl && event.name === "u")) {
       event.preventDefault();
+      pauseTranscriptFollow();
       scroll?.scrollBy(event.name === "pageup" ? -scroll.height : -scroll.height / 2);
       return;
     }
     if (event.name === "pagedown" || (event.ctrl && event.name === "d")) {
       event.preventDefault();
       scroll?.scrollBy(event.name === "pagedown" ? scroll.height : scroll.height / 2);
+      scheduleTranscriptResumeAtTail();
       return;
     }
     if (event.shift && event.name === "tab" && !extensionDialog() && !localDialog()) {
@@ -1522,7 +1559,17 @@ export function AlloyApp(props: AlloyAppProps) {
       </Show>
 
       <box flexGrow={1} minHeight={0} paddingLeft={layout().horizontalPadding} paddingRight={layout().horizontalPadding}>
-        <scrollbox ref={(value) => (scroll = value)} flexGrow={1} minHeight={0} stickyScroll={true} stickyStart="bottom" scrollbarOptions={{ visible: false }}>
+        <scrollbox
+          ref={(value) => (scroll = value)}
+          flexGrow={1}
+          minHeight={0}
+          stickyScroll={false}
+          stickyStart="bottom"
+          scrollbarOptions={{ visible: false }}
+          onMouseScroll={handleTranscriptScroll}
+          onMouseDrag={pauseTranscriptFollow}
+          onMouseDragEnd={scheduleTranscriptResumeAtTail}
+        >
           <box height={1} />
           <Show when={session().messages.length === 0}>
             <box flexGrow={1} minHeight={1} alignItems="center" justifyContent="center">

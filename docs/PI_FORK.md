@@ -1,7 +1,7 @@
 # Alloy Pi Fork
 
-Alloy uses narrow public forks of `@earendil-works/pi-coding-agent` and
-`@earendil-works/pi-tui`. The coding-agent fork remains the authoritative
+Alloy uses narrow public forks of `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-ai`, and `@earendil-works/pi-tui`. The coding-agent fork remains the authoritative
 backend for provider authentication, credentials, sessions, commands, tools,
 policy, compaction, models, and extensions.
 
@@ -17,18 +17,19 @@ RPC modes also invoke Pi directly, without the OpenTUI frontend.
 |---|---|
 | Package version | `0.82.1` |
 | Fork | https://github.com/ccoussa717/pi |
-| Source commit | `e144aea1a7ce8cf7235c130487e4f5c4011588d5` |
-| Release | `alloy-tui-v0.82.1.7` |
+| Source commit | `efd4e85da934ffa1e4161d0a08bd861ca8401ba4` |
+| Release | `alloy-tui-v0.82.1.10` |
 
 | Package | Artifact | SHA-256 | npm integrity |
 |---|---|---|---|
-| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `74a526dd025fb1cb7161013c095cfa753d47d01b00eb5d325cf28af7840b16ae` | `sha512-loPday6lSj5zJPR/BSA0lKUEazsWHn4cGbq8o7UnSsD7dL5bqwJUkNRmnVyCEOcsGSrn4PhZ2n+8RbBpH+9tsg==` |
+| `@earendil-works/pi-coding-agent` | `earendil-works-pi-coding-agent-0.82.1.tgz` | `0da9289c9c76b4c5762d0dfa37910cea3a4b2307e373f293a01cdbd813288be9` | `sha512-bRgcHLQKyDsCa+FwB/s3f7a02ogtAKXNcJZ3YoJg5abl/VCa8JZvomYmjw6HvTbb/lGCfbE01o6gQReDZ5oiHw==` |
+| `@earendil-works/pi-ai` | `earendil-works-pi-ai-0.82.1.tgz` | `ec2a9bac0a16fafcb5d3071b7a8ea058865c7ee232972fb562c55135a12a85b3` | `sha512-v0fBjXGCsAk+CLgHfF4wGzRGN0eW+J2D2mX8QQR/wIBBGmljxtDVymOdflD0z7R5tQJg/GKRhO4QYjqt90/8Ag==` |
 | `@earendil-works/pi-tui` | `earendil-works-pi-tui-0.82.1.tgz` | `6c939c4515c6742895e4d4c6e5926a5c735a7789d20250284dbef510efa5959c` | `sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==` |
 
 `package.json` records the same values under `alloy.piFork`.
 `scripts/verify-release.mjs` requires that metadata, resolves the shared release
-tag to the declared commit, downloads both assets, recomputes their hashes, and
-requires both shrinkwrap URLs and SHA-512 integrity values to match.
+tag to the declared commit, downloads all three assets, recomputes their hashes,
+and requires every shrinkwrap URL and SHA-512 integrity value to match.
 
 ## Dependency Graph Decision
 
@@ -61,7 +62,13 @@ This is a deliberate dependency refresh, not a claim that the fork's nested
 shrinkwrap is inherited. Acceptance requires the root integrity gate, unit and
 integration suites, packed install, source installer, provider compatibility,
 and live PTY viewport checks. Alloy overrides the fork's vulnerable
-`brace-expansion` 5.0.7 node with patched 5.0.8 in the root shrinkwrap.
+`brace-expansion` 5.0.7 node with patched 5.0.9 in the root shrinkwrap.
+
+Release `alloy-tui-v0.82.1.10` supersedes `.8` and `.9`. The `.8` coding-agent
+artifact imports a workspace-only Pi AI export and cannot start. Release `.9`
+starts but omitted the matching Pi AI artifact, so non-token OpenAI incomplete
+responses can be retried as length stops. Neither release is a valid upgrade or
+rollback input.
 
 ## Upgrade
 
@@ -69,13 +76,17 @@ and live PTY viewport checks. Alloy overrides the fork's vulnerable
 2. Keep the diff within the approved viewport and message boundary.
 3. Run fork tests, build, legacy-renderer PTY checks, independent review, and
    secret scans.
-4. Pack the coding-agent and TUI twice from the clean tree and require identical
-   hashes for both artifacts.
-5. Create a fork release tag at the reviewed commit and upload both artifacts.
-6. Update all `alloy.piFork` fields, the four Pi dependency pins, and overrides.
+4. Pack the coding-agent, AI, and TUI twice from the clean tree and require
+   identical hashes for all artifacts.
+5. Create a fork release tag at the reviewed commit and upload all artifacts.
+6. Update all `alloy.piFork` fields, Pi dependency pins, and overrides.
 7. Regenerate the root shrinkwrap with lifecycle scripts disabled.
 8. Audit and document the full lock delta, then run `npm run ci:local`, the
    OpenTUI PTY checks, and focused legacy-renderer rollback checks.
+
+The unchanged sticky-tail wheel assertion currently fails on clean Alloy
+`v1.1.24`; [issue #71](https://github.com/ccoussa717/alloy/issues/71) tracks
+that baseline defect. It is not an accepted regression in changed PTY code.
 
 ## Rollback
 
@@ -91,5 +102,8 @@ This is a renderer rollback, not a second supported product architecture. Pi
 runtime, credentials, tools, policy, sessions, and extensions remain the same.
 For a backend/fork regression, revert the complete integration commit so package
 metadata, shrinkwrap, verifier, tests, CI, and documentation return to one
-previously reviewed runtime state. Do not delete prior release assets; they are
-rollback inputs and provenance evidence.
+previously reviewed runtime state. For this release, the last known-good target
+is Alloy `v1.1.24` with Pi release `alloy-tui-v0.82.1.7` at commit
+`e144aea1a7ce8cf7235c130487e4f5c4011588d5`; neither intermediate 1.1.25 commit
+is a rollback target. Do not delete prior release assets; they are provenance
+evidence and rollback inputs except where explicitly marked unusable above.

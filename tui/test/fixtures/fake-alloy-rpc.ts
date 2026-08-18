@@ -97,15 +97,16 @@ function fusionResult() {
   };
 }
 
-function stream(text: string): void {
+function stream(text: string, followProbe = false): void {
   const id = `assistant-${++sequence}`;
   const toolCallId = `tool-${sequence}`;
   const commandCallId = `command-${sequence}`;
-  const content = [
+  const toolCalls = [
     { type: "toolCall", id: toolCallId, name: "read", arguments: { path: "/tmp/example.ts" } },
     { type: "toolCall", id: commandCallId, name: "bash", arguments: { command: "printf 'fixture command'" } },
-    { type: "text", text: `${text}\n\n\`\`\`typescript\nconst status: string = "visible"\n\`\`\`` },
   ];
+  const textContent = { type: "text", text: `${text}\n\n\`\`\`typescript\nconst status: string = "visible"\n\`\`\`` };
+  const content = followProbe ? [textContent, ...toolCalls] : [...toolCalls, textContent];
   send({ type: "agent_start" });
   send({ type: "message_start", message: { id, role: "assistant", content: [{ type: "reasoning", text: "Checking the request" }], timestamp: Date.now() } });
   setTimeout(() => {
@@ -141,6 +142,12 @@ function stream(text: string): void {
     send({ type: "message_end", message: { id, role: "assistant", content, timestamp: Date.now() } });
     send({ type: "agent_end" });
   }, 650);
+  if (followProbe) {
+    setTimeout(() => send({ type: "message_end", message: message("assistant", "wheel pause sentinel") }), 750);
+    setTimeout(() => send({ type: "message_end", message: message("assistant", "wheel follow resumed sentinel") }), 1_500);
+    setTimeout(() => send({ type: "message_end", message: message("assistant", "keyboard pause sentinel") }), 2_200);
+    setTimeout(() => send({ type: "message_end", message: message("assistant", "keyboard follow resumed sentinel") }), 2_900);
+  }
 }
 
 function streamFlickerFixture(): void {
@@ -411,7 +418,16 @@ function handle(request: Record<string, unknown>): void {
       } else if (text === "/mode" || text === "/plan" || text === "/build") {
         send({ type: "extension_ui_request", id: "mode-notice", method: "notify", notifyType: "info", message: "Mode command received" });
       } else {
-        stream(text === "paused append" ? "sticky append stayed at the tail" : "streamed assistant text");
+        const streamedText = text === "PTY prompt"
+          ? [
+              "streamed assistant text",
+              ...Array.from({ length: 20 }, (_, index) => `streamed filler line ${index + 1}`),
+              "streamed tail sentinel",
+            ].join("\n")
+          : text === "paused append"
+            ? "sticky append stayed at the tail"
+            : "streamed assistant text";
+        stream(streamedText, text === "PTY prompt");
       }
       return;
     }

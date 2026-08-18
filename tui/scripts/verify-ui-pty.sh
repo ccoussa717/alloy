@@ -396,16 +396,24 @@ if [[ "$working_frame_a" == "$working_frame_b" ]]; then
   printf 'activity scanner did not advance while the backend was working\n' >&2
   exit 1
 fi
-tmux send-keys -t "$SESSION" -l "$wheel_up$wheel_up$wheel_up$wheel_up"
+for ((i = 0; i < 40; i++)); do tmux send-keys -t "$SESSION" -l "$wheel_up"; done
 sleep 0.8
 scrolled="$(capture "$SESSION")"
-assert_not_contains "$scrolled" "streamed assistant text" "wheel pauses sticky tail"
+assert_not_contains "$scrolled" "wheel pause sentinel" "wheel pauses sticky tail"
 assert_contains "$scrolled" "hydrated history item" "wheel reveals history"
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tmux send-keys -t "$SESSION" -l "$wheel_down"; done
-streamed="$(wait_for_text "$SESSION" 'streamed assistant text')"
+for ((i = 0; i < 80; i++)); do tmux send-keys -t "$SESSION" -l "$wheel_down"; done
+streamed="$(wait_for_text "$SESSION" 'wheel pause sentinel')"
 assert_contains "$streamed" "✓ Read /tmp/example.ts" "completed tool row"
 assert_contains "$streamed" "✓ $ printf 'fixture command'" "completed command row"
 assert_contains "$streamed" 'const status: string = "visible"' "syntax-rendered fenced TypeScript"
+wait_for_text "$SESSION" 'wheel follow resumed sentinel' >/dev/null
+tmux send-keys -t "$SESSION" PageUp
+sleep 0.9
+keyboard_scrolled="$(capture "$SESSION")"
+assert_not_contains "$keyboard_scrolled" "keyboard pause sentinel" "PageUp pauses sticky tail"
+tmux send-keys -t "$SESSION" PageDown PageDown
+wait_for_text "$SESSION" 'keyboard pause sentinel' >/dev/null
+wait_for_text "$SESSION" 'keyboard follow resumed sentinel' >/dev/null
 wait_for_text "$SESSION" 'Ready' >/dev/null
 
 tmux send-keys -t "$SESSION" -l "/editor-fixture"

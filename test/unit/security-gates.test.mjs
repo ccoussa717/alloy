@@ -20,12 +20,17 @@ const temp = mkdtempSync(join(tmpdir(), "alloy-security-gates-"));
 const TEST_INTEGRITY = `sha512-${Buffer.alloc(64).toString("base64")}`;
 const TEST_PI_FORK_URL =
   "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-coding-agent-0.82.1.tgz";
+const TEST_PI_AI_FORK_URL =
+  "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-ai-0.82.1.tgz";
 const TEST_PI_TUI_FORK_URL =
   "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.5/earendil-works-pi-tui-0.82.1.tgz";
 const TEST_PI_FORK_COMMIT = "ba288b26a30e0212cf3a1b292f93c4c99d190d22";
 const TEST_PI_FORK_ARTIFACT = Buffer.from("alloy pi fork artifact fixture");
 const TEST_PI_FORK_SHA256 = createHash("sha256").update(TEST_PI_FORK_ARTIFACT).digest("hex");
 const TEST_PI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_FORK_ARTIFACT).digest("base64")}`;
+const TEST_PI_AI_FORK_ARTIFACT = Buffer.from("alloy pi ai fork artifact fixture");
+const TEST_PI_AI_FORK_SHA256 = createHash("sha256").update(TEST_PI_AI_FORK_ARTIFACT).digest("hex");
+const TEST_PI_AI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_AI_FORK_ARTIFACT).digest("base64")}`;
 const TEST_PI_TUI_FORK_ARTIFACT = Buffer.from("alloy pi tui fork artifact fixture");
 const TEST_PI_TUI_FORK_SHA256 = createHash("sha256").update(TEST_PI_TUI_FORK_ARTIFACT).digest("hex");
 const TEST_PI_TUI_FORK_INTEGRITY = `sha512-${createHash("sha512").update(TEST_PI_TUI_FORK_ARTIFACT).digest("base64")}`;
@@ -104,7 +109,7 @@ function releaseFixture(overrides = {}) {
     license: "MIT",
     dependencies: {
       "@earendil-works/pi-agent-core": "0.82.1",
-      "@earendil-works/pi-ai": "0.82.1",
+      "@earendil-works/pi-ai": TEST_PI_AI_FORK_URL,
       "@earendil-works/pi-coding-agent": TEST_PI_FORK_URL,
       "@earendil-works/pi-tui": TEST_PI_TUI_FORK_URL,
     },
@@ -116,6 +121,11 @@ function releaseFixture(overrides = {}) {
         url: TEST_PI_FORK_URL,
         sha256: TEST_PI_FORK_SHA256,
         integrity: TEST_PI_FORK_INTEGRITY,
+        ai: {
+          url: TEST_PI_AI_FORK_URL,
+          sha256: TEST_PI_AI_FORK_SHA256,
+          integrity: TEST_PI_AI_FORK_INTEGRITY,
+        },
         tui: {
           url: TEST_PI_TUI_FORK_URL,
           sha256: TEST_PI_TUI_FORK_SHA256,
@@ -137,12 +147,16 @@ function releaseFixture(overrides = {}) {
       resolved:
         name === "@earendil-works/pi-coding-agent"
           ? TEST_PI_FORK_URL
+          : name === "@earendil-works/pi-ai"
+            ? TEST_PI_AI_FORK_URL
           : name === "@earendil-works/pi-tui"
             ? TEST_PI_TUI_FORK_URL
           : `https://registry.npmjs.org/${name}/-/${slug}-0.82.1.tgz`,
       integrity:
         name === "@earendil-works/pi-coding-agent"
           ? TEST_PI_FORK_INTEGRITY
+          : name === "@earendil-works/pi-ai"
+            ? TEST_PI_AI_FORK_INTEGRITY
           : name === "@earendil-works/pi-tui"
             ? TEST_PI_TUI_FORK_INTEGRITY
             : TEST_INTEGRITY,
@@ -173,6 +187,7 @@ function releaseFixture(overrides = {}) {
     join(directory, "mock-release-fetch.mjs"),
     `import { readFileSync } from "node:fs";
 const artifact = readFileSync(${JSON.stringify(artifactPath)});
+const aiArtifact = Buffer.from(${JSON.stringify(TEST_PI_AI_FORK_ARTIFACT.toString())});
 const tuiArtifact = Buffer.from(${JSON.stringify(TEST_PI_TUI_FORK_ARTIFACT.toString())});
 globalThis.fetch = async (input, options) => {
   if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
@@ -181,6 +196,7 @@ globalThis.fetch = async (input, options) => {
     return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
   }
   if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  if (url === ${JSON.stringify(TEST_PI_AI_FORK_URL)}) return new Response(aiArtifact, { status: 200 });
   if (url === ${JSON.stringify(TEST_PI_TUI_FORK_URL)}) return new Response(tuiArtifact, { status: 200 });
   return new Response("not found", { status: 404 });
 };
@@ -214,6 +230,19 @@ describe("release metadata verification", () => {
     assert.match(result.stderr, /piFork metadata is required/);
   });
 
+  it("requires provenance metadata for the matching Pi AI artifact", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    delete pkg.alloy.piFork.ai;
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /alloy\.piFork\.ai metadata is required/);
+  });
+
   it("rejects a Pi fork release tag at a different commit", () => {
     const directory = piForkReleaseFixture();
     const packagePath = join(directory, "package.json");
@@ -234,6 +263,7 @@ describe("release metadata verification", () => {
       join(directory, "mock-release-fetch.mjs"),
       `import { readFileSync } from "node:fs";
 const artifact = readFileSync(${JSON.stringify(artifactPath)});
+const aiArtifact = Buffer.from(${JSON.stringify(TEST_PI_AI_FORK_ARTIFACT.toString())});
 const tuiArtifact = Buffer.from(${JSON.stringify(TEST_PI_TUI_FORK_ARTIFACT.toString())});
 globalThis.fetch = async (input, options) => {
   if (!(options?.signal instanceof AbortSignal)) return new Response("missing timeout", { status: 598 });
@@ -245,6 +275,7 @@ globalThis.fetch = async (input, options) => {
     return new Response(JSON.stringify({ object: { type: "commit", sha: ${JSON.stringify(TEST_PI_FORK_COMMIT)} } }), { status: 200 });
   }
   if (url === ${JSON.stringify(TEST_PI_FORK_URL)}) return new Response(artifact, { status: 200 });
+  if (url === ${JSON.stringify(TEST_PI_AI_FORK_URL)}) return new Response(aiArtifact, { status: 200 });
   if (url === ${JSON.stringify(TEST_PI_TUI_FORK_URL)}) return new Response(tuiArtifact, { status: 200 });
   return new Response("not found", { status: 404 });
 };
@@ -342,7 +373,20 @@ globalThis.fetch = async (input, options) => {
     assert.match(result.stderr, /does not match alloy\.piFork\.tui\.sha256/);
   });
 
-  it("requires both Pi fork artifacts to use the same release tag", () => {
+  it("rejects a downloaded AI fork artifact with a different SHA-256", () => {
+    const directory = piForkReleaseFixture();
+    const packagePath = join(directory, "package.json");
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+    pkg.alloy.piFork.ai.sha256 = "0".repeat(64);
+    writeFileSync(packagePath, JSON.stringify(pkg));
+
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match alloy\.piFork\.ai\.sha256/);
+  });
+
+  it("requires all Pi fork artifacts to use the same release tag", () => {
     const directory = piForkReleaseFixture();
     const packagePath = join(directory, "package.json");
     const lockPath = join(directory, "npm-shrinkwrap.json");

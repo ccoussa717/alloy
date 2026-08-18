@@ -12,6 +12,7 @@ const publishGate = process.argv.includes("--publish");
 const sourceGate = process.argv.includes("--source");
 const canonicalRepositoryPath = "/ccoussa717/alloy";
 const piCodingAgentName = "@earendil-works/pi-coding-agent";
+const piAiName = "@earendil-works/pi-ai";
 const piTuiName = "@earendil-works/pi-tui";
 const piFork = pkg.alloy?.piFork;
 let piForkReleaseTag;
@@ -133,6 +134,12 @@ const piForkArtifacts = [
     slug: "coding-agent",
     metadata: piFork,
     metadataPath: "alloy.piFork",
+  },
+  {
+    dependency: piAiName,
+    slug: "ai",
+    metadata: piFork?.ai,
+    metadataPath: "alloy.piFork.ai",
   },
   {
     dependency: piTuiName,

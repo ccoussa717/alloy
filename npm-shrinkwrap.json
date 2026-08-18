@@ -1,18 +1,18 @@
 {
   "name": "alloy-agent",
-  "version": "1.1.24",
+  "version": "1.1.25",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "alloy-agent",
-      "version": "1.1.24",
+      "version": "1.1.25",
       "license": "MIT",
       "dependencies": {
         "@earendil-works/pi-agent-core": "0.82.1",
-        "@earendil-works/pi-ai": "0.82.1",
-        "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-coding-agent-0.82.1.tgz",
-        "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz",
+        "@earendil-works/pi-ai": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
+        "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
+        "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
         "@modelcontextprotocol/sdk": "1.29.0",
         "typebox": "1.1.38"
       },
@@ -502,8 +502,8 @@
     },
     "node_modules/@earendil-works/pi-ai": {
       "version": "0.82.1",
-      "resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.82.1.tgz",
-      "integrity": "sha512-3WFYRhEp3lQB3444EhPMBcM7zSaEUE3eJgHOR7s4081NLqbw/FsWilIKWXSua0Gv3sRr7m9xMidR3pPDE7jI/A==",
+      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
+      "integrity": "sha512-v0fBjXGCsAk+CLgHfF4wGzRGN0eW+J2D2mX8QQR/wIBBGmljxtDVymOdflD0z7R5tQJg/GKRhO4QYjqt90/8Ag==",
       "license": "MIT",
       "dependencies": {
         "@anthropic-ai/sdk": "0.91.1",
@@ -527,8 +527,8 @@
     },
     "node_modules/@earendil-works/pi-coding-agent": {
       "version": "0.82.1",
-      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-coding-agent-0.82.1.tgz",
-      "integrity": "sha512-loPday6lSj5zJPR/BSA0lKUEazsWHn4cGbq8o7UnSsD7dL5bqwJUkNRmnVyCEOcsGSrn4PhZ2n+8RbBpH+9tsg==",
+      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
+      "integrity": "sha512-bRgcHLQKyDsCa+FwB/s3f7a02ogtAKXNcJZ3YoJg5abl/VCa8JZvomYmjw6HvTbb/lGCfbE01o6gQReDZ5oiHw==",
       "license": "MIT",
       "dependencies": {
         "@earendil-works/pi-agent-core": "^0.82.1",
@@ -899,7 +899,7 @@
     },
     "node_modules/@earendil-works/pi-tui": {
       "version": "0.82.1",
-      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.7/earendil-works-pi-tui-0.82.1.tgz",
+      "resolved": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
       "integrity": "sha512-0fP+idwxLCNq8a/C6CwIZ6e5B1xPck/ndxD2CSyrmhkaoPxEgY190WIGcIPHGNx51IAlDU7jHkwcOaN5MExpTQ==",
       "license": "MIT",
       "dependencies": {

@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/ccoussa717/alloy/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/ccoussa717/alloy/ci.yml?branch=main&amp;style=flat-square&amp;label=verify"></a>
-  <img alt="v1.1.24" src="https://img.shields.io/badge/version-1.1.24-1FE07A?style=flat-square">
+  <img alt="v1.1.25" src="https://img.shields.io/badge/version-1.1.25-1FE07A?style=flat-square">
   <img alt="Node 22.19 or newer" src="https://img.shields.io/badge/node-%3E%3D22.19-1FE07A?style=flat-square">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-1F2937?style=flat-square"></a>
 </p>
@@ -83,7 +83,7 @@ When no release exists yet, it falls back to the tip of `main`. Pin explicitly:
 
 ```bash
 # Pin to a release tag
-curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v1.1.24/install.sh | ALLOY_REF=v1.1.24 bash
+curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/v1.1.25/install.sh | ALLOY_REF=v1.1.25 bash
 
 # Always install tip of main
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | ALLOY_CHANNEL=main bash
@@ -558,7 +558,7 @@ troubleshooting.
 
 ## Project status
 
-Alloy **1.1.24** is the current release (installer **stable** channel → latest
+Alloy **1.1.25** is the current release (installer **stable** channel → latest
 GitHub release). Runtime pins: Pi 0.82.1, Node.js ≥22.19, Bun 1.3.14, OpenTUI
 0.4.5, Solid 1.9.12. Default UI is the OpenCode-derived shell;
 `--legacy-pi-ui` is temporary rollback only. Install via `install.sh` or a
