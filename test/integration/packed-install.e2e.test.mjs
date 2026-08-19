@@ -320,6 +320,10 @@ esac
     const app = join(dataHome, "alloy", "app");
     assert.equal(existsSync(join(app, "benchmarks")), false);
     assert.equal(
+      existsSync(join(app, "scripts", "run-swebench-release-smoke.sh")),
+      false,
+    );
+    assert.equal(
       existsSync(join(app, "tui", "node_modules", "@opentui", "core")),
       true,
     );

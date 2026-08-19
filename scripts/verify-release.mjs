@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 function fail(message) {
   console.error(`release verification failed: ${message}`);
@@ -14,6 +15,7 @@ const canonicalRepositoryPath = "/ccoussa717/alloy";
 const piCodingAgentName = "@earendil-works/pi-coding-agent";
 const piAiName = "@earendil-works/pi-ai";
 const piTuiName = "@earendil-works/pi-tui";
+const swebenchWrapper = "scripts/run-swebench-release-smoke.sh";
 const piFork = pkg.alloy?.piFork;
 let piForkReleaseTag;
 let piForkShapeValid = true;
@@ -24,8 +26,45 @@ if (publishGate) fail("npm publication is blocked until package-consumer lifecyc
 if (sourceGate && pkg.private !== true) {
   fail("package must remain private for a source launch");
 }
+function isBenchmarkTooling(path) {
+  return path === "benchmarks" || path.startsWith("benchmarks/") || path === swebenchWrapper;
+}
+
 for (const path of pkg.files || []) {
-  if (path === "benchmarks" || path.startsWith("benchmarks/")) {
+  if (path === "." || isBenchmarkTooling(path)) {
+    fail("benchmark tooling must not ship in the runtime package boundary");
+  }
+}
+
+function packedFilePaths() {
+  const packed = spawnSync(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["pack", "--dry-run", "--ignore-scripts", "--json"],
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  if (packed.error || packed.status !== 0) {
+    fail("could not inspect the runtime package boundary with npm pack");
+    return [];
+  }
+  try {
+    const report = JSON.parse(packed.stdout);
+    if (
+      !Array.isArray(report) ||
+      report.length !== 1 ||
+      !Array.isArray(report[0]?.files) ||
+      report[0].files.some((file) => typeof file?.path !== "string")
+    ) {
+      throw new Error("unexpected npm pack report shape");
+    }
+    return report[0].files.map((file) => file.path);
+  } catch {
+    fail("npm pack returned an invalid runtime package file list");
+    return [];
+  }
+}
+
+for (const path of packedFilePaths()) {
+  if (isBenchmarkTooling(path)) {
     fail("benchmark tooling must not ship in the runtime package boundary");
   }
 }

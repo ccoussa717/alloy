@@ -522,7 +522,11 @@ done
 
 [[ ! -L "$SOURCE_DIR/benchmarks" ]] || err "Alloy source archive contains a symlinked benchmarks directory"
 rm -rf -- "$SOURCE_DIR/benchmarks"
-[[ ! -e "$SOURCE_DIR/benchmarks" ]] || err "could not remove release-only benchmark tooling"
+! exists_or_link "$SOURCE_DIR/benchmarks" || err "could not remove release-only benchmark tooling"
+[[ ! -L "$SOURCE_DIR/scripts" ]] || err "Alloy source archive contains a symlinked scripts directory"
+[[ ! -L "$SOURCE_DIR/scripts/run-swebench-release-smoke.sh" ]] || err "Alloy source archive contains a symlinked SWE-bench release wrapper"
+rm -f -- "$SOURCE_DIR/scripts/run-swebench-release-smoke.sh"
+! exists_or_link "$SOURCE_DIR/scripts/run-swebench-release-smoke.sh" || err "could not remove release-only SWE-bench wrapper"
 
 install_bun
 
