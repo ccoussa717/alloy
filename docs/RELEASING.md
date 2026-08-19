@@ -35,15 +35,13 @@ over a long `main`-only delta.
    and **`npm-shrinkwrap.json`** root + `packages[""]` to the same version.
 2. Move notes from `CHANGELOG.md` `[Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD`.
 3. Merge to `main` with green CI (`verify` + platform checks).
-4. From that pushed commit with no tracked worktree changes, complete the
-   [manual SWE-bench release gate](#manual-swe-bench-release-gate): run the
-   candidate dry-run, then obtain maintainer authorization for exactly one real
-   attempt.
-5. Record the official one-instance `resolved` or `unresolved` verdict. If no
-   valid official verdict exists, truthfully record `infrastructure_failure` and
-   stop: the gate is incomplete. Do not claim the gate ran without its official
-   summary.
-6. Only after the gate completes and release authority is confirmed, tag the
+4. From that pushed commit with no tracked worktree changes, run the candidate
+   dry-run in the [manual SWE-bench release gate](#manual-swe-bench-release-gate).
+5. Stop before tagging while the real gate is disabled. Trusted agent isolation,
+   an immutable dataset revision, and evaluator dependency integrity pins are
+   required before an official verdict can become release evidence.
+6. Only after the real gate is re-enabled, completes, and release authority is
+   confirmed, tag the
    exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
    `git push origin vX.Y.Z`.
 7. Create the GitHub Release for that tag (source archives only; not npm).
@@ -51,7 +49,9 @@ over a long `main`-only delta.
 
 ### Manual SWE-bench release gate
 
-This maintainer-only gate runs after green CI and before tagging. Follow the
+This maintainer-only gate runs after green CI and before tagging. Its real
+execution path is currently disabled pending trusted isolation and immutable
+dataset/evaluator integrity pins. Follow the
 complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md),
 including its prerequisites, provenance checks, artifact review, and explicit
 one-attempt/no-retry rule.
@@ -83,14 +83,16 @@ candidate and install commit, Alloy and Pi versions, pinned Ollama model digest,
 and SWE-bench version. A dry-run does not execute Alloy or Docker evaluation and
 does not satisfy the real benchmark gate.
 
-Only after review and explicit maintainer authorization, run exactly one:
+Do not attempt a real release run yet. The command fails closed before candidate
+preflight:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh release
 ```
 
-There is no automatic retry. The real attempt satisfies the execution portion
-of this gate only when `summary.json` has status `evaluated`, is backed by the
+After the command is safely re-enabled, there is no automatic retry. A real
+attempt satisfies the execution portion of this gate only when `summary.json`
+has status `evaluated`, is backed by the
 persisted schema-v2 `evaluation/official-summary.json`, and reports the official
 one-instance verdict `resolved` or `unresolved`. Both are truthful completed
 outcomes; neither is an Alloy SWE-bench score.
@@ -114,7 +116,8 @@ official summaries are untrusted and may contain sensitive content produced or
 read by those processes. Maintainers must inspect persisted artifacts before
 sharing, attaching, or releasing them.
 
-Helper (from a clean `main` at the release commit):
+Helper (from a clean `main` at the release commit, only after the real
+SWE-bench gate is safely re-enabled and completed):
 
 ```bash
 # after version bump is on main
@@ -185,9 +188,11 @@ Before publishing a source release:
 2. Move the shipped changelog entries from `Unreleased` to a dated version.
 3. Run `npm run ci:local`, `npm run ci:release`, and independent review.
 4. Merge the release metadata through protected `main` and require green CI.
-5. Tag that exact `main` commit and wait for green tag CI before creating the
+5. Complete the manual SWE-bench gate. While real execution is disabled, stop
+   here and do not tag.
+6. Tag that exact `main` commit and wait for green tag CI before creating the
    GitHub Release.
-6. Download and inspect the published source archive, verify the version, and
+7. Download and inspect the published source archive, verify the version, and
    confirm the supported installer resolves the tag.
 
 ## Package publication is blocked

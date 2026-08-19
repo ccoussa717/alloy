@@ -18,10 +18,11 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
 - Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite` and Python
   package index access for setup.
 
-The real `release` command also requires a reachable, functioning Docker daemon
-that can start the official SWE-bench containers. Target repository clone access
-and the image and registry access required by
-SWE-bench's official evaluator. An installed Docker CLI alone is insufficient.
+When the real `release` command is re-enabled, it will also require a reachable, functioning Docker daemon
+that can start the official SWE-bench containers.
+Target repository clone access and the image and registry access required by
+SWE-bench's official evaluator will also be required. An installed Docker CLI
+alone is insufficient.
 
 Bootstrap the pinned `swebench==5.0.0` environment:
 
@@ -74,17 +75,19 @@ or starting Docker evaluation:
 bash scripts/run-swebench-release-smoke.sh dry-run
 ```
 
-After reviewing that result, a maintainer may authorize exactly one real
-attempt:
+The real attempt is currently disabled. It must remain fail-closed until the
+agent is isolated from evaluator and result storage and the dataset and
+evaluator inputs have immutable integrity pins. Calling it exits nonzero before
+candidate preflight:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh release
 ```
 
-There is no automatic retry. The wrapper invokes the installer and runner once;
-the real runner invokes Alloy once and the official evaluator once. Do not turn
-an infrastructure failure into an undocumented retry. Any additional attempt
-requires a new explicit maintainer decision and must be reported separately.
+After trusted isolation and integrity pinning are implemented, the one-attempt,
+no-retry policy below applies. Do not turn an infrastructure failure into an
+undocumented retry. Any additional attempt requires a new explicit maintainer
+decision and must be reported separately.
 
 ## Candidate And State Isolation
 
@@ -109,6 +112,10 @@ not prevent the process from reading files that Unix user can access. The runner
 does not intentionally inject host credentials or environment variables,
 dataset gold fields, or evaluator scripts into persisted artifacts.
 
+That host-mode boundary does not protect evaluator or result integrity from the
+agent process. This is why the real `release` subcommand is disabled; a dry-run
+does not launch the agent and is unaffected.
+
 Before any attempt, the runner binds the manifest to the candidate commit,
 installed manifest, Alloy and Pi versions, exact Ollama digest, SWE-bench
 version, dataset, instance, and commands. Any provenance drift fails before the
@@ -122,7 +129,7 @@ Each invocation prints its newly created directory under:
 benchmarks/swebench/results/alloy-<version>-<UTC timestamp>/
 ```
 
-The ignored result directory has a phase-dependent safe allowlist:
+The runner's intended result contract has this phase-dependent file set:
 
 - Every attributable run has `manifest.json` and `summary.json`.
 - After dataset loading, `problem.md` contains only the public issue prompt.
@@ -131,17 +138,17 @@ The ignored result directory has a phase-dependent safe allowlist:
 - Evaluation may add only `evaluation/official-summary.json`,
   `evaluation/stdout.log`, and `evaluation/stderr.log`.
 
-Evaluator scratch, including generated evaluator scripts such as `eval.sh` and
-hidden test material, is deleted after the allowlisted evaluation files are
-copied. The wrapper accepts only the new result path whose pointer and manifest
-match this invocation's candidate SHA, run token, canonical results root, and
-installed candidate root.
+After trusted isolation is implemented, evaluator scratch, including generated
+evaluator scripts such as `eval.sh` and hidden test material, must be deleted
+after the listed evaluation files are copied. The current wrapper validates the
+new result path and selected manifest provenance, but those checks are not an
+integrity boundary against a same-UID agent. Only dry-run is currently enabled.
 
 Agent/evaluator stdout/stderr, model patches, and official summaries are
 untrusted and may contain sensitive content produced or read by those
 processes. Maintainers must inspect persisted artifacts before sharing,
-attaching, or releasing them. The artifact allowlist limits file names and
-provenance; it is not a content-sanitization or confidentiality boundary.
+attaching, or releasing them. The intended file contract is not currently a
+content-sanitization, confidentiality, or agent-tamper boundary.
 
 ## Status And Verdicts
 

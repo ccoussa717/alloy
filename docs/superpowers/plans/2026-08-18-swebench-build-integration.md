@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.11+ standard library with Python 3.12 pinned in CI, `swebench==5.0.0`, Node.js 22 test runner, Bash, Git, GitHub Actions, Alloy source installer, Docker, Ollama `qwen3.8-alloy:latest`.
 
+**Landing amendment:** Final exact-SHA review found that host mode does not
+isolate the agent from writable evaluator and result storage. The real `release`
+path is therefore disabled pending trusted filesystem isolation, an immutable
+dataset revision, and evaluator dependency integrity pins. This amendment
+supersedes the real-run requirements in the original implementation steps below;
+those steps remain as the historical plan. `test`, `setup`, and `dry-run` remain
+active.
+
 ## Global Constraints
 
 - Target the GitHub Alloy history beginning at `github/main` commit `77bc817ecc3142dc175a716453754c2115c2ebf0`; do not merge or copy commits from the divergent GitLab `origin/main` history.

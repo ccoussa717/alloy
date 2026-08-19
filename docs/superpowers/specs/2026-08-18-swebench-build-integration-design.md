@@ -65,8 +65,9 @@ The source-only wrapper provides one stable maintainer interface:
   install the pinned evaluator.
 - `bash scripts/run-swebench-release-smoke.sh dry-run`: validate candidate, model, evaluator, and dataset
   provenance without starting an autonomous attempt or Docker evaluation.
-- `bash scripts/run-swebench-release-smoke.sh release`: execute the isolated candidate installation and
-  one real smoke attempt.
+- `bash scripts/run-swebench-release-smoke.sh release`: currently fail closed
+  before candidate preflight pending the trusted-isolation and integrity work in
+  the release policy below.
 
 The real smoke is not placed in hosted CI. It requires local Ollama, the pinned
 17 GB model, Docker, public dataset access, and up to roughly 70 minutes across
@@ -92,8 +93,9 @@ temporary paths. It invokes the real `install.sh` with `ALLOY_REF` set to the
 candidate commit, verifies the resulting install manifest and `alloy --version`,
 then passes the installed candidate command to the Python runner explicitly.
 
-The wrapper starts the runner exactly once. A failed or timed-out agent attempt,
-or an official `unresolved` evaluator outcome, is never retried automatically.
+After the real path is safely re-enabled, the wrapper starts the runner exactly
+once. A failed or timed-out agent attempt, or an official `unresolved` evaluator
+outcome, is never retried automatically.
 
 ## Benchmark Profile And Provenance
 
@@ -158,8 +160,13 @@ proxy configuration.
 
 ## Release Policy
 
-Fast benchmark tests are mandatory in normal CI. The real smoke is a manual
-release-candidate gate documented in `docs/RELEASING.md`.
+Fast benchmark tests are mandatory in normal CI. The real smoke was designed as
+a manual release-candidate gate documented in `docs/RELEASING.md`, but final
+pre-merge review found that host mode does not isolate the agent from writable
+evaluator and result storage. The `release` subcommand therefore fails closed
+until trusted filesystem isolation, an immutable dataset revision, and
+evaluator dependency integrity pins are implemented. `test`, `setup`, and
+`dry-run` remain available; dry-run does not launch the agent.
 
 The command always reports one of:
 
@@ -201,4 +208,5 @@ Implementation is complete when:
   release checks remain green.
 
 The implementation does not perform another real Alloy SWE-bench attempt. A
-future maintainer runs the manual release gate once for the release candidate.
+future maintainer must first complete the release-path hardening above, then run
+the manual release gate once for the release candidate.

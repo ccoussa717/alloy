@@ -1251,6 +1251,16 @@ class OrchestrationTests(unittest.TestCase):
                         + ["--agent-timeout", "42", "--dry-run"]
                     )
 
+    def test_cli_rejects_real_execution_before_loading_profile(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "benchmarks.swebench.runner.load_profile",
+            side_effect=AssertionError("profile must not load"),
+        ) as load:
+            result = swebench_runner.main(self.candidate_args(Path(directory)))
+
+        self.assertEqual(result, 2)
+        load.assert_not_called()
+
     def test_default_paths_are_anchored_to_runner_from_external_cwd(self):
         instance = {
             "instance_id": "astropy__astropy-12907",
@@ -1297,7 +1307,10 @@ class OrchestrationTests(unittest.TestCase):
                         side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
                     ),
                 ):
-                    result = swebench_runner.main(self.candidate_args(root))
+                    result = swebench_runner.main(
+                        self.candidate_args(root),
+                        _allow_unsafe_execution_for_tests=True,
+                    )
             finally:
                 os.chdir(previous_cwd)
 
@@ -1360,7 +1373,8 @@ class OrchestrationTests(unittest.TestCase):
                         "--results-root", str(root / "results"),
                         "--work-root", str(root / ".work"),
                         "--venv-python", str(root / ".venv" / "bin" / "python"),
-                    ]
+                    ],
+                    _allow_unsafe_execution_for_tests=True,
                 )
 
             self.assertEqual(result, expected_code)
@@ -1415,7 +1429,8 @@ class OrchestrationTests(unittest.TestCase):
                         str(root / ".work"),
                         "--venv-python",
                         str(root / ".venv" / "bin" / "python"),
-                    ]
+                    ],
+                    _allow_unsafe_execution_for_tests=True,
                 )
 
             self.assertEqual(result, 8)
@@ -1461,7 +1476,8 @@ class OrchestrationTests(unittest.TestCase):
                         "--results-root", str(root / "results"),
                         "--work-root", str(root / ".work"),
                         "--venv-python", str(root / ".venv" / "bin" / "python"),
-                    ]
+                    ],
+                    _allow_unsafe_execution_for_tests=True,
                 )
 
             self.assertEqual(result, 8)

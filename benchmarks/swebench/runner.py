@@ -580,7 +580,11 @@ def write_command_logs(stdout_path: Path, stderr_path: Path, error: CommandError
     stderr_path.write_text(error.stderr)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    _allow_unsafe_execution_for_tests: bool = False,
+) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", type=Path, default=PROFILE_PATH)
     parser.add_argument("--alloy-bin", type=Path, required=True)
@@ -598,6 +602,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if not args.dry_run and not _allow_unsafe_execution_for_tests:
+        print(
+            "error: real execution is disabled pending trusted isolation for the agent, evaluator, and results",
+            file=sys.stderr,
+        )
+        return 2
     if (args.run_path_file is None) != (args.run_token is None):
         parser.error("--run-path-file and --run-token must be provided together")
     if args.run_token == "":

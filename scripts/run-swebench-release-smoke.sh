@@ -18,6 +18,11 @@ case "$SUBCOMMAND" in
     ;;
 esac
 
+if [[ "$SUBCOMMAND" == "release" ]]; then
+  printf 'error: release is disabled pending trusted isolation for the agent, evaluator, and results\n' >&2
+  exit 1
+fi
+
 if ! REPO_ROOT_OUTPUT="$(git rev-parse --show-toplevel && printf '\001')"; then
   printf 'error: could not determine repository root\n' >&2
   exit 1
