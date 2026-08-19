@@ -26,12 +26,125 @@ from benchmarks.swebench.runner import (
 )
 
 EXPECTED_DIGEST = "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba"
+PROFILE_PATH = Path(__file__).parents[1] / "profile.json"
+PROFILE = swebench_runner.load_profile(PROFILE_PATH)
 GOOD_PROVENANCE = {
     "alloy_version": "1.1.25",
     "model_digest": EXPECTED_DIGEST,
     "pi_version": "0.82.1",
     "swebench_version": "5.0.0",
 }
+
+
+class ProfileTests(unittest.TestCase):
+    def test_profile_loads_exact_reviewed_inputs_and_rejects_unknown_keys(self):
+        profile = swebench_runner.load_profile(PROFILE_PATH)
+        self.assertEqual(profile.instance_id, "astropy__astropy-12907")
+        self.assertEqual(profile.agent_timeout_seconds, 1800)
+        self.assertEqual(profile.swebench_version, "5.0.0")
+        with self.assertRaisesRegex(RuntimeError, "unknown profile keys"):
+            swebench_runner.parse_profile(
+                {**json.loads(PROFILE_PATH.read_text()), "unexpected": True}
+            )
+
+    def test_profile_rejects_missing_keys_and_malformed_types(self):
+        reviewed = json.loads(PROFILE_PATH.read_text())
+        cases = (
+            ({key: value for key, value in reviewed.items() if key != "dataset"}, "missing profile keys"),
+            ({**reviewed, "dataset": 1}, "profile dataset"),
+            ({**reviewed, "agent_timeout_seconds": True}, "agent_timeout_seconds"),
+            ({**reviewed, "agent_timeout_seconds": 0}, "positive"),
+            ({**reviewed, "base_commit": "ABCDEF" * 7}, "base_commit"),
+            ({**reviewed, "model_digest": "A" * 64}, "model_digest"),
+        )
+        for value, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                swebench_runner.parse_profile(value)
+
+    def test_profile_rejects_non_object_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            path.write_text("[]\n")
+            with self.assertRaisesRegex(RuntimeError, "profile.*object"):
+                swebench_runner.load_profile(path)
+
+
+class CandidateMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name).resolve()
+        self.package = self.root / "package.json"
+        self.package.write_text(
+            json.dumps({"version": "1.1.25", "alloy": {"piFork": {"version": "0.82.1"}}})
+        )
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_candidate_metadata_comes_from_source_package_and_full_commit(self):
+        metadata = swebench_runner.load_candidate_metadata(
+            candidate_root=self.root,
+            candidate_commit="a" * 40,
+        )
+        self.assertEqual(metadata.alloy_version, "1.1.25")
+        self.assertEqual(metadata.pi_version, "0.82.1")
+        self.assertEqual(metadata.commit, "a" * 40)
+        self.assertEqual(metadata.root, self.root)
+
+    def test_candidate_metadata_rejects_short_or_non_lowercase_commit(self):
+        for commit in ("abc123", "A" * 40):
+            with self.subTest(commit=commit), self.assertRaisesRegex(
+                RuntimeError, "full candidate commit"
+            ):
+                swebench_runner.load_candidate_metadata(self.root, commit)
+
+    def test_candidate_metadata_rejects_missing_or_malformed_source_metadata(self):
+        cases = (
+            ({"alloy": {"piFork": {"version": "0.82.1"}}}, "Alloy version"),
+            ({"version": True, "alloy": {"piFork": {"version": "0.82.1"}}}, "Alloy version"),
+            ({"version": "v1", "alloy": {"piFork": {"version": "0.82.1"}}}, "Alloy version"),
+            ({"version": "1.1.25"}, "Pi version"),
+            ({"version": "1.1.25", "alloy": {"piFork": {"version": 82}}}, "Pi version"),
+        )
+        for package, message in cases:
+            with self.subTest(message=message):
+                self.package.write_text(json.dumps(package))
+                with self.assertRaisesRegex(RuntimeError, message):
+                    swebench_runner.load_candidate_metadata(self.root, "a" * 40)
+
+    def test_install_manifest_is_strict(self):
+        path = self.root / "install-manifest.json"
+        cases = (
+            ({"commit": "a" * 40}, "missing install manifest keys"),
+            ({"commit": "A" * 40, "version": "1.1.25"}, "full lowercase Git SHA"),
+            ({"commit": "a" * 40, "version": 1}, "version must be semantic"),
+            (
+                {"commit": "a" * 40, "version": "1.1.25", "unexpected": True},
+                "unknown install manifest keys",
+            ),
+        )
+        for manifest, message in cases:
+            with self.subTest(message=message):
+                path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(RuntimeError, message):
+                    swebench_runner.load_install_manifest(path)
+
+        path.write_text(
+            json.dumps(
+                {
+                    "version": "1.1.25",
+                    "channel": "ref",
+                    "ref": "a" * 40,
+                    "commit": "a" * 40,
+                    "installedAt": "2026-08-18T00:00:00.000Z",
+                    "repository": "ccoussa717/alloy",
+                }
+            )
+        )
+        self.assertEqual(
+            swebench_runner.load_install_manifest(path),
+            {"commit": "a" * 40, "version": "1.1.25"},
+        )
 
 
 class DataContractTests(unittest.TestCase):
@@ -78,7 +191,7 @@ class DataContractTests(unittest.TestCase):
 
 class ProcessBoundaryTests(unittest.TestCase):
     def test_alloy_command_pins_model_and_print_mode(self):
-        command = alloy_command(Path("/opt/alloy"), "prompt")
+        command = alloy_command(Path("/opt/alloy"), PROFILE.model, "prompt")
         self.assertEqual(
             command,
             [
@@ -96,9 +209,11 @@ class ProcessBoundaryTests(unittest.TestCase):
             "benchmarks.swebench.runner.run_command",
             return_value=swebench_runner.CommandResult("", "", 0),
         ) as run:
-            swebench_runner.run_alloy(Path("/checkout"), "prompt", environment)
+            swebench_runner.run_alloy(
+                Path("/opt/alloy"), PROFILE, Path("/checkout"), "prompt", environment
+            )
         run.assert_called_once_with(
-            alloy_command(Path("/home/chappie/.local/bin/alloy"), "prompt"),
+            alloy_command(Path("/opt/alloy"), PROFILE.model, "prompt"),
             Path("/checkout"),
             1800,
             env=environment,
@@ -277,7 +392,9 @@ time.sleep(60)
                 ) as run,
             ):
                 environment = swebench_runner.agent_environment(state_root)
-                swebench_runner.run_alloy(Path("/checkout"), "prompt", environment)
+                swebench_runner.run_alloy(
+                    Path("/opt/alloy"), PROFILE, Path("/checkout"), "prompt", environment
+                )
 
         boundary_environment = run.call_args.kwargs["env"]
         self.assertNotIn("REVIEW_SECRET_SENTINEL", boundary_environment)
@@ -391,6 +508,22 @@ time.sleep(60)
 
 
 class OrchestrationTests(unittest.TestCase):
+    def candidate_args(self, root: Path) -> list[str]:
+        candidate_root = root / "candidate"
+        candidate_root.mkdir(exist_ok=True)
+        (candidate_root / "package.json").write_text(
+            json.dumps({"version": "1.1.25", "alloy": {"piFork": {"version": "0.82.1"}}})
+        )
+        install_manifest = root / "install-manifest.json"
+        install_manifest.write_text(json.dumps({"commit": "a" * 40, "version": "1.1.25"}))
+        return [
+            "--profile", str(PROFILE_PATH),
+            "--alloy-bin", str(root / "bin" / "alloy"),
+            "--candidate-root", str(candidate_root),
+            "--candidate-commit", "a" * 40,
+            "--install-manifest", str(install_manifest),
+        ]
+
     def test_load_instance_returns_only_pinned_public_row(self):
         rows = [
             {
@@ -404,7 +537,7 @@ class OrchestrationTests(unittest.TestCase):
             }
         ]
         with mock.patch("benchmarks.swebench.runner.load_dataset", return_value=rows):
-            instance = load_instance()
+            instance = load_instance(PROFILE)
         self.assertEqual(instance["instance_id"], "astropy__astropy-12907")
         self.assertEqual(instance["base_commit"], "d16bfe05a744909de4b27f5875fe0d4ed41ce607")
         self.assertNotIn("patch", instance)
@@ -419,7 +552,7 @@ class OrchestrationTests(unittest.TestCase):
         }
         with mock.patch("benchmarks.swebench.runner.load_dataset", return_value=[row]):
             with self.assertRaisesRegex(RuntimeError, "base commit"):
-                load_instance()
+                load_instance(PROFILE)
 
     def test_prediction_jsonl_is_one_line(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -430,7 +563,9 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(json.loads(lines[0])["model_patch"], "patch")
 
     def test_evaluator_command_is_pinned_to_one_instance(self):
-        command = evaluator_command(Path("/venv/python"), Path("predictions.jsonl"), "run-1")
+        command = evaluator_command(
+            PROFILE, Path("/venv/python"), Path("predictions.jsonl"), "run-1"
+        )
         self.assertIn("SWE-bench/SWE-bench_Lite", command)
         self.assertEqual(command[command.index("--instance_ids") + 1], "astropy__astropy-12907")
         self.assertEqual(command[command.index("--max_workers") + 1], "1")
@@ -445,11 +580,11 @@ class OrchestrationTests(unittest.TestCase):
                 0,
             ),
         ) as run:
-            versions = swebench_runner.probe_runtime_versions(environment)
+            versions = swebench_runner.probe_runtime_versions(Path("/opt/alloy"), environment)
 
         self.assertEqual(versions, {"alloy_version": "1.1.25", "pi_version": "0.82.1"})
         run.assert_called_once_with(
-            ["/home/chappie/.local/bin/alloy", "--version"],
+            ["/opt/alloy", "--version"],
             swebench_runner.REPO_ROOT,
             30,
             env=environment,
@@ -481,9 +616,9 @@ class OrchestrationTests(unittest.TestCase):
                 {"name": "other:latest", "digest": "f" * 64},
             ]
         }
-        self.assertEqual(swebench_runner.model_digest_from_tags(tags), EXPECTED_DIGEST)
+        self.assertEqual(swebench_runner.model_digest_from_tags(PROFILE, tags), EXPECTED_DIGEST)
         with self.assertRaisesRegex(RuntimeError, "qwen3.8-alloy:latest.*not installed"):
-            swebench_runner.model_digest_from_tags({"models": []})
+            swebench_runner.model_digest_from_tags(PROFILE, {"models": []})
 
     def test_live_provenance_combines_mocked_local_probes(self):
         environment = {"HOME": "/disposable", "OLLAMA_HOST": "127.0.0.1:11434"}
@@ -497,11 +632,13 @@ class OrchestrationTests(unittest.TestCase):
             ) as model,
             mock.patch("benchmarks.swebench.runner.probe_swebench_version", return_value="5.0.0") as package,
         ):
-            provenance = swebench_runner.probe_live_provenance(Path("/venv/python"), environment)
+            provenance = swebench_runner.probe_live_provenance(
+                Path("/opt/alloy"), PROFILE, Path("/venv/python"), environment
+            )
 
         self.assertEqual(provenance, GOOD_PROVENANCE)
-        runtime.assert_called_once_with(environment)
-        model.assert_called_once_with(environment)
+        runtime.assert_called_once_with(Path("/opt/alloy"), environment)
+        model.assert_called_once_with(PROFILE, environment)
         package.assert_called_once_with(Path("/venv/python"), environment)
 
     def test_official_verdict_reads_schema_v2_benchmark_results(self):
@@ -509,11 +646,11 @@ class OrchestrationTests(unittest.TestCase):
             root = Path(directory)
             summary = root / "official-summary.json"
             write_json(summary, {"schema_version": 2, "resolved_ids": ["astropy__astropy-12907"]})
-            self.assertEqual(official_verdict(root), "resolved")
+            self.assertEqual(official_verdict(PROFILE, root), "resolved")
             for category in ("unresolved_ids", "empty_patch_ids"):
                 with self.subTest(category=category):
                     write_json(summary, {"schema_version": 2, category: ["astropy__astropy-12907"]})
-                    self.assertEqual(official_verdict(root), "unresolved")
+                    self.assertEqual(official_verdict(PROFILE, root), "unresolved")
 
     def test_official_verdict_rejects_schema_v2_infrastructure_categories(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -530,7 +667,7 @@ class OrchestrationTests(unittest.TestCase):
                         },
                     )
                     with self.assertRaisesRegex(RuntimeError, category):
-                        official_verdict(root)
+                        official_verdict(PROFILE, root)
 
     def test_evaluator_uses_disposable_scratch_and_persists_only_safe_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -558,6 +695,7 @@ class OrchestrationTests(unittest.TestCase):
 
             with mock.patch("benchmarks.swebench.runner.run_command", side_effect=fake_run):
                 verdict = swebench_runner.run_official_evaluation(
+                    PROFILE,
                     Path("/venv/python"),
                     predictions,
                     "run-1",
@@ -608,6 +746,7 @@ class OrchestrationTests(unittest.TestCase):
                 with mock.patch("benchmarks.swebench.runner.run_command", side_effect=failure()):
                     with self.assertRaises(swebench_runner.CommandError) as raised:
                         swebench_runner.run_official_evaluation(
+                            PROFILE,
                             Path("/venv/python"),
                             predictions,
                             "run-1",
@@ -644,13 +783,13 @@ class OrchestrationTests(unittest.TestCase):
             (root / base_id).mkdir()
             with mock.patch("benchmarks.swebench.runner.datetime") as clock:
                 clock.now.return_value.strftime.return_value = base_id
-                run_id, run_dir = swebench_runner.create_run_dir(root)
+                run_id, run_dir = swebench_runner.create_run_dir(root, "1.1.25")
 
             self.assertEqual(run_id, f"{base_id}-01")
             self.assertEqual(run_dir, root / run_id)
             self.assertTrue(run_dir.is_dir())
 
-    def test_dry_run_writes_approved_manifest_and_timed_summary(self):
+    def test_main_uses_explicit_candidate_binary_and_metadata(self):
         instance = {
             "instance_id": "astropy__astropy-12907",
             "repo": "astropy/astropy",
@@ -680,7 +819,7 @@ class OrchestrationTests(unittest.TestCase):
                 ),
             ):
                 result = swebench_runner.main(
-                    [
+                    self.candidate_args(root) + [
                         "--results-root",
                         str(root / "results"),
                         "--work-root",
@@ -709,7 +848,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(
                 manifest["commands"]["alloy"],
                 [
-                    "/home/chappie/.local/bin/alloy",
+                    str(root / "bin" / "alloy"),
                     "--model",
                     "ollama/qwen3.8-alloy:latest",
                     "-p",
@@ -718,7 +857,12 @@ class OrchestrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 manifest["commands"]["runtime_probe"],
-                ["/home/chappie/.local/bin/alloy", "--version"],
+                [str(root / "bin" / "alloy"), "--version"],
+            )
+            self.assertEqual(manifest["candidate_commit"], "a" * 40)
+            self.assertEqual(manifest["candidate_source_root"], str((root / "candidate").resolve()))
+            self.assertEqual(
+                manifest["install_manifest"], {"commit": "a" * 40, "version": "1.1.25"}
             )
             self.assertEqual(
                 manifest["commands"]["evaluator"][0],
@@ -746,7 +890,7 @@ class OrchestrationTests(unittest.TestCase):
                     side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
                 ),
             ):
-                result = swebench_runner.main(["--dry-run"])
+                result = swebench_runner.main(self.candidate_args(Path(directory)) + ["--dry-run"])
 
             self.assertEqual(result, 3)
             summary = json.loads((run_dir / "summary.json").read_text())
@@ -773,7 +917,7 @@ class OrchestrationTests(unittest.TestCase):
                     side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
                 ),
             ):
-                result = swebench_runner.main(["--dry-run"])
+                result = swebench_runner.main(self.candidate_args(Path(directory)) + ["--dry-run"])
 
             self.assertEqual(result, 2)
             load.assert_not_called()
@@ -783,6 +927,55 @@ class OrchestrationTests(unittest.TestCase):
             summary = json.loads((run_dir / "summary.json").read_text())
             self.assertEqual(summary["status"], "runtime_failure")
             self.assertIn("Alloy version drift", summary["error"])
+
+    def test_candidate_install_and_pi_drift_fail_before_dataset_loading(self):
+        cases = (
+            ("install_commit", "b" * 40, GOOD_PROVENANCE, "installed candidate commit drift"),
+            ("install_version", "1.2.0", GOOD_PROVENANCE, "installed Alloy version drift"),
+            (
+                "pi_version",
+                None,
+                {**GOOD_PROVENANCE, "pi_version": "0.83.0"},
+                "Pi version drift",
+            ),
+        )
+        for field, observed, provenance, message in cases:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                run_dir = root / "run-1"
+                run_dir.mkdir()
+                args = self.candidate_args(root) + ["--dry-run"]
+                install_path = root / "install-manifest.json"
+                install = json.loads(install_path.read_text())
+                if field == "install_commit":
+                    install["commit"] = observed
+                elif field == "install_version":
+                    install["version"] = observed
+                install_path.write_text(json.dumps(install))
+                with (
+                    mock.patch(
+                        "benchmarks.swebench.runner.create_run_dir",
+                        return_value=("run-1", run_dir),
+                    ),
+                    mock.patch(
+                        "benchmarks.swebench.runner.probe_live_provenance",
+                        return_value=provenance,
+                    ),
+                    mock.patch("benchmarks.swebench.runner.load_instance") as load,
+                    mock.patch(
+                        "benchmarks.swebench.runner.utc_now",
+                        side_effect=[
+                            "2026-08-18T06:00:00+00:00",
+                            "2026-08-18T06:00:01+00:00",
+                        ],
+                    ),
+                ):
+                    result = swebench_runner.main(args)
+
+                self.assertEqual(result, 2)
+                load.assert_not_called()
+                summary = json.loads((run_dir / "summary.json").read_text())
+                self.assertIn(message, summary["error"])
 
     def test_model_digest_and_swebench_version_drift_fail_before_dataset_loading(self):
         cases = (
@@ -816,7 +1009,9 @@ class OrchestrationTests(unittest.TestCase):
                         ],
                     ),
                 ):
-                    result = swebench_runner.main(["--dry-run"])
+                    result = swebench_runner.main(
+                        self.candidate_args(Path(directory)) + ["--dry-run"]
+                    )
 
                 self.assertEqual(result, 2)
                 load.assert_not_called()
@@ -839,7 +1034,7 @@ class OrchestrationTests(unittest.TestCase):
                     side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
                 ),
             ):
-                result = swebench_runner.main(["--dry-run"])
+                result = swebench_runner.main(self.candidate_args(Path(directory)) + ["--dry-run"])
 
             self.assertEqual(result, 2)
             load.assert_not_called()
@@ -856,7 +1051,10 @@ class OrchestrationTests(unittest.TestCase):
                 mock.patch("benchmarks.swebench.runner.utc_now", return_value="2026-08-18T06:00:00+00:00"),
             ):
                 with self.assertRaises(SystemExit):
-                    swebench_runner.main(["--agent-timeout", "42", "--dry-run"])
+                    swebench_runner.main(
+                        self.candidate_args(Path(directory))
+                        + ["--agent-timeout", "42", "--dry-run"]
+                    )
 
     def test_default_paths_are_anchored_to_runner_from_external_cwd(self):
         instance = {
@@ -904,13 +1102,13 @@ class OrchestrationTests(unittest.TestCase):
                         side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
                     ),
                 ):
-                    result = swebench_runner.main([])
+                    result = swebench_runner.main(self.candidate_args(root))
             finally:
                 os.chdir(previous_cwd)
 
             self.assertEqual(result, 0)
             bench_root = swebench_runner.BENCH_ROOT
-            create.assert_called_once_with(bench_root / "results")
+            create.assert_called_once_with(bench_root / "results", "1.1.25")
             self.assertEqual(checkout.call_args.args[2], bench_root / ".work" / "run-1" / "checkout")
             self.assertEqual(alloy.call_count, 1)
             manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -924,7 +1122,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_agent_nonzero_with_timeout_words_is_failure_and_writes_logs(self):
         failure = lambda: swebench_runner.CommandFailed(
-            command=[str(swebench_runner.ALLOY_BIN), "-p", "prompt"],
+            command=["/candidate/bin/alloy", "-p", "prompt"],
             stdout="request timed out but child exited fast\n",
             stderr="agent nonzero stderr\n",
             returncode=7,
@@ -933,7 +1131,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_actual_agent_timeout_is_typed_and_writes_partial_logs(self):
         failure = lambda: swebench_runner.CommandTimedOut(
-            command=[str(swebench_runner.ALLOY_BIN), "-p", "prompt"],
+            command=["/candidate/bin/alloy", "-p", "prompt"],
             stdout="agent timeout partial stdout\n",
             stderr="agent timeout partial stderr\n",
             timeout=1800,
@@ -963,7 +1161,7 @@ class OrchestrationTests(unittest.TestCase):
                 ),
             ):
                 result = swebench_runner.main(
-                    [
+                    self.candidate_args(root) + [
                         "--results-root", str(root / "results"),
                         "--work-root", str(root / ".work"),
                         "--venv-python", str(root / ".venv" / "bin" / "python"),
@@ -1015,7 +1213,7 @@ class OrchestrationTests(unittest.TestCase):
                 ),
             ):
                 result = swebench_runner.main(
-                    [
+                    self.candidate_args(root) + [
                         "--results-root",
                         str(root / "results"),
                         "--work-root",
@@ -1064,7 +1262,7 @@ class OrchestrationTests(unittest.TestCase):
                 ),
             ):
                 result = swebench_runner.main(
-                    [
+                    self.candidate_args(root) + [
                         "--results-root", str(root / "results"),
                         "--work-root", str(root / ".work"),
                         "--venv-python", str(root / ".venv" / "bin" / "python"),

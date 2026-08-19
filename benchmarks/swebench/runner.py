@@ -12,7 +12,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,22 +21,124 @@ try:
 except ImportError:
     load_dataset = None
 
-DATASET = "SWE-bench/SWE-bench_Lite"
-SPLIT = "test"
-INSTANCE_ID = "astropy__astropy-12907"
-BASE_COMMIT = "d16bfe05a744909de4b27f5875fe0d4ed41ce607"
-MODEL = "ollama/qwen3.8-alloy:latest"
-OLLAMA_MODEL = "qwen3.8-alloy:latest"
-ALLOY_BIN = Path("/home/chappie/.local/bin/alloy")
 PRIVATE_FIELDS = {"patch", "test_patch"}
-ALLOY_VERSION = "1.1.25"
-PI_VERSION = "0.82.1"
-SWEBENCH_VERSION = "5.0.0"
-MODEL_DIGEST = "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba"
-AGENT_TIMEOUT = 1800
-EVALUATOR_TIMEOUT = 2400
 BENCH_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = BENCH_ROOT.parents[1]
+PROFILE_PATH = BENCH_ROOT / "profile.json"
+FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
+MODEL_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+SEMANTIC_VERSION = re.compile(
+    r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
+
+
+@dataclass(frozen=True)
+class BenchmarkProfile:
+    agent_timeout_seconds: int
+    base_commit: str
+    dataset: str
+    evaluator_timeout_seconds: int
+    instance_id: str
+    model: str
+    model_digest: str
+    ollama_model: str
+    split: str
+    swebench_version: str
+
+
+@dataclass(frozen=True)
+class CandidateMetadata:
+    alloy_version: str
+    pi_version: str
+    commit: str
+    root: Path
+
+
+def parse_profile(value: object) -> BenchmarkProfile:
+    if not isinstance(value, dict):
+        raise RuntimeError("benchmark profile must be a JSON object")
+    expected = {field.name for field in fields(BenchmarkProfile)}
+    unknown = set(value) - expected
+    missing = expected - set(value)
+    if unknown:
+        raise RuntimeError(f"unknown profile keys: {sorted(map(str, unknown))}")
+    if missing:
+        raise RuntimeError(f"missing profile keys: {sorted(missing)}")
+    for key in expected - {"agent_timeout_seconds", "evaluator_timeout_seconds"}:
+        if not isinstance(value[key], str) or not value[key]:
+            raise RuntimeError(f"profile {key} must be a non-empty string")
+    for key in ("agent_timeout_seconds", "evaluator_timeout_seconds"):
+        if type(value[key]) is not int:
+            raise RuntimeError(f"profile {key} must be an integer")
+        if value[key] <= 0:
+            raise RuntimeError(f"profile {key} must be positive")
+    if FULL_GIT_SHA.fullmatch(value["base_commit"]) is None:
+        raise RuntimeError("profile base_commit must be a full lowercase Git SHA")
+    if MODEL_DIGEST_PATTERN.fullmatch(value["model_digest"]) is None:
+        raise RuntimeError("profile model_digest must be a 64-character lowercase hash")
+    if SEMANTIC_VERSION.fullmatch(value["swebench_version"]) is None:
+        raise RuntimeError("profile swebench_version must be a semantic version")
+    return BenchmarkProfile(**value)
+
+
+def _read_json_object(path: Path, label: str) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{label} is missing or invalid") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} must be a JSON object")
+    return value
+
+
+def load_profile(path: Path) -> BenchmarkProfile:
+    return parse_profile(_read_json_object(path, "benchmark profile"))
+
+
+def load_candidate_metadata(
+    candidate_root: Path, candidate_commit: str
+) -> CandidateMetadata:
+    if not isinstance(candidate_commit, str) or FULL_GIT_SHA.fullmatch(candidate_commit) is None:
+        raise RuntimeError("candidate must specify a full candidate commit as a lowercase Git SHA")
+    root = candidate_root.resolve()
+    package = _read_json_object(root / "package.json", "candidate package.json")
+    alloy_version = package.get("version")
+    if not isinstance(alloy_version, str) or SEMANTIC_VERSION.fullmatch(alloy_version) is None:
+        raise RuntimeError("candidate Alloy version must be semantic")
+    alloy = package.get("alloy")
+    pi_fork = alloy.get("piFork") if isinstance(alloy, dict) else None
+    pi_version = pi_fork.get("version") if isinstance(pi_fork, dict) else None
+    if not isinstance(pi_version, str) or SEMANTIC_VERSION.fullmatch(pi_version) is None:
+        raise RuntimeError("candidate Pi version must be semantic")
+    return CandidateMetadata(alloy_version, pi_version, candidate_commit, root)
+
+
+def load_install_manifest(path: Path) -> dict[str, str]:
+    manifest = _read_json_object(path, "install manifest")
+    allowed = {"channel", "commit", "installedAt", "ref", "repository", "version"}
+    unknown = set(manifest) - allowed
+    if unknown:
+        raise RuntimeError(f"unknown install manifest keys: {sorted(map(str, unknown))}")
+    missing = {"commit", "version"} - set(manifest)
+    if missing:
+        raise RuntimeError(f"missing install manifest keys: {sorted(missing)}")
+    for key in (allowed & set(manifest)) - {"commit", "version", "ref"}:
+        if not isinstance(manifest[key], str):
+            raise RuntimeError(f"install manifest {key} must be a string")
+    if "ref" in manifest and manifest["ref"] is not None and not isinstance(
+        manifest["ref"], str
+    ):
+        raise RuntimeError("install manifest ref must be a string or null")
+    commit = manifest["commit"]
+    version = manifest["version"]
+    if not isinstance(commit, str) or FULL_GIT_SHA.fullmatch(commit) is None:
+        raise RuntimeError("install manifest commit must be a full lowercase Git SHA")
+    if not isinstance(version, str) or SEMANTIC_VERSION.fullmatch(version) is None:
+        raise RuntimeError("install manifest version must be semantic")
+    return {"commit": commit, "version": version}
 
 
 @dataclass(frozen=True)
@@ -128,13 +230,22 @@ def checkout_instance(repo: str, base_commit: str, destination: Path) -> None:
     run_command(["git", "clean", "-ffdqx"], destination, 120)
 
 
-def alloy_command(alloy_bin: Path, prompt: str) -> list[str]:
-    return [str(alloy_bin), "--model", MODEL, "-p", prompt]
+def alloy_command(alloy_bin: Path, model: str, prompt: str) -> list[str]:
+    return [str(alloy_bin), "--model", model, "-p", prompt]
 
 
-def run_alloy(checkout: Path, prompt: str, environment: dict[str, str]) -> CommandResult:
+def run_alloy(
+    alloy_bin: Path,
+    profile: BenchmarkProfile,
+    checkout: Path,
+    prompt: str,
+    environment: dict[str, str],
+) -> CommandResult:
     return run_command(
-        alloy_command(ALLOY_BIN, prompt), checkout, AGENT_TIMEOUT, env=environment
+        alloy_command(alloy_bin, profile.model, prompt),
+        checkout,
+        profile.agent_timeout_seconds,
+        env=environment,
     )
 
 
@@ -178,16 +289,18 @@ def prediction_record(instance_id: str, model: str, patch: str) -> dict:
     }
 
 
-def load_instance() -> dict:
+def load_instance(profile: BenchmarkProfile) -> dict:
     if load_dataset is None:
         raise RuntimeError("install requirements-swebench.txt in .venv first")
-    rows = load_dataset(DATASET, split=SPLIT)
-    matches = [row for row in rows if row["instance_id"] == INSTANCE_ID]
+    rows = load_dataset(profile.dataset, split=profile.split)
+    matches = [row for row in rows if row["instance_id"] == profile.instance_id]
     if len(matches) != 1:
-        raise RuntimeError(f"expected one dataset row for {INSTANCE_ID}, found {len(matches)}")
+        raise RuntimeError(
+            f"expected one dataset row for {profile.instance_id}, found {len(matches)}"
+        )
     row = matches[0]
-    if row["base_commit"] != BASE_COMMIT:
-        raise RuntimeError(f"dataset base commit drift for {INSTANCE_ID}")
+    if row["base_commit"] != profile.base_commit:
+        raise RuntimeError(f"dataset base commit drift for {profile.instance_id}")
     return public_instance(dict(row))
 
 
@@ -196,23 +309,25 @@ def write_prediction_jsonl(path: Path, record: dict) -> None:
     path.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
 
 
-def evaluator_command(python: Path, predictions: Path, run_id: str) -> list[str]:
+def evaluator_command(
+    profile: BenchmarkProfile, python: Path, predictions: Path, run_id: str
+) -> list[str]:
     return [
         str(python),
         "-m",
         "swebench.harness.run_evaluation",
         "--dataset_name",
-        DATASET,
+        profile.dataset,
         "--split",
-        SPLIT,
+        profile.split,
         "--instance_ids",
-        INSTANCE_ID,
+        profile.instance_id,
         "--predictions_path",
         str(predictions),
         "--max_workers",
         "1",
         "--timeout",
-        str(AGENT_TIMEOUT),
+        str(profile.agent_timeout_seconds),
         "--run_id",
         run_id,
     ]
@@ -260,9 +375,9 @@ def _local_ollama_host(value: str) -> str:
     return value
 
 
-def probe_runtime_versions(environment: dict[str, str]) -> dict[str, str]:
+def probe_runtime_versions(alloy_bin: Path, environment: dict[str, str]) -> dict[str, str]:
     result = run_command(
-        [str(ALLOY_BIN), "--version"], REPO_ROOT, 30, env=environment
+        [str(alloy_bin), "--version"], REPO_ROOT, 30, env=environment
     )
     alloy = re.search(r"^Alloy\s+(\S+)\s*$", result.stdout, re.MULTILINE)
     pi = re.search(r"^Pi\s+(\S+)\s*$", result.stdout, re.MULTILINE)
@@ -280,19 +395,21 @@ def probe_swebench_version(python: Path, environment: dict[str, str]) -> str:
     return run_command(command, REPO_ROOT, 30, env=environment).stdout.strip()
 
 
-def model_digest_from_tags(tags: object) -> str:
+def model_digest_from_tags(profile: BenchmarkProfile, tags: object) -> str:
     if not isinstance(tags, dict) or not isinstance(tags.get("models"), list):
         raise RuntimeError("Ollama returned an invalid local model inventory")
     for model in tags["models"]:
-        if isinstance(model, dict) and model.get("name") == OLLAMA_MODEL:
+        if isinstance(model, dict) and model.get("name") == profile.ollama_model:
             digest = model.get("digest")
             if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
                 return digest
-            raise RuntimeError(f"Ollama model {OLLAMA_MODEL} has an invalid digest")
-    raise RuntimeError(f"Ollama model {OLLAMA_MODEL} is not installed")
+            raise RuntimeError(f"Ollama model {profile.ollama_model} has an invalid digest")
+    raise RuntimeError(f"Ollama model {profile.ollama_model} is not installed")
 
 
-def probe_ollama_model_digest(environment: dict[str, str]) -> str:
+def probe_ollama_model_digest(
+    profile: BenchmarkProfile, environment: dict[str, str]
+) -> str:
     host = _local_ollama_host(environment["OLLAMA_HOST"])
     base_url = host if "://" in host else f"http://{host}"
     endpoint = f"{base_url.rstrip('/')}/api/tags"
@@ -302,18 +419,23 @@ def probe_ollama_model_digest(environment: dict[str, str]) -> str:
             tags = json.load(response)
     except (OSError, ValueError) as error:
         raise RuntimeError("could not read the local Ollama model inventory") from error
-    return model_digest_from_tags(tags)
+    return model_digest_from_tags(profile, tags)
 
 
-def probe_live_provenance(python: Path, environment: dict[str, str]) -> dict[str, str]:
+def probe_live_provenance(
+    alloy_bin: Path,
+    profile: BenchmarkProfile,
+    python: Path,
+    environment: dict[str, str],
+) -> dict[str, str]:
     return {
-        **probe_runtime_versions(environment),
-        "model_digest": probe_ollama_model_digest(environment),
+        **probe_runtime_versions(alloy_bin, environment),
+        "model_digest": probe_ollama_model_digest(profile, environment),
         "swebench_version": probe_swebench_version(python, environment),
     }
 
 
-def official_verdict(evaluation_dir: Path) -> str:
+def official_verdict(profile: BenchmarkProfile, evaluation_dir: Path) -> str:
     path = evaluation_dir / "official-summary.json"
     try:
         report = json.loads(path.read_text())
@@ -322,18 +444,21 @@ def official_verdict(evaluation_dir: Path) -> str:
     if not isinstance(report, dict) or report.get("schema_version") != 2:
         raise RuntimeError("official evaluator produced an unsupported summary schema")
     for category in ("infra_failure_ids", "ambiguous_failure_ids", "error_ids"):
-        if INSTANCE_ID in report.get(category, []):
-            raise RuntimeError(f"official evaluator classified {INSTANCE_ID} in {category}")
-    if INSTANCE_ID in report.get("resolved_ids", []):
+        if profile.instance_id in report.get(category, []):
+            raise RuntimeError(
+                f"official evaluator classified {profile.instance_id} in {category}"
+            )
+    if profile.instance_id in report.get("resolved_ids", []):
         return "resolved"
-    if INSTANCE_ID in report.get("unresolved_ids", []) or INSTANCE_ID in report.get(
+    if profile.instance_id in report.get("unresolved_ids", []) or profile.instance_id in report.get(
         "empty_patch_ids", []
     ):
         return "unresolved"
-    raise RuntimeError(f"official evaluator produced no verdict for {INSTANCE_ID}")
+    raise RuntimeError(f"official evaluator produced no verdict for {profile.instance_id}")
 
 
 def run_official_evaluation(
+    profile: BenchmarkProfile,
     python: Path,
     predictions: Path,
     run_id: str,
@@ -346,9 +471,9 @@ def run_official_evaluation(
         scratch = Path(directory)
         try:
             evaluation = run_command(
-                evaluator_command(python, predictions.resolve(), run_id),
+                evaluator_command(profile, python, predictions.resolve(), run_id),
                 scratch,
-                EVALUATOR_TIMEOUT,
+                profile.evaluator_timeout_seconds,
             )
         except CommandError as error:
             write_command_logs(
@@ -363,15 +488,17 @@ def run_official_evaluation(
                 f"official evaluator produced {len(summaries)} run summaries for {run_id}"
             )
         shutil.copyfile(summaries[0], evaluation_dir / "official-summary.json")
-    return official_verdict(evaluation_dir)
+    return official_verdict(profile, evaluation_dir)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_run_dir(results_root: Path) -> tuple[str, Path]:
-    base_id = datetime.now(timezone.utc).strftime(f"alloy-{ALLOY_VERSION}-%Y%m%dT%H%M%S%fZ")
+def create_run_dir(results_root: Path, alloy_version: str) -> tuple[str, Path]:
+    base_id = datetime.now(timezone.utc).strftime(
+        f"alloy-{alloy_version}-%Y%m%dT%H%M%S%fZ"
+    )
     collision = 0
     while True:
         run_id = base_id if collision == 0 else f"{base_id}-{collision:02d}"
@@ -412,6 +539,11 @@ def write_command_logs(stdout_path: Path, stderr_path: Path, error: CommandError
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", type=Path, default=PROFILE_PATH)
+    parser.add_argument("--alloy-bin", type=Path, required=True)
+    parser.add_argument("--candidate-root", type=Path, required=True)
+    parser.add_argument("--candidate-commit", required=True)
+    parser.add_argument("--install-manifest", type=Path, required=True)
     parser.add_argument("--results-root", type=Path, default=BENCH_ROOT / "results")
     parser.add_argument("--work-root", type=Path, default=BENCH_ROOT / ".work")
     parser.add_argument(
@@ -421,9 +553,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    profile = load_profile(args.profile)
+    candidate = load_candidate_metadata(args.candidate_root, args.candidate_commit)
+    install_manifest = load_install_manifest(args.install_manifest)
+    alloy_bin = args.alloy_bin.absolute()
     venv_python = args.venv_python.absolute()
 
-    run_id, run_dir = create_run_dir(args.results_root)
+    run_id, run_dir = create_run_dir(args.results_root, candidate.alloy_version)
     started_at = utc_now()
     checkout = args.work_root / run_id / "checkout"
     predictions = run_dir / "predictions.jsonl"
@@ -437,58 +573,76 @@ def main(argv: list[str] | None = None) -> int:
     environment = None
     try:
         environment = agent_environment(args.work_root / run_id / "agent-state")
-        provenance.update(probe_live_provenance(venv_python, environment))
+        provenance.update(
+            probe_live_provenance(alloy_bin, profile, venv_python, environment)
+        )
     except Exception as error:
         runtime_error = str(error)
     manifest = {
         "alloy_version": provenance["alloy_version"],
-        "base_commit": BASE_COMMIT,
+        "base_commit": profile.base_commit,
+        "candidate_commit": candidate.commit,
+        "candidate_source_root": str(candidate.root),
         "commands": {
-            "alloy": alloy_command(ALLOY_BIN, "<problem.md contents>"),
-            "evaluator": evaluator_command(venv_python, predictions.resolve(), run_id),
+            "alloy": alloy_command(alloy_bin, profile.model, "<problem.md contents>"),
+            "evaluator": evaluator_command(
+                profile, venv_python, predictions.resolve(), run_id
+            ),
             "ollama_model_probe": "GET local Ollama /api/tags",
-            "runtime_probe": [str(ALLOY_BIN), "--version"],
+            "runtime_probe": [str(alloy_bin), "--version"],
             "swebench_probe": [
                 str(venv_python),
                 "-c",
                 "import importlib.metadata; print(importlib.metadata.version('swebench'))",
             ],
         },
-        "dataset": DATASET,
-        "expected_alloy_version": ALLOY_VERSION,
-        "expected_model_digest": MODEL_DIGEST,
-        "expected_pi_version": PI_VERSION,
-        "expected_swebench_version": SWEBENCH_VERSION,
-        "instance_id": INSTANCE_ID,
-        "model": MODEL,
+        "dataset": profile.dataset,
+        "expected_alloy_version": candidate.alloy_version,
+        "expected_model_digest": profile.model_digest,
+        "expected_pi_version": candidate.pi_version,
+        "expected_swebench_version": profile.swebench_version,
+        "install_manifest": install_manifest,
+        "instance_id": profile.instance_id,
+        "model": profile.model,
         "model_digest": provenance["model_digest"],
         "pi_version": provenance["pi_version"],
         "run_id": run_id,
-        "split": SPLIT,
+        "split": profile.split,
         "started_at": started_at,
         "swebench_version": provenance["swebench_version"],
-        "timeout_seconds": AGENT_TIMEOUT,
+        "timeout_seconds": profile.agent_timeout_seconds,
     }
     write_json(run_dir / "manifest.json", manifest)
     if runtime_error is None:
         drifts = []
-        if provenance["alloy_version"] != ALLOY_VERSION:
+        if install_manifest["commit"] != candidate.commit:
             drifts.append(
-                f"Alloy version drift: expected {ALLOY_VERSION}, observed {provenance['alloy_version']}"
+                "installed candidate commit drift: "
+                f"expected {candidate.commit}, observed {install_manifest['commit']}"
             )
-        if provenance["pi_version"] != PI_VERSION:
+        if install_manifest["version"] != candidate.alloy_version:
             drifts.append(
-                f"Pi version drift: expected {PI_VERSION}, observed {provenance['pi_version']}"
+                "installed Alloy version drift: "
+                f"expected {candidate.alloy_version}, observed {install_manifest['version']}"
             )
-        if provenance["model_digest"] != MODEL_DIGEST:
+        if provenance["alloy_version"] != candidate.alloy_version:
+            drifts.append(
+                "Alloy version drift: "
+                f"expected {candidate.alloy_version}, observed {provenance['alloy_version']}"
+            )
+        if provenance["pi_version"] != candidate.pi_version:
+            drifts.append(
+                f"Pi version drift: expected {candidate.pi_version}, observed {provenance['pi_version']}"
+            )
+        if provenance["model_digest"] != profile.model_digest:
             drifts.append(
                 "Ollama model digest drift: "
-                f"expected {MODEL_DIGEST}, observed {provenance['model_digest']}"
+                f"expected {profile.model_digest}, observed {provenance['model_digest']}"
             )
-        if provenance["swebench_version"] != SWEBENCH_VERSION:
+        if provenance["swebench_version"] != profile.swebench_version:
             drifts.append(
                 "SWE-bench version drift: "
-                f"expected {SWEBENCH_VERSION}, observed {provenance['swebench_version']}"
+                f"expected {profile.swebench_version}, observed {provenance['swebench_version']}"
             )
         if drifts:
             runtime_error = "; ".join(drifts)
@@ -501,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        instance = load_instance()
+        instance = load_instance(profile)
     except Exception as error:
         write_json(
             run_dir / "summary.json",
@@ -519,7 +673,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checkout.parent.mkdir(parents=True, exist_ok=True)
     try:
-        checkout_instance(instance["repo"], BASE_COMMIT, checkout)
+        checkout_instance(instance["repo"], profile.base_commit, checkout)
     except Exception as error:
         write_json(
             run_dir / "summary.json",
@@ -530,7 +684,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         assert environment is not None
-        result = run_alloy(checkout, prompt, environment)
+        result = run_alloy(alloy_bin, profile, checkout, prompt, environment)
     except CommandError as error:
         write_command_logs(
             run_dir / "alloy.stdout.log", run_dir / "alloy.stderr.log", error
@@ -557,7 +711,11 @@ def main(argv: list[str] | None = None) -> int:
         patch_text = capture_patch(checkout)
         (run_dir / "model_patch.diff").write_text(patch_text)
         patch_sha = hashlib.sha256(patch_text.encode()).hexdigest()
-        prediction = prediction_record(INSTANCE_ID, f"alloy-{ALLOY_VERSION}/{MODEL}", patch_text)
+        prediction = prediction_record(
+            profile.instance_id,
+            f"alloy-{candidate.alloy_version}/{profile.model}",
+            patch_text,
+        )
         write_prediction_jsonl(predictions, prediction)
     except Exception as error:
         write_json(
@@ -570,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         evaluation_dir = run_dir / "evaluation"
         verdict = run_official_evaluation(
+            profile,
             venv_python,
             predictions,
             run_id,
@@ -597,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id,
             "evaluated",
             started_at,
-            instance_id=INSTANCE_ID,
+            instance_id=profile.instance_id,
             model_patch_sha256=patch_sha,
             patch_bytes=len(patch_text.encode()),
             verdict=verdict,
