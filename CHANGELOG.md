@@ -7,6 +7,14 @@ and releases use [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Maintainers can smoke-test an exact release candidate against one pinned
+  SWE-bench Lite instance.** Fast model-free contract tests run in Linux CI,
+  while source-only commands bootstrap the evaluator and verify immutable
+  candidate provenance through `dry-run` or an explicitly authorized `release`
+  without adding benchmark tooling or Python dependencies to installed or
+  packed Alloy runtimes.
+
 ## [1.1.25] - 2026-08-17
 
 ### Fixed

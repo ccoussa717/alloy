@@ -573,6 +573,7 @@ Local verification:
 
 ```bash
 npm run ci:local
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 ## Documentation
@@ -614,8 +615,9 @@ See [Attribution](docs/ATTRIBUTION.md) for the dependency and provenance details
 ## Contributing
 
 Alloy is MIT licensed. Start with [CONTRIBUTING.md](CONTRIBUTING.md), add a
-failing test for behavior changes, and run `npm run ci:local` before opening a
-pull request. Security reports belong in the private process described in
+failing test for behavior changes, and run `npm run ci:local` plus
+`bash scripts/run-swebench-release-smoke.sh test` before opening a pull request.
+Security reports belong in the private process described in
 [SECURITY.md](SECURITY.md), not a public issue.
 
 Maintainer: [Chris Coussa](https://github.com/ccoussa717)

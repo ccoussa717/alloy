@@ -82,6 +82,7 @@ host processes rather than Docker-sandboxed Bash.
 npm ci
 npm run tui:install
 npm run ci:local
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 Docker integration skips on machines without Docker. GitHub Actions sets

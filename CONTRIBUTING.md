@@ -14,8 +14,8 @@ provider-neutral product layer on Pi and keep operator safety explicit.
 
 ## Development setup
 
-Requirements: Node.js 22.19 or newer, Bun 1.3.14, npm, Git, and `tmux`.
-Docker is optional locally and required by CI.
+Requirements: Node.js 22.19 or newer, Bun 1.3.14, Python 3.11 or newer, npm,
+Git, and `tmux`. Docker is optional locally and required by CI.
 
 ```bash
 npm ci
@@ -37,6 +37,7 @@ Alloy's supply-chain contract.
 
 ```bash
 npm run ci:local
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 ### Shipping (maintainers)

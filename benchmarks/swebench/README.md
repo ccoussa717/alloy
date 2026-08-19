@@ -7,8 +7,6 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
 ## Prerequisites
 
 - Python 3.11 or newer. CI uses Python 3.12 for the fast test suite.
-- A reachable, functioning Docker daemon that can start the official
-  SWE-bench containers. An installed Docker CLI alone is insufficient.
 - A local Ollama service on loopback with `qwen3.8-alloy:latest` installed at
   digest `116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba`.
 - A Git checkout with no tracked changes whose `HEAD` is a full commit SHA
@@ -16,10 +14,14 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
   name is `github`; set `ALLOY_BENCH_REMOTE` only when the same canonical URL
   uses another name.
 - Outbound GitHub and codeload access for remote-tip verification and the exact
-  candidate install, plus target repository clone access for the pinned task.
-- Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite`, Python
-  package index access for setup, and image and registry access required by
-  SWE-bench for the official evaluator.
+  candidate install.
+- Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite` and Python
+  package index access for setup.
+
+The real `release` command also requires a functioning Docker daemon that can
+start the official SWE-bench containers, target repository clone access, and
+the image and registry access required by the official evaluator. An installed
+Docker CLI alone is insufficient.
 
 Bootstrap the pinned `swebench==5.0.0` environment:
 
@@ -30,6 +32,13 @@ bash scripts/run-swebench-release-smoke.sh setup
 The environment is created at the ignored path `benchmarks/swebench/.venv/`.
 It is release tooling only; Python and SWE-bench are not Alloy runtime
 dependencies.
+
+If the canonical GitHub remote has another local name, pass that name without
+changing its URL:
+
+```bash
+ALLOY_BENCH_REMOTE=origin bash scripts/run-swebench-release-smoke.sh dry-run
+```
 
 ## Fast Tests
 
@@ -55,9 +64,11 @@ source snapshot, so benchmark tooling is not shipped in Alloy's runtime.
 After green CI, push the exact candidate commit before either command. The
 wrapper rejects tracked changes, malformed SHAs, credentialed or noncanonical
 remote URLs, and commits that merely exist in remote history: local `HEAD` must
-equal an advertised branch or tag ref tip on the canonical GitHub remote.
+equal an advertised non-peeled ref tip on the canonical GitHub remote.
 
-First verify the complete handoff without running the agent or evaluator:
+First verify candidate installation and provenance plus the model, evaluator,
+and dataset handoff without cloning the target repository, running the agent,
+or starting Docker evaluation:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh dry-run

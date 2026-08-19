@@ -4,8 +4,8 @@
 
 Move the reviewed one-instance SWE-bench Lite adapter into Alloy's canonical
 GitHub source line so benchmark contracts travel with the build they evaluate.
-Fast, model-free tests run in normal CI. A real 30-minute model and Docker run
-remains an explicit release-candidate gate.
+Fast, model-free tests run in normal CI. A real model and Docker run of up to
+roughly 70 minutes remains an explicit release-candidate gate.
 
 The integration targets GitHub `main` beginning at Alloy `1.1.25`. It does not
 target the unrelated GitLab `0.8.2` history.
@@ -82,8 +82,8 @@ launcher.
 Before installation it must:
 
 1. Require a clean tracked worktree.
-2. Resolve `HEAD` to a full commit and prove the commit is reachable from the
-   configured GitHub remote.
+2. Resolve `HEAD` to a full commit and prove it equals an advertised non-peeled
+   ref tip on the configured GitHub remote.
 3. Refuse an unpushed or ambiguous candidate.
 4. Read the expected Alloy version and Pi provenance from the candidate source.
 
@@ -92,8 +92,8 @@ temporary paths. It invokes the real `install.sh` with `ALLOY_REF` set to the
 candidate commit, verifies the resulting install manifest and `alloy --version`,
 then passes the installed candidate command to the Python runner explicitly.
 
-The wrapper starts the runner exactly once. A failed, unresolved, or timed-out
-agent attempt is never retried automatically.
+The wrapper starts the runner exactly once. A failed or timed-out agent attempt,
+or an official `unresolved` evaluator outcome, is never retried automatically.
 
 ## Benchmark Profile And Provenance
 

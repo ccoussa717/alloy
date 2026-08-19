@@ -743,12 +743,14 @@ Run the local verification bundle:
 
 ```bash
 npm run ci:local
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 This requires `tmux` and runs unit and integration tests, frontend typechecking and Bun tests, the
 live OpenTUI PTY suite, version and package checks, release metadata
-verification, the security scan, and CycloneDX SBOM generation. It does not run
-the high-severity publication audit from `npm run ci:release`.
+verification, the security scan, CycloneDX SBOM generation, and the source-only
+SWE-bench release-tooling tests. It does not run the high-severity publication
+audit from `npm run ci:release`.
 Docker integration skips locally when Docker is unavailable; GitHub Actions
 sets `ALLOY_REQUIRE_DOCKER_TEST=1`, so hosted release verification cannot pass
 without it.
