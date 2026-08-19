@@ -35,12 +35,89 @@ over a long `main`-only delta.
    and **`npm-shrinkwrap.json`** root + `packages[""]` to the same version.
 2. Move notes from `CHANGELOG.md` `[Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD`.
 3. Merge to `main` with green CI (`verify` + platform checks).
-4. Tag the exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
+4. From that pushed commit with no tracked worktree changes, run the candidate
+   dry-run in the [manual SWE-bench release gate](#manual-swe-bench-release-gate).
+5. Stop before tagging while the real gate is disabled. Trusted agent isolation,
+   an immutable dataset revision, and evaluator dependency integrity pins are
+   required before an official verdict can become release evidence.
+6. Only after the real gate is re-enabled, completes, and release authority is
+   confirmed, tag the
+   exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
    `git push origin vX.Y.Z`.
-5. Create the GitHub Release for that tag (source archives only; not npm).
-6. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
+7. Create the GitHub Release for that tag (source archives only; not npm).
+8. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
 
-Helper (from a clean `main` at the release commit):
+### Manual SWE-bench release gate
+
+This maintainer-only gate runs after green CI and before tagging. Its real
+execution path is currently disabled pending trusted isolation and immutable
+dataset/evaluator integrity pins. Follow the
+complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md),
+including its prerequisites, provenance checks, artifact review, and explicit
+one-attempt/no-retry rule.
+
+Before starting, verify outbound GitHub and codeload access, target repository
+clone access, Hugging Face dataset access, Python package index access, and the
+image and registry access required by SWE-bench. The host must also have a
+reachable, functioning Docker daemon that can start containers, not merely an
+installed Docker CLI, and the documented loopback Ollama model at its exact
+digest.
+
+The exact candidate commit must be clean and pushed as an advertised ref tip on
+the canonical GitHub remote. Bootstrap and test the source-only tooling:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh test
+bash scripts/run-swebench-release-smoke.sh setup
+```
+
+These commands are intentionally absent from package metadata. Then run the
+isolated candidate handoff:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh dry-run
+```
+
+Confirm its `summary.json` status is `dry_run` and its manifest binds the same
+candidate and install commit, Alloy and Pi versions, pinned Ollama model digest,
+and SWE-bench version. A dry-run does not execute Alloy or Docker evaluation and
+does not satisfy the real benchmark gate.
+
+Do not attempt a real release run yet. The command fails closed before candidate
+preflight:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh release
+```
+
+After the command is safely re-enabled, there is no automatic retry. A real
+attempt satisfies the execution portion of this gate only when `summary.json`
+has status `evaluated`, is backed by the
+persisted schema-v2 `evaluation/official-summary.json`, and reports the official
+one-instance verdict `resolved` or `unresolved`. Both are truthful completed
+outcomes; neither is an Alloy SWE-bench score.
+
+`resolved` is a valid official one-instance outcome. `unresolved` is a valid
+official one-instance outcome. Only a persisted schema-v2 official summary can
+complete the gate. `infrastructure_failure` means no valid official verdict
+exists. This includes agent, checkout, provenance, dataset, patch-capture,
+evaluator, or timeout failures and missing or invalid official summaries.
+`infrastructure_failure` blocks gate completion. It does not assert that an
+official evaluation completed. Preserve the result path and terminal status,
+and do not claim the manual gate ran when no official summary exists.
+
+The runner retains the explicit environment allowlist, disposable HOME/XDG
+state, dataset gold-field removal, and evaluator-scratch deletion described in
+the benchmark guide. It does not intentionally inject host credentials or
+environment variables, dataset gold fields, or evaluator scripts into
+persisted artifacts. Host mode is not a filesystem jail; Alloy runs as the
+maintainer's Unix user. Agent/evaluator stdout/stderr, model patches, and
+official summaries are untrusted and may contain sensitive content produced or
+read by those processes. Maintainers must inspect persisted artifacts before
+sharing, attaching, or releasing them.
+
+Helper (from a clean `main` at the release commit, only after the real
+SWE-bench gate is safely re-enabled and completed):
 
 ```bash
 # after version bump is on main
@@ -111,9 +188,11 @@ Before publishing a source release:
 2. Move the shipped changelog entries from `Unreleased` to a dated version.
 3. Run `npm run ci:local`, `npm run ci:release`, and independent review.
 4. Merge the release metadata through protected `main` and require green CI.
-5. Tag that exact `main` commit and wait for green tag CI before creating the
+5. Complete the manual SWE-bench gate. While real execution is disabled, stop
+   here and do not tag.
+6. Tag that exact `main` commit and wait for green tag CI before creating the
    GitHub Release.
-6. Download and inspect the published source archive, verify the version, and
+7. Download and inspect the published source archive, verify the version, and
    confirm the supported installer resolves the tag.
 
 ## Package publication is blocked

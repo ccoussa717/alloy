@@ -1,0 +1,12 @@
+{
+  "agent_timeout_seconds": 1800,
+  "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
+  "dataset": "SWE-bench/SWE-bench_Lite",
+  "evaluator_timeout_seconds": 2400,
+  "instance_id": "astropy__astropy-12907",
+  "model": "ollama/qwen3.8-alloy:latest",
+  "model_digest": "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba",
+  "ollama_model": "qwen3.8-alloy:latest",
+  "split": "test",
+  "swebench_version": "5.0.0"
+}

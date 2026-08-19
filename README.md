@@ -573,6 +573,7 @@ Local verification:
 
 ```bash
 npm run ci:local
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 ## Documentation
@@ -588,6 +589,7 @@ npm run ci:local
 | [Product boundary](docs/BOUNDARY.md) | What belongs in the generic package and what stays outside it. |
 | [Attribution](docs/ATTRIBUTION.md) | Pi and third-party provenance. |
 | [Releasing](docs/RELEASING.md) | Maintainer-only release and publication gates. |
+| [SWE-bench release smoke](benchmarks/swebench/README.md) | Maintainer-only, source-only one-instance candidate gate and artifact contract; no benchmark command ships in package metadata. |
 | [Changelog](CHANGELOG.md) | User-visible changes in each Alloy release. |
 | [Governance](GOVERNANCE.md) | Maintainer roles and decision rules. |
 | [Support](SUPPORT.md) | Usage help, bug reports, and support boundaries. |
@@ -613,8 +615,9 @@ See [Attribution](docs/ATTRIBUTION.md) for the dependency and provenance details
 ## Contributing
 
 Alloy is MIT licensed. Start with [CONTRIBUTING.md](CONTRIBUTING.md), add a
-failing test for behavior changes, and run `npm run ci:local` before opening a
-pull request. Security reports belong in the private process described in
+failing test for behavior changes, and run `npm run ci:local` plus
+`bash scripts/run-swebench-release-smoke.sh test` before opening a pull request.
+Security reports belong in the private process described in
 [SECURITY.md](SECURITY.md), not a public issue.
 
 Maintainer: [Chris Coussa](https://github.com/ccoussa717)

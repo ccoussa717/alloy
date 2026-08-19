@@ -107,6 +107,7 @@ function releaseFixture(overrides = {}) {
     name: "alloy-agent",
     version: "0.8.2",
     license: "MIT",
+    files: ["bin"],
     dependencies: {
       "@earendil-works/pi-agent-core": "0.82.1",
       "@earendil-works/pi-ai": TEST_PI_AI_FORK_URL,
@@ -176,6 +177,12 @@ function releaseFixture(overrides = {}) {
     };
   }
   Object.assign(packages, overrides.packages || {});
+  mkdirSync(join(directory, "bin"), { recursive: true });
+  writeFileSync(join(directory, "bin", "alloy.mjs"), "");
+  mkdirSync(join(directory, "benchmarks", "swebench"), { recursive: true });
+  writeFileSync(join(directory, "benchmarks", "swebench", "runner.py"), "");
+  mkdirSync(join(directory, "scripts"), { recursive: true });
+  writeFileSync(join(directory, "scripts", "run-swebench-release-smoke.sh"), "");
   writeFileSync(join(directory, "package.json"), JSON.stringify(pkg));
   writeFileSync(
     join(directory, "npm-shrinkwrap.json"),
@@ -458,6 +465,59 @@ globalThis.fetch = async (input, options) => {
     });
     assert.equal(privatePackage.status, 0, privatePackage.stderr || privatePackage.stdout);
   });
+
+  it("rejects benchmark tooling in the runtime package boundary", () => {
+    const directory = releaseFixture({ pkg: { files: ["bin", "benchmarks/swebench"] } });
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /benchmark tooling must not ship in the runtime package boundary/,
+    );
+  });
+
+  it("rejects the SWE-bench wrapper in the actual runtime package boundary", () => {
+    const directory = releaseFixture({
+      pkg: { files: ["bin", "scripts"] },
+    });
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /benchmark tooling must not ship in the runtime package boundary/,
+    );
+  });
+
+  for (const scripts of [
+    { "bench:swebench:test": "python3 -m unittest" },
+    { verify: "bash scripts/run-swebench-release-smoke.sh test" },
+  ]) {
+    it("rejects benchmark commands in package script metadata", () => {
+      const directory = releaseFixture({ pkg: { scripts } });
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /benchmark commands must not appear in package script metadata/,
+      );
+    });
+  }
+
+  for (const broadEntry of [".", "*", "**/*"]) {
+    it(`rejects broad package files entry ${broadEntry} before it can weaken the boundary`, () => {
+      const directory = releaseFixture({ pkg: { files: [broadEntry] } });
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /benchmark tooling must not ship in the runtime package boundary/,
+      );
+    });
+  }
 
   it("rejects publication while the package is private", () => {
     const directory = releaseFixture({

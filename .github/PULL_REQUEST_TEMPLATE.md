@@ -21,6 +21,7 @@ locally or only in GitHub Actions.
 
 - [ ] Tests would fail without this change.
 - [ ] `npm run ci:local` passes.
+- [ ] `bash scripts/run-swebench-release-smoke.sh test` passes.
 - [ ] Documentation matches behavior.
 - [ ] No credentials, private data, or internal infrastructure details appear.
 - [ ] Commits include Developer Certificate of Origin sign-off.
