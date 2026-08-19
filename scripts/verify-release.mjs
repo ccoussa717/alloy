@@ -24,6 +24,11 @@ if (publishGate) fail("npm publication is blocked until package-consumer lifecyc
 if (sourceGate && pkg.private !== true) {
   fail("package must remain private for a source launch");
 }
+for (const path of pkg.files || []) {
+  if (path === "benchmarks" || path.startsWith("benchmarks/")) {
+    fail("benchmark tooling must not ship in the runtime package boundary");
+  }
+}
 const repositoryUrl =
   typeof pkg.repository === "string" ? pkg.repository : pkg.repository?.url;
 const bugsUrl = typeof pkg.bugs === "string" ? pkg.bugs : pkg.bugs?.url;

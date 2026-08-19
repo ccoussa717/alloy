@@ -318,6 +318,7 @@ esac
     assert.match(installed.stdout, new RegExp(`Alloy ${packageVersion.replaceAll(".", "\\.")}`));
 
     const app = join(dataHome, "alloy", "app");
+    assert.equal(existsSync(join(app, "benchmarks")), false);
     assert.equal(
       existsSync(join(app, "tui", "node_modules", "@opentui", "core")),
       true,

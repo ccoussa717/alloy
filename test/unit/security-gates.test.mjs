@@ -459,6 +459,17 @@ globalThis.fetch = async (input, options) => {
     assert.equal(privatePackage.status, 0, privatePackage.stderr || privatePackage.stdout);
   });
 
+  it("rejects benchmark tooling in the runtime package boundary", () => {
+    const directory = releaseFixture({ pkg: { files: ["bin", "benchmarks/swebench"] } });
+    const result = run(process.execPath, [script], { cwd: directory });
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /benchmark tooling must not ship in the runtime package boundary/,
+    );
+  });
+
   it("rejects publication while the package is private", () => {
     const directory = releaseFixture({
       pkg: {

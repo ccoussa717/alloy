@@ -520,6 +520,10 @@ for resource in "$SOURCE_DIR/skills" "$SOURCE_DIR/prompts"; do
   require_directory "$resource" "runtime resource"
 done
 
+[[ ! -L "$SOURCE_DIR/benchmarks" ]] || err "Alloy source archive contains a symlinked benchmarks directory"
+rm -rf -- "$SOURCE_DIR/benchmarks"
+[[ ! -e "$SOURCE_DIR/benchmarks" ]] || err "could not remove release-only benchmark tooling"
+
 install_bun
 
 log "Installing exact shrinkwrapped dependencies"
