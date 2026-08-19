@@ -35,10 +35,58 @@ over a long `main`-only delta.
    and **`npm-shrinkwrap.json`** root + `packages[""]` to the same version.
 2. Move notes from `CHANGELOG.md` `[Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD`.
 3. Merge to `main` with green CI (`verify` + platform checks).
-4. Tag the exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
+4. From that pushed commit with no tracked worktree changes, complete the
+   [manual SWE-bench release gate](#manual-swe-bench-release-gate): run the
+   candidate dry-run, then obtain maintainer authorization for exactly one real
+   attempt.
+5. Record the official one-instance `resolved` or `unresolved` verdict. If no
+   valid official verdict exists, truthfully record `infrastructure_failure` and
+   stop: the gate is incomplete. Do not claim the gate ran without its official
+   summary.
+6. Only after the gate completes and release authority is confirmed, tag the
+   exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
    `git push origin vX.Y.Z`.
-5. Create the GitHub Release for that tag (source archives only; not npm).
-6. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
+7. Create the GitHub Release for that tag (source archives only; not npm).
+8. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
+
+### Manual SWE-bench release gate
+
+This maintainer-only gate runs after green CI and before tagging. Follow the
+complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md),
+including its prerequisites, provenance checks, artifact review, and explicit
+one-attempt/no-retry rule.
+
+The exact candidate commit must be clean and pushed as an advertised ref tip on
+the canonical GitHub remote. First run the isolated candidate handoff:
+
+```bash
+npm run bench:swebench:dry-run
+```
+
+Confirm its `summary.json` status is `dry_run` and its manifest binds the same
+candidate and install commit, Alloy and Pi versions, pinned Ollama model digest,
+and SWE-bench version. A dry-run does not execute Alloy or Docker evaluation and
+does not satisfy the real benchmark gate.
+
+Only after review and explicit maintainer authorization, run exactly one:
+
+```bash
+npm run bench:swebench:release
+```
+
+There is no automatic retry. The real attempt satisfies the execution portion
+of this gate only when `summary.json` has status `evaluated`, is backed by the
+persisted schema-v2 `evaluation/official-summary.json`, and reports the official
+one-instance verdict `resolved` or `unresolved`. Both are truthful completed
+outcomes; neither is an Alloy SWE-bench score.
+
+Classify any run without a valid official `resolved` or `unresolved` verdict as
+`infrastructure_failure`. This includes agent, checkout, provenance, dataset,
+patch-capture, evaluator, or timeout failures and missing or invalid official
+summaries. `infrastructure_failure` records the absence of an official verdict;
+it does not assert that the gate passed or that an official evaluation
+completed. Preserve the result path and terminal status, and do not claim the
+manual gate ran when no official summary exists.
 
 Helper (from a clean `main` at the release commit):
 

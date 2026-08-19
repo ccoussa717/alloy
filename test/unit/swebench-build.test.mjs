@@ -9,6 +9,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const installer = readFileSync(join(root, "install.sh"), "utf8");
 const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+const benchmarkReadme = readFileSync(
+  join(root, "benchmarks", "swebench", "README.md"),
+  "utf8",
+);
+const releasing = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
+const rootReadme = readFileSync(join(root, "README.md"), "utf8");
 const scriptsNpmIgnoreLines = readFileSync(join(root, "scripts", ".npmignore"), "utf8")
   .split(/\r?\n/)
   .filter(Boolean);
@@ -17,6 +23,16 @@ const ignoreLines = readFileSync(join(root, ".gitignore"), "utf8")
   .filter(Boolean);
 
 describe("SWE-bench build boundaries", () => {
+  it("documents the maintainer-only SWE-bench release gate", () => {
+    assert.match(benchmarkReadme, /npm run bench:swebench:setup/);
+    assert.match(benchmarkReadme, /npm run bench:swebench:dry-run/);
+    assert.match(benchmarkReadme, /npm run bench:swebench:release/);
+    assert.match(benchmarkReadme, /one-instance smoke/i);
+    assert.match(releasing, /manual SWE-bench release gate/i);
+    assert.match(releasing, /resolved|unresolved|infrastructure_failure/);
+    assert.match(rootReadme, /benchmarks\/swebench\/README\.md/);
+  });
+
   it("wires fast benchmark commands into normal verification", () => {
     assert.equal(
       pkg.scripts["bench:swebench:test"],
