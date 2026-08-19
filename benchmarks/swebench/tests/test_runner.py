@@ -789,6 +789,33 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(run_dir, root / run_id)
             self.assertTrue(run_dir.is_dir())
 
+    def test_run_path_pointer_records_exact_invocation_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_dir = root / "results" / "run-1"
+            run_dir.mkdir(parents=True)
+            pointer = root / "state" / "run-path.json"
+
+            swebench_runner.write_run_path_pointer(
+                pointer,
+                run_dir,
+                "run-1",
+                "a" * 40,
+                "token-123",
+            )
+
+            self.assertEqual(
+                json.loads(pointer.read_text()),
+                {
+                    "candidate_commit": "a" * 40,
+                    "results_root": str(run_dir.parent.resolve()),
+                    "run_dir": str(run_dir.resolve()),
+                    "run_id": "run-1",
+                    "run_token": "token-123",
+                    "schema_version": 1,
+                },
+            )
+
     def test_main_uses_explicit_candidate_binary_and_metadata(self):
         instance = {
             "instance_id": "astropy__astropy-12907",
@@ -800,14 +827,20 @@ class OrchestrationTests(unittest.TestCase):
             root = Path(directory)
             run_dir = root / "results" / "run-1"
             run_dir.mkdir(parents=True)
+            run_path_pointer = root / "state" / "run-path.json"
             venv_python = root / "venv" / "bin" / "python"
             venv_python.parent.mkdir(parents=True)
             venv_python.symlink_to(sys.executable)
+
+            def provenance_after_pointer(*_args, **_kwargs):
+                self.assertTrue(run_path_pointer.is_file())
+                return GOOD_PROVENANCE
+
             with (
                 mock.patch("benchmarks.swebench.runner.create_run_dir", return_value=("run-1", run_dir)),
                 mock.patch(
                     "benchmarks.swebench.runner.probe_live_provenance",
-                    return_value=GOOD_PROVENANCE,
+                    side_effect=provenance_after_pointer,
                 ),
                 mock.patch("benchmarks.swebench.runner.load_instance", return_value=instance),
                 mock.patch(
@@ -826,11 +859,19 @@ class OrchestrationTests(unittest.TestCase):
                         str(root / "work"),
                         "--venv-python",
                         str(venv_python),
+                        "--run-path-file",
+                        str(run_path_pointer),
+                        "--run-token",
+                        "token-123",
                         "--dry-run",
                     ]
                 )
 
             self.assertEqual(result, 0)
+            self.assertEqual(
+                json.loads(run_path_pointer.read_text())["run_dir"],
+                str(run_dir.resolve()),
+            )
             manifest = json.loads((run_dir / "manifest.json").read_text())
             self.assertEqual(manifest["alloy_version"], "1.1.25")
             self.assertEqual(manifest["pi_version"], "0.82.1")

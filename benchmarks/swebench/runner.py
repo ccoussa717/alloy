@@ -531,6 +531,27 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def write_run_path_pointer(
+    path: Path,
+    run_dir: Path,
+    run_id: str,
+    candidate_commit: str,
+    run_token: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pointer = {
+        "candidate_commit": candidate_commit,
+        "results_root": str(run_dir.parent.resolve()),
+        "run_dir": str(run_dir.resolve()),
+        "run_id": run_id,
+        "run_token": run_token,
+        "schema_version": 1,
+    }
+    with path.open("x", encoding="utf-8") as pointer_file:
+        json.dump(pointer, pointer_file, sort_keys=True, separators=(",", ":"))
+        pointer_file.write("\n")
+
+
 def write_command_logs(stdout_path: Path, stderr_path: Path, error: CommandError) -> None:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path.write_text(error.stdout)
@@ -546,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-manifest", type=Path, required=True)
     parser.add_argument("--results-root", type=Path, default=BENCH_ROOT / "results")
     parser.add_argument("--work-root", type=Path, default=BENCH_ROOT / ".work")
+    parser.add_argument("--run-path-file", type=Path)
+    parser.add_argument("--run-token")
     parser.add_argument(
         "--venv-python",
         type=Path,
@@ -553,6 +576,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if (args.run_path_file is None) != (args.run_token is None):
+        parser.error("--run-path-file and --run-token must be provided together")
+    if args.run_token == "":
+        parser.error("--run-token must not be empty")
     profile = load_profile(args.profile)
     candidate = load_candidate_metadata(args.candidate_root, args.candidate_commit)
     install_manifest = load_install_manifest(args.install_manifest)
@@ -560,6 +587,14 @@ def main(argv: list[str] | None = None) -> int:
     venv_python = args.venv_python.absolute()
 
     run_id, run_dir = create_run_dir(args.results_root, candidate.alloy_version)
+    if args.run_path_file is not None:
+        write_run_path_pointer(
+            args.run_path_file,
+            run_dir,
+            run_id,
+            candidate.commit,
+            args.run_token,
+        )
     started_at = utc_now()
     checkout = args.work_root / run_id / "checkout"
     predictions = run_dir / "predictions.jsonl"
