@@ -112,14 +112,18 @@ git archive \
   "$CANDIDATE_COMMIT" \
   -- \
   package.json \
+  install.sh \
   benchmarks/swebench
 tar -xf "$ARCHIVE_PATH" -C "$SNAPSHOT_ROOT"
 
 SNAPSHOT_PACKAGE="$SNAPSHOT_ROOT/package.json"
+SNAPSHOT_INSTALLER="$SNAPSHOT_ROOT/install.sh"
 SNAPSHOT_BENCH="$SNAPSHOT_ROOT/benchmarks/swebench"
 SNAPSHOT_RUNNER="$SNAPSHOT_BENCH/runner.py"
 SNAPSHOT_PROFILE="$SNAPSHOT_BENCH/profile.json"
-python3 - "$SNAPSHOT_ROOT" "$SNAPSHOT_PACKAGE" "$SNAPSHOT_RUNNER" "$SNAPSHOT_PROFILE" <<'PY'
+python3 \
+  - "$SNAPSHOT_ROOT" "$SNAPSHOT_PACKAGE" "$SNAPSHOT_INSTALLER" \
+  "$SNAPSHOT_RUNNER" "$SNAPSHOT_PROFILE" <<'PY'
 import os
 import stat
 import sys
@@ -160,7 +164,7 @@ mkdir -p \
   "$TMPDIR" \
   "$ALLOY_PREFIX"
 
-bash "$REPO_ROOT/install.sh"
+bash "$SNAPSHOT_INSTALLER"
 
 ALLOY_BIN="$ALLOY_PREFIX/bin/alloy"
 INSTALL_MANIFEST="$XDG_DATA_HOME/alloy/install-manifest.json"

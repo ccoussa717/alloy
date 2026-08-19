@@ -41,6 +41,7 @@ class ReleaseWrapperTests(unittest.TestCase):
             "LIVE_RUNNER\n"
         )
         (self.repo / "install.sh").write_text("#!/bin/sh\n")
+        (self.candidate / "install.sh").write_text("SNAPSHOT_INSTALLER\n")
         (self.candidate / "benchmarks" / "swebench" / "profile.json").write_text(
             "SNAPSHOT_PROFILE\n"
         )
@@ -56,6 +57,7 @@ class ReleaseWrapperTests(unittest.TestCase):
                 "-C",
                 str(self.candidate),
                 "package.json",
+                "install.sh",
                 "benchmarks/swebench",
             ],
             check=True,
@@ -130,6 +132,9 @@ case "$1 $2" in
       printf '%s\n' 'MUTATED_LIVE_PROFILE' > "$FAKE_REPO/benchmarks/swebench/profile.json"
       printf '%s\n' '{"version":"9.9.9"}' > "$FAKE_REPO/package.json"
     fi
+    if [ "${FAKE_MUTATE_LIVE_INSTALLER:-0}" -eq 1 ]; then
+      printf '%s\n' 'MUTATED_LIVE_INSTALLER' > "$FAKE_REPO/install.sh"
+    fi
     ;;
   *) printf 'unexpected git command: %s\n' "$*" >&2; exit 91 ;;
 esac
@@ -153,6 +158,7 @@ keys = [
 record = {
     "argv": sys.argv[2:],
     "env": {key: os.environ.get(key) for key in keys},
+    "installer_source": open(sys.argv[2], encoding="utf-8").read(),
 }
 with open(sys.argv[1], "a", encoding="utf-8") as log:
     log.write(json.dumps(record, sort_keys=True) + "\\n")
@@ -341,6 +347,21 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         self.assertEqual(candidate_root.parent.name, "alloy")
         self.assertNotEqual(candidate_root, self.repo)
 
+    def test_wrapper_executes_snapshot_installer_after_live_installer_mutation(self):
+        result = self._run("--dry-run", FAKE_MUTATE_LIVE_INSTALLER="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        install = self._installer_record()
+        temporary_root = Path(install["env"]["HOME"]).parent
+        self.assertEqual(
+            install["argv"],
+            [str(temporary_root / "snapshot" / "install.sh")],
+        )
+        self.assertEqual(install["installer_source"], "SNAPSHOT_INSTALLER\n")
+        self.assertEqual(
+            (self.repo / "install.sh").read_text(),
+            "MUTATED_LIVE_INSTALLER\n",
+        )
+
     def test_wrapper_passes_exact_json_logged_arguments_once_with_whitespace_paths(self):
         result = self._run(
             "--dry-run",
@@ -349,9 +370,12 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         install = self._installer_record()
-        self.assertEqual(install["argv"], [str(self.repo / "install.sh")])
-        arguments = self._runner_record()["argv"]
         temporary_root = Path(install["env"]["HOME"]).parent
+        self.assertEqual(
+            install["argv"],
+            [str(temporary_root / "snapshot" / "install.sh")],
+        )
+        arguments = self._runner_record()["argv"]
         self.assertEqual(
             arguments,
             [
