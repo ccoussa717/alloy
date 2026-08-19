@@ -56,6 +56,13 @@ complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md
 including its prerequisites, provenance checks, artifact review, and explicit
 one-attempt/no-retry rule.
 
+Before starting, verify outbound GitHub and codeload access, target repository
+clone access, Hugging Face dataset access, Python package index access, and the
+image and registry access required by SWE-bench. The host must also have a
+reachable, functioning Docker daemon that can start containers, not merely an
+installed Docker CLI, and the documented loopback Ollama model at its exact
+digest.
+
 The exact candidate commit must be clean and pushed as an advertised ref tip on
 the canonical GitHub remote. First run the isolated candidate handoff:
 
@@ -80,13 +87,24 @@ persisted schema-v2 `evaluation/official-summary.json`, and reports the official
 one-instance verdict `resolved` or `unresolved`. Both are truthful completed
 outcomes; neither is an Alloy SWE-bench score.
 
-Classify any run without a valid official `resolved` or `unresolved` verdict as
-`infrastructure_failure`. This includes agent, checkout, provenance, dataset,
-patch-capture, evaluator, or timeout failures and missing or invalid official
-summaries. `infrastructure_failure` records the absence of an official verdict;
-it does not assert that the gate passed or that an official evaluation
-completed. Preserve the result path and terminal status, and do not claim the
-manual gate ran when no official summary exists.
+`resolved` is a valid official one-instance outcome. `unresolved` is a valid
+official one-instance outcome. Only a persisted schema-v2 official summary can
+complete the gate. `infrastructure_failure` means no valid official verdict
+exists. This includes agent, checkout, provenance, dataset, patch-capture,
+evaluator, or timeout failures and missing or invalid official summaries.
+`infrastructure_failure` blocks gate completion. It does not assert that an
+official evaluation completed. Preserve the result path and terminal status,
+and do not claim the manual gate ran when no official summary exists.
+
+The runner retains the explicit environment allowlist, disposable HOME/XDG
+state, dataset gold-field removal, and evaluator-scratch deletion described in
+the benchmark guide. It does not intentionally inject host credentials or
+environment variables, dataset gold fields, or evaluator scripts into
+persisted artifacts. Host mode is not a filesystem jail; Alloy runs as the
+maintainer's Unix user. Agent/evaluator stdout/stderr, model patches, and
+official summaries are untrusted and may contain sensitive content produced or
+read by those processes. Maintainers must inspect persisted artifacts before
+sharing, attaching, or releasing them.
 
 Helper (from a clean `main` at the release commit):
 

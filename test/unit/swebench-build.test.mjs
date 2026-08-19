@@ -15,6 +15,8 @@ const benchmarkReadme = readFileSync(
 );
 const releasing = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
 const rootReadme = readFileSync(join(root, "README.md"), "utf8");
+const normalizedBenchmarkReadme = benchmarkReadme.replace(/\s+/g, " ");
+const normalizedReleasing = releasing.replace(/\s+/g, " ");
 const scriptsNpmIgnoreLines = readFileSync(join(root, "scripts", ".npmignore"), "utf8")
   .split(/\r?\n/)
   .filter(Boolean);
@@ -29,8 +31,57 @@ describe("SWE-bench build boundaries", () => {
     assert.match(benchmarkReadme, /npm run bench:swebench:release/);
     assert.match(benchmarkReadme, /one-instance smoke/i);
     assert.match(releasing, /manual SWE-bench release gate/i);
-    assert.match(releasing, /resolved|unresolved|infrastructure_failure/);
     assert.match(rootReadme, /benchmarks\/swebench\/README\.md/);
+  });
+
+  it("documents exact truthful verdict completion semantics", () => {
+    assert.match(normalizedReleasing, /`resolved` is a valid official one-instance outcome\./);
+    assert.match(
+      normalizedReleasing,
+      /`unresolved` is a valid official one-instance outcome\./,
+    );
+    assert.match(
+      normalizedReleasing,
+      /`infrastructure_failure` means no valid official verdict exists\./,
+    );
+    assert.match(
+      normalizedReleasing,
+      /Only a persisted schema-v2 official summary can complete the gate\./,
+    );
+    assert.match(
+      normalizedReleasing,
+      /`infrastructure_failure` blocks gate completion\./,
+    );
+  });
+
+  it("documents the honest host-mode and untrusted-artifact boundary", () => {
+    for (const document of [normalizedBenchmarkReadme, normalizedReleasing]) {
+      assert.match(
+        document,
+        /does not intentionally inject host credentials or environment variables, dataset gold fields, or evaluator scripts into persisted artifacts/i,
+      );
+      assert.match(
+        document,
+        /Host mode is not a filesystem jail; Alloy runs as the maintainer's Unix user\./,
+      );
+      assert.match(
+        document,
+        /stdout\/stderr, model patches, and official summaries are untrusted and may contain sensitive content/i,
+      );
+      assert.match(
+        document,
+        /inspect persisted artifacts before sharing, attaching, or releasing them/i,
+      );
+    }
+  });
+
+  it("documents network, Docker daemon, and local model prerequisites", () => {
+    assert.match(benchmarkReadme, /outbound GitHub and codeload access/i);
+    assert.match(benchmarkReadme, /target repository clone access/i);
+    assert.match(benchmarkReadme, /Hugging Face dataset access/i);
+    assert.match(benchmarkReadme, /image and registry access required by\s+SWE-bench/i);
+    assert.match(benchmarkReadme, /reachable, functioning Docker daemon/i);
+    assert.match(benchmarkReadme, /local Ollama service on loopback/i);
   });
 
   it("wires fast benchmark commands into normal verification", () => {

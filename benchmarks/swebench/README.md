@@ -7,12 +7,19 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
 ## Prerequisites
 
 - Python 3.11 or newer. CI uses Python 3.12 for the fast test suite.
-- Docker available to the official SWE-bench evaluator.
+- A reachable, functioning Docker daemon that can start the official
+  SWE-bench containers. An installed Docker CLI alone is insufficient.
 - A local Ollama service on loopback with `qwen3.8-alloy:latest` installed at
   digest `116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba`.
 - A Git checkout with no tracked changes whose `HEAD` is a full commit SHA
-  pushed to the canonical credential-free GitHub remote. The default remote name is `github`; set
-  `ALLOY_BENCH_REMOTE` only when the same canonical URL uses another name.
+  pushed to the canonical credential-free GitHub remote. The default remote
+  name is `github`; set `ALLOY_BENCH_REMOTE` only when the same canonical URL
+  uses another name.
+- Outbound GitHub and codeload access for remote-tip verification and the exact
+  candidate install, plus target repository clone access for the pinned task.
+- Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite`, Python
+  package index access for setup, and image and registry access required by
+  SWE-bench for the official evaluator.
 
 Bootstrap the pinned `swebench==5.0.0` environment:
 
@@ -79,8 +86,15 @@ temporary candidate installation is removed when the wrapper exits.
 The autonomous process receives an explicit environment allowlist: terminal and
 locale values, `PATH`, a loopback-only `OLLAMA_HOST`, and fresh per-run HOME/XDG
 and temporary directories under the ignored `benchmarks/swebench/.work/` tree.
-Host credentials and unrelated environment variables are not forwarded. The
-dataset row is stripped of `patch` and `test_patch` before prompt construction.
+Host credentials and unrelated environment variables are not intentionally
+forwarded. The dataset row is stripped of `patch` and `test_patch` before prompt
+construction.
+
+Host mode is not a filesystem jail; Alloy runs as the maintainer's Unix user.
+The disposable home and environment allowlist reduce ambient state, but they do
+not prevent the process from reading files that Unix user can access. The runner
+does not intentionally inject host credentials or environment variables,
+dataset gold fields, or evaluator scripts into persisted artifacts.
 
 Before any attempt, the runner binds the manifest to the candidate commit,
 installed manifest, Alloy and Pi versions, exact Ollama digest, SWE-bench
@@ -104,11 +118,17 @@ The ignored result directory has a phase-dependent safe allowlist:
 - Evaluation may add only `evaluation/official-summary.json`,
   `evaluation/stdout.log`, and `evaluation/stderr.log`.
 
-Evaluator scratch, generated evaluator scripts such as `eval.sh`, hidden test
-material, dataset gold `patch` or `test_patch` fields, credentials, environment
-variables, and unrelated host files must not be persisted. The wrapper accepts
-only the new result path whose pointer and manifest match this invocation's
-candidate SHA, run token, canonical results root, and installed candidate root.
+Evaluator scratch, including generated evaluator scripts such as `eval.sh` and
+hidden test material, is deleted after the allowlisted evaluation files are
+copied. The wrapper accepts only the new result path whose pointer and manifest
+match this invocation's candidate SHA, run token, canonical results root, and
+installed candidate root.
+
+Agent/evaluator stdout/stderr, model patches, and official summaries are
+untrusted and may contain sensitive content produced or read by those
+processes. Maintainers must inspect persisted artifacts before sharing,
+attaching, or releasing them. The artifact allowlist limits file names and
+provenance; it is not a content-sanitization or confidentiality boundary.
 
 ## Status And Verdicts
 
