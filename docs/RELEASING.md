@@ -64,10 +64,18 @@ installed Docker CLI, and the documented loopback Ollama model at its exact
 digest.
 
 The exact candidate commit must be clean and pushed as an advertised ref tip on
-the canonical GitHub remote. First run the isolated candidate handoff:
+the canonical GitHub remote. Bootstrap and test the source-only tooling:
 
 ```bash
-npm run bench:swebench:dry-run
+bash scripts/run-swebench-release-smoke.sh test
+bash scripts/run-swebench-release-smoke.sh setup
+```
+
+These commands are intentionally absent from package metadata. Then run the
+isolated candidate handoff:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh dry-run
 ```
 
 Confirm its `summary.json` status is `dry_run` and its manifest binds the same
@@ -78,7 +86,7 @@ does not satisfy the real benchmark gate.
 Only after review and explicit maintainer authorization, run exactly one:
 
 ```bash
-npm run bench:swebench:release
+bash scripts/run-swebench-release-smoke.sh release
 ```
 
 There is no automatic retry. The real attempt satisfies the execution portion

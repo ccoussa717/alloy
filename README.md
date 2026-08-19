@@ -588,7 +588,7 @@ npm run ci:local
 | [Product boundary](docs/BOUNDARY.md) | What belongs in the generic package and what stays outside it. |
 | [Attribution](docs/ATTRIBUTION.md) | Pi and third-party provenance. |
 | [Releasing](docs/RELEASING.md) | Maintainer-only release and publication gates. |
-| [SWE-bench release smoke](benchmarks/swebench/README.md) | Maintainer-only one-instance candidate gate and artifact contract. |
+| [SWE-bench release smoke](benchmarks/swebench/README.md) | Maintainer-only, source-only one-instance candidate gate and artifact contract; no benchmark command ships in package metadata. |
 | [Changelog](CHANGELOG.md) | User-visible changes in each Alloy release. |
 | [Governance](GOVERNANCE.md) | Maintainer roles and decision rules. |
 | [Support](SUPPORT.md) | Usage help, bug reports, and support boundaries. |

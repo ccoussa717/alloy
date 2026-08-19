@@ -37,6 +37,9 @@ class ReleaseWrapperTests(unittest.TestCase):
         (self.repo / "benchmarks" / "swebench" / "profile.json").write_text(
             "LIVE_PROFILE\n"
         )
+        (self.repo / "benchmarks" / "swebench" / "requirements.txt").write_text(
+            "swebench==5.0.0\n"
+        )
         (self.repo / "benchmarks" / "swebench" / "runner.py").write_text(
             "LIVE_RUNNER\n"
         )
@@ -64,6 +67,7 @@ class ReleaseWrapperTests(unittest.TestCase):
         )
         self.installer_log = self.root / "installer.jsonl"
         self.runner_log = self.root / "runner.jsonl"
+        self.command_log = self.root / "commands.jsonl"
         self.results_root = self.repo / "benchmarks" / "swebench" / "results"
         self.result_dir = self.results_root / "run-1"
         self.host_zdotdir = self.root / "host zdotdir"
@@ -71,6 +75,7 @@ class ReleaseWrapperTests(unittest.TestCase):
         self.host_zshrc = self.host_zdotdir / ".zshrc"
         self.host_zshrc.write_text("host sentinel\n")
         self._write_git_fixture()
+        self._write_python_fixture()
         self._write_installer_fixture()
         self._write_runner_fixture()
         self.environment = {
@@ -84,6 +89,7 @@ class ReleaseWrapperTests(unittest.TestCase):
             "FAKE_ARCHIVE_FILE": str(self.archive),
             "FAKE_INSTALLER_LOG": str(self.installer_log),
             "FAKE_RUNNER_LOG": str(self.runner_log),
+            "FAKE_COMMAND_LOG": str(self.command_log),
             "FAKE_RESULT_DIR": str(self.result_dir),
         }
 
@@ -138,6 +144,28 @@ case "$1 $2" in
     ;;
   *) printf 'unexpected git command: %s\n' "$*" >&2; exit 91 ;;
 esac
+""",
+        )
+
+    def _write_python_fixture(self) -> None:
+        self._executable(
+            self.bin / "python3",
+            """#!/bin/sh
+if [ "$1 $2" = "-m unittest" ]; then
+  printf '%s\n' "$*" >> "$FAKE_COMMAND_LOG"
+  exit "${FAKE_PYTHON_STATUS:-0}"
+fi
+if [ "$1 $2" != "-m venv" ]; then
+  exec /usr/bin/python3 "$@"
+fi
+printf '%s\n' "$*" >> "$FAKE_COMMAND_LOG"
+mkdir -p "$3/bin"
+cat > "$3/bin/python" <<'PYTHON'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_COMMAND_LOG"
+PYTHON
+chmod +x "$3/bin/python"
+exit "${FAKE_PYTHON_STATUS:-0}"
 """,
         )
 
@@ -283,25 +311,25 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         return records[0]
 
     def test_wrapper_fails_closed_when_git_status_fails(self):
-        result = self._run(FAKE_STATUS_FAILURE="23")
+        result = self._run("release", FAKE_STATUS_FAILURE="23")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("could not verify clean tracked worktree", result.stderr)
         self.assertFalse(self.installer_log.exists())
 
     def test_wrapper_rejects_dirty_tracked_worktree(self):
-        result = self._run(FAKE_STATUS=" M package.json\n")
+        result = self._run("release", FAKE_STATUS=" M package.json\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("clean tracked worktree", result.stderr)
         self.assertFalse(self.installer_log.exists())
 
     def test_wrapper_rejects_peeled_tag_as_remote_tip(self):
-        result = self._run(FAKE_REMOTE_REFS=f"{SHA}\trefs/tags/v1.1.25^{{}}\n")
+        result = self._run("release", FAKE_REMOTE_REFS=f"{SHA}\trefs/tags/v1.1.25^{{}}\n")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("advertised ref tip", result.stderr)
         self.assertFalse(self.installer_log.exists())
 
     def test_wrapper_rejects_commit_not_advertised_by_remote(self):
-        result = self._run(FAKE_REMOTE_SHA="b" * 40)
+        result = self._run("release", FAKE_REMOTE_SHA="b" * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("advertised ref tip", result.stderr)
         self.assertFalse(self.installer_log.exists())
@@ -309,7 +337,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
     def test_wrapper_isolates_production_installer_environment_and_zdotdir(self):
         real_installer = Path(__file__).resolve().parents[3] / "install.sh"
         self.assertIn('${ZDOTDIR:-$HOME}/.zshrc', real_installer.read_text())
-        result = self._run("--dry-run", BASH_ENV="/host/bash-env", ENV="/host/env")
+        result = self._run("dry-run", BASH_ENV="/host/bash-env", ENV="/host/env")
         self.assertEqual(result.returncode, 0, result.stderr)
         install = self._installer_record()
         environment = install["env"]
@@ -334,7 +362,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         self.assertFalse(temporary_root.exists())
 
     def test_wrapper_uses_immutable_snapshot_and_installed_candidate_root(self):
-        result = self._run("--dry-run", FAKE_MUTATE_LIVE="1")
+        result = self._run("dry-run", FAKE_MUTATE_LIVE="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         run = self._runner_record()
         arguments = run["argv"]
@@ -348,7 +376,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         self.assertNotEqual(candidate_root, self.repo)
 
     def test_wrapper_executes_snapshot_installer_after_live_installer_mutation(self):
-        result = self._run("--dry-run", FAKE_MUTATE_LIVE_INSTALLER="1")
+        result = self._run("dry-run", FAKE_MUTATE_LIVE_INSTALLER="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         install = self._installer_record()
         temporary_root = Path(install["env"]["HOME"]).parent
@@ -364,7 +392,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
 
     def test_wrapper_passes_exact_json_logged_arguments_once_with_whitespace_paths(self):
         result = self._run(
-            "--dry-run",
+            "dry-run",
             ALLOY_BENCH_REMOTE="release-origin",
             FAKE_EXPECTED_REMOTE="release-origin",
         )
@@ -422,7 +450,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         )
 
     def test_wrapper_preserves_runner_exit_and_persisted_pointed_result(self):
-        result = self._run(FAKE_RUNNER_STATUS="5")
+        result = self._run("release", FAKE_RUNNER_STATUS="5")
         self.assertEqual(result.returncode, 5)
         self.assertIn(f"benchmark result: {self.result_dir}", result.stdout)
         self.assertEqual(
@@ -436,19 +464,19 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
             with self.subTest(mode=mode):
                 if self.runner_log.exists():
                     self.runner_log.unlink()
-                result = self._run(FAKE_POINTER_MODE=mode)
+                result = self._run("release", FAKE_POINTER_MODE=mode)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("run path pointer", result.stderr)
                 self.assertEqual(len(self._records(self.runner_log)), 1)
 
     def test_wrapper_preserves_nonzero_runner_exit_when_pointer_is_invalid(self):
-        result = self._run(FAKE_POINTER_MODE="missing", FAKE_RUNNER_STATUS="7")
+        result = self._run("release", FAKE_POINTER_MODE="missing", FAKE_RUNNER_STATUS="7")
         self.assertEqual(result.returncode, 7)
         self.assertIn("run path pointer", result.stderr)
         self.assertEqual(len(self._records(self.runner_log)), 1)
 
     def test_wrapper_rejects_mismatched_pointer(self):
-        result = self._run(FAKE_POINTER_MODE="mismatch")
+        result = self._run("release", FAKE_POINTER_MODE="mismatch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("run path pointer", result.stderr)
 
@@ -456,7 +484,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         stale = self.results_root / "old-run"
         stale.mkdir(parents=True)
         (stale / "summary.json").write_text("old\n")
-        result = self._run(FAKE_POINTER_MODE="stale", FAKE_STALE_DIR=str(stale))
+        result = self._run("release", FAKE_POINTER_MODE="stale", FAKE_STALE_DIR=str(stale))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale run path", result.stderr)
         self.assertEqual((stale / "summary.json").read_text(), "old\n")
@@ -468,6 +496,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
                     self.runner_log.unlink()
                 escape = self.root / f"outside {mode}"
                 result = self._run(
+                    "release",
                     FAKE_POINTER_MODE=mode,
                     FAKE_ESCAPE_DIR=str(escape),
                 )
@@ -478,7 +507,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         outside = self.root / "outside results"
         outside.mkdir()
         self.results_root.symlink_to(outside, target_is_directory=True)
-        result = self._run()
+        result = self._run("release")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("results root", result.stderr)
         self.assertFalse(self.runner_log.exists())
@@ -486,7 +515,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
     def test_wrapper_rejects_newline_repository_path(self):
         for repository_path in (f"{self.repo}\nsecond-path", f"{self.repo}\n"):
             with self.subTest(repository_path=repository_path):
-                result = self._run(FAKE_REPO=repository_path)
+                result = self._run("release", FAKE_REPO=repository_path)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("repository path contains a newline", result.stderr)
                 self.assertFalse(self.installer_log.exists())
@@ -500,12 +529,12 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
             with self.subTest(environment=environment):
                 if self.installer_log.exists():
                     self.installer_log.unlink()
-                result = self._run(**environment)
+                result = self._run("release", **environment)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.installer_log.exists())
 
     def test_wrapper_fails_closed_when_remote_ref_query_fails(self):
-        result = self._run(FAKE_LS_REMOTE_STATUS="29")
+        result = self._run("release", FAKE_LS_REMOTE_STATUS="29")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("could not read advertised refs", result.stderr)
         self.assertFalse(self.installer_log.exists())
@@ -521,29 +550,59 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
             with self.subTest(environment=environment):
                 if self.installer_log.exists():
                     self.installer_log.unlink()
-                result = self._run(**environment)
+                result = self._run("release", **environment)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("installed candidate", result.stderr)
                 self.assertFalse(self.runner_log.exists())
 
     def test_wrapper_calls_failed_installer_once_without_retry(self):
-        result = self._run(FAKE_INSTALLER_STATUS="17")
+        result = self._run("release", FAKE_INSTALLER_STATUS="17")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(self._records(self.installer_log)), 1)
         self.assertFalse(self.runner_log.exists())
 
     def test_wrapper_rejects_noncanonical_or_credentialed_remote_url(self):
-        result = self._run(FAKE_REMOTE_URL="https://token@github.com/ccoussa717/alloy.git")
+        result = self._run("release", FAKE_REMOTE_URL="https://token@github.com/ccoussa717/alloy.git")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("canonical GitHub remote", result.stderr)
 
     def test_wrapper_rejects_non_full_lowercase_candidate_sha(self):
-        result = self._run(FAKE_SHA="A" * 40, FAKE_REMOTE_SHA="A" * 40)
+        result = self._run("release", FAKE_SHA="A" * 40, FAKE_REMOTE_SHA="A" * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("full lowercase Git SHA", result.stderr)
 
     def test_wrapper_rejects_unknown_arguments_before_preflight(self):
-        result = self._run("--dry-run", "unexpected")
+        result = self._run("unexpected")
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("usage:", result.stderr)
+        self.assertFalse(self.installer_log.exists())
+
+    def test_test_subcommand_runs_model_free_suite_before_candidate_preflight(self):
+        result = self._run("test", FAKE_STATUS_FAILURE="23")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.command_log.read_text().splitlines(),
+            [f"-m unittest discover -s {self.repo / 'benchmarks' / 'swebench' / 'tests'} -v"],
+        )
+        self.assertFalse(self.installer_log.exists())
+
+    def test_setup_subcommand_creates_or_updates_exact_benchmark_venv_before_preflight(self):
+        venv = self.repo / "benchmarks" / "swebench" / ".venv"
+        existing_python = venv / "bin" / "python"
+        existing_python.unlink()
+        result = self._run("setup", FAKE_STATUS_FAILURE="23")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.command_log.read_text().splitlines(),
+            [
+                f"-m venv {venv}",
+                f"-m pip install -r {self.repo / 'benchmarks' / 'swebench' / 'requirements.txt'}",
+            ],
+        )
+        self.assertFalse(self.installer_log.exists())
+
+    def test_wrapper_requires_an_explicit_subcommand(self):
+        result = self._run()
         self.assertEqual(result.returncode, 64)
         self.assertIn("usage:", result.stderr)
         self.assertFalse(self.installer_log.exists())

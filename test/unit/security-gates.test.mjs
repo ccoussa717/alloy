@@ -490,6 +490,22 @@ globalThis.fetch = async (input, options) => {
     );
   });
 
+  for (const scripts of [
+    { "bench:swebench:test": "python3 -m unittest" },
+    { verify: "bash scripts/run-swebench-release-smoke.sh test" },
+  ]) {
+    it("rejects benchmark commands in package script metadata", () => {
+      const directory = releaseFixture({ pkg: { scripts } });
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /benchmark commands must not appear in package script metadata/,
+      );
+    });
+  }
+
   for (const broadEntry of [".", "*", "**/*"]) {
     it(`rejects broad package files entry ${broadEntry} before it can weaken the boundary`, () => {
       const directory = releaseFixture({ pkg: { files: [broadEntry] } });

@@ -314,6 +314,10 @@ esac
     });
     assert.equal(installed.status, 0, installed.stderr || installed.stdout);
     const sourceManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    for (const [key, value] of Object.entries(sourceManifest.scripts)) {
+      assert.doesNotMatch(key, /swebench/i);
+      assert.doesNotMatch(value, /swebench|run-swebench-release-smoke/i);
+    }
     const packageVersion = sourceManifest.version;
     assert.match(installed.stdout, new RegExp(`Alloy ${packageVersion.replaceAll(".", "\\.")}`));
 
@@ -323,6 +327,11 @@ esac
       existsSync(join(app, "scripts", "run-swebench-release-smoke.sh")),
       false,
     );
+    const installedManifest = JSON.parse(readFileSync(join(app, "package.json"), "utf8"));
+    for (const [key, value] of Object.entries(installedManifest.scripts)) {
+      assert.doesNotMatch(key, /swebench/i);
+      assert.doesNotMatch(value, /swebench|run-swebench-release-smoke/i);
+    }
     assert.equal(
       existsSync(join(app, "tui", "node_modules", "@opentui", "core")),
       true,

@@ -36,6 +36,15 @@ for (const path of pkg.files || []) {
   }
 }
 
+for (const [name, command] of Object.entries(pkg.scripts || {})) {
+  if (
+    /swebench/i.test(name) ||
+    /swebench|scripts\/run-swebench-release-smoke\.sh/i.test(String(command))
+  ) {
+    fail("benchmark commands must not appear in package script metadata");
+  }
+}
+
 function packedFilePaths() {
   const packed = spawnSync(
     process.platform === "win32" ? "npm.cmd" : "npm",

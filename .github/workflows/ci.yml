@@ -36,6 +36,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Test source-only SWE-bench release tooling
+        run: bash scripts/run-swebench-release-smoke.sh test
+
       - name: Install checksum-verified Bun 1.3.14 and tmux
         run: |
           sudo apt-get update

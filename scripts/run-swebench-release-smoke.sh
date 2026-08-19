@@ -2,19 +2,16 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: %s [--dry-run]\n' "${0##*/}" >&2
+  printf 'usage: %s {test|setup|dry-run|release}\n' "${0##*/}" >&2
 }
 
-DRY_RUN=0
-case "$#" in
-  0) ;;
-  1)
-    if [[ "$1" != "--dry-run" ]]; then
-      usage
-      exit 64
-    fi
-    DRY_RUN=1
-    ;;
+if [[ "$#" -ne 1 ]]; then
+  usage
+  exit 64
+fi
+SUBCOMMAND="$1"
+case "$SUBCOMMAND" in
+  test|setup|dry-run|release) ;;
   *)
     usage
     exit 64
@@ -31,6 +28,22 @@ if [[ "$REPO_ROOT_OUTPUT" != *$'\n'$'\001' ]]; then
 fi
 REPO_ROOT="${REPO_ROOT_OUTPUT%$'\001'}"
 REPO_ROOT="${REPO_ROOT%$'\n'}"
+BENCH_ROOT="$REPO_ROOT/benchmarks/swebench"
+
+case "$SUBCOMMAND" in
+  test)
+    exec python3 -m unittest discover -s "$BENCH_ROOT/tests" -v
+    ;;
+  setup)
+    python3 -m venv "$BENCH_ROOT/.venv"
+    exec "$BENCH_ROOT/.venv/bin/python" -m pip install -r "$BENCH_ROOT/requirements.txt"
+    ;;
+esac
+
+DRY_RUN=0
+if [[ "$SUBCOMMAND" == "dry-run" ]]; then
+  DRY_RUN=1
+fi
 REMOTE="${ALLOY_BENCH_REMOTE:-github}"
 CANDIDATE_COMMIT="$(git rev-parse HEAD)"
 

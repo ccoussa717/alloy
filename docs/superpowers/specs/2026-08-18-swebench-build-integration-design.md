@@ -16,11 +16,13 @@ SWE-bench support is repository-owned release tooling, not an end-user Alloy
 feature. Operators do not receive Python, SWE-bench, benchmark fixtures, or
 benchmark commands in an installed Alloy application.
 
-The source repository contains the adapter under `benchmarks/swebench/`. The
-root build exposes npm commands for maintainers, and CI exercises the adapter's
-fast tests. The source installer explicitly removes `benchmarks/` before it
-commits the installed application tree. Installer and release tests must prove
-that exclusion.
+The source repository contains the adapter under `benchmarks/swebench/`. Per
+the user's final command-boundary resolution, every benchmark operation uses
+the source-only `scripts/run-swebench-release-smoke.sh` wrapper. Root, installed,
+and packed package metadata contains no benchmark command. CI invokes the
+wrapper's fast test subcommand directly. The source installer explicitly
+removes `benchmarks/` before it commits the installed application tree.
+Installer and release tests must prove that exclusion.
 
 Generated virtual environments, candidate installs, checkouts, evaluator
 scratch, logs, and result artifacts remain ignored and uncommitted.
@@ -41,29 +43,29 @@ The integration uses these boundaries:
   artifact, and verdict instructions.
 - `scripts/run-swebench-release-smoke.sh`: fail-closed candidate installation
   and one-shot release gate.
-- Root `package.json`: npm entry points for benchmark tests, setup, dry-run, and
-  release smoke.
-- `.github/workflows/ci.yml`: pinned Python setup and fast benchmark tests only.
+- Root `package.json`: no benchmark script key or value.
+- `.github/workflows/ci.yml`: pinned Python setup and a direct source-only
+  `bash scripts/run-swebench-release-smoke.sh test` invocation.
 
 The benchmark directory is not added to `package.json.files` and is removed
 from the source installer's staged application before installation.
 
 ## Build Integration
 
-Normal CI installs a pinned supported Python version and runs the adapter's
-standard-library unit suite without installing `swebench`, loading a model, or
-starting Docker. The benchmark tests become part of `ci:checks`, so every pull
-request, main push, and tag verifies the adapter alongside Alloy's Node, TUI,
-integration, security, and release checks.
+Normal Linux CI installs a pinned supported Python version and runs
+`bash scripts/run-swebench-release-smoke.sh test` without installing
+`swebench`, loading a model, or starting Docker. This direct workflow step keeps
+the test mandatory without routing release tooling through package metadata.
+Every existing Node, TUI, integration, security, and release check remains.
 
-Root npm commands provide one stable maintainer interface:
+The source-only wrapper provides one stable maintainer interface:
 
-- `bench:swebench:test`: run fast Python tests.
-- `bench:swebench:setup`: create the ignored benchmark virtual environment and
+- `bash scripts/run-swebench-release-smoke.sh test`: run fast Python tests.
+- `bash scripts/run-swebench-release-smoke.sh setup`: create or update the ignored benchmark virtual environment and
   install the pinned evaluator.
-- `bench:swebench:dry-run`: validate candidate, model, evaluator, and dataset
+- `bash scripts/run-swebench-release-smoke.sh dry-run`: validate candidate, model, evaluator, and dataset
   provenance without starting an autonomous attempt or Docker evaluation.
-- `bench:swebench:release`: execute the isolated candidate installation and
+- `bash scripts/run-swebench-release-smoke.sh release`: execute the isolated candidate installation and
   one real smoke attempt.
 
 The real smoke is not placed in hosted CI. It requires local Ollama, the pinned
@@ -184,7 +186,8 @@ evidence outside Git and are not rerun or imported into the repository.
 Implementation is complete when:
 
 - The migrated Python suite and integration-specific regressions pass.
-- Root npm scripts invoke the documented benchmark commands.
+- Root, source-installed, and packed package script metadata contains no
+  `swebench` key, value, or wrapper path.
 - GitHub CI runs the fast benchmark suite with pinned Python.
 - Installer tests prove `benchmarks/` is absent from the installed application.
 - Release verification proves benchmark tooling is absent from packed runtime

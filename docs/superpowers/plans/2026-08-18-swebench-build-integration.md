@@ -4,7 +4,7 @@
 
 **Goal:** Integrate the reviewed one-instance SWE-bench Lite adapter into Alloy's GitHub build as fast CI-tested release tooling with a fail-closed manual gate for an isolated installed release candidate.
 
-**Architecture:** Preserve the reviewed Python adapter under `benchmarks/swebench/`, move experiment inputs into an immutable profile, and derive Alloy/Pi expectations from the candidate source and isolated install. Root npm scripts and GitHub CI run only fast model-free tests; a shell wrapper installs one pushed candidate SHA through the real source installer before a single optional model/Docker run.
+**Architecture:** Preserve the reviewed Python adapter under `benchmarks/swebench/`, move experiment inputs into an immutable profile, and derive Alloy/Pi expectations from the candidate source and isolated install. Per the user's command-boundary resolution, package metadata contains no benchmark command; GitHub CI invokes the source-only wrapper's model-free `test` subcommand directly, and the same wrapper installs one pushed candidate SHA through the real source installer before a single optional model/Docker run.
 
 **Tech Stack:** Python 3.11+ standard library with Python 3.12 pinned in CI, `swebench==5.0.0`, Node.js 22 test runner, Bash, Git, GitHub Actions, Alloy source installer, Docker, Ollama `qwen3.8-alloy:latest`.
 
@@ -39,7 +39,7 @@
 - Create `scripts/run-swebench-release-smoke.sh`: candidate preflight, isolated install, and one-shot runner entry point.
 - Create `test/unit/swebench-build.test.mjs`: npm, CI, package, installer, and release-policy wiring tests.
 - Modify `.gitignore`: exclude benchmark-local environments, work, results, and candidate state.
-- Modify `package.json`: add benchmark scripts and include fast tests in `test:all`.
+- Modify `package.json`: keep every benchmark key, value, and wrapper path out of package scripts, including `test:all`.
 - Modify `.github/workflows/ci.yml`: pin Python 3.12 before normal verification.
 - Modify `install.sh`: remove `benchmarks/` from the staged installed application.
 - Modify `test/integration/packed-install.e2e.test.mjs`: prove benchmark tooling is absent after source installation.
@@ -368,7 +368,7 @@ git commit -m "feat: bind SWE-bench runs to Alloy candidates"
 
 **Interfaces:**
 - Consumes: Task 2's candidate-aware runner CLI.
-- Produces: `scripts/run-swebench-release-smoke.sh [--dry-run]` and environment override `ALLOY_BENCH_REMOTE` defaulting to `github`.
+- Produces: `scripts/run-swebench-release-smoke.sh {test|setup|dry-run|release}` and environment override `ALLOY_BENCH_REMOTE` defaulting to `github`.
 
 - [ ] **Step 1: Write failing wrapper preflight tests**
 
@@ -485,7 +485,7 @@ exit "${FAKE_RUNNER_STATUS:-0}"
         self.assertIn("canonical GitHub remote", result.stderr)
 
     def test_wrapper_installs_full_sha_into_disposable_paths(self):
-        result = self._run("--dry-run")
+        result = self._run("dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         install = self.installer_log.read_text().strip().split("|")
         self.assertEqual(install[0], SHA)
@@ -494,7 +494,7 @@ exit "${FAKE_RUNNER_STATUS:-0}"
         self.assertIn("/prefix", install[3])
 
     def test_wrapper_passes_candidate_binary_manifest_and_dry_run_once(self):
-        result = self._run("--dry-run")
+        result = self._run("dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.runner_log.read_text().splitlines()
         self.assertEqual(len(calls), 1)
@@ -504,7 +504,7 @@ exit "${FAKE_RUNNER_STATUS:-0}"
         self.assertIn("--dry-run", calls[0])
 
     def test_wrapper_real_mode_invokes_runner_once_without_retry(self):
-        result = self._run(FAKE_RUNNER_STATUS="5")
+        result = self._run("release", FAKE_RUNNER_STATUS="5")
         self.assertEqual(result.returncode, 5)
         calls = self.runner_log.read_text().splitlines()
         self.assertEqual(len(calls), 1)
@@ -522,7 +522,8 @@ The success fixture must assert these runner arguments exactly:
 --venv-python <repo>/benchmarks/swebench/.venv/bin/python
 ```
 
-`--dry-run` must appear only when requested.
+The wrapper passes runner option `--dry-run` only for the source-only `dry-run`
+subcommand.
 
 - [ ] **Step 2: Run wrapper tests and verify the script is missing**
 
@@ -620,22 +621,17 @@ git commit -m "feat: install exact Alloy candidate for SWE-bench"
 
 **Interfaces:**
 - Consumes: Task 3's test and wrapper commands.
-- Produces: root npm benchmark commands, normal CI execution, and verified runtime exclusion.
+- Produces: source-only wrapper commands, direct normal-CI execution, package metadata exclusion, and verified runtime exclusion.
 
 - [ ] **Step 1: Write failing Node build-boundary tests**
 
 Create `test/unit/swebench-build.test.mjs` with assertions that:
 
 ```javascript
-assert.equal(pkg.scripts["bench:swebench:test"],
-  "python3 -m unittest discover -s benchmarks/swebench/tests -v");
-assert.equal(pkg.scripts["bench:swebench:setup"],
-  "python3 -m venv benchmarks/swebench/.venv && benchmarks/swebench/.venv/bin/python -m pip install --upgrade pip && benchmarks/swebench/.venv/bin/python -m pip install -r benchmarks/swebench/requirements.txt");
-assert.equal(pkg.scripts["bench:swebench:dry-run"],
-  "bash scripts/run-swebench-release-smoke.sh --dry-run");
-assert.equal(pkg.scripts["bench:swebench:release"],
-  "bash scripts/run-swebench-release-smoke.sh");
-assert.match(pkg.scripts["test:all"], /bench:swebench:test/);
+for (const [key, value] of Object.entries(pkg.scripts)) {
+  assert.doesNotMatch(key, /swebench/i);
+  assert.doesNotMatch(value, /swebench|run-swebench-release-smoke/i);
+}
 assert.equal(pkg.files.includes("benchmarks"), false);
 assert.match(installer, /rm -rf -- "\$SOURCE_DIR\/benchmarks"/);
 assert.match(ci, /actions\/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065/);
@@ -663,10 +659,10 @@ node --test test/unit/swebench-build.test.mjs
 Expected: FAIL because npm scripts, CI Python setup, ignore rules, and installer
 pruning are absent.
 
-- [ ] **Step 3: Add root scripts and CI Python setup**
+- [ ] **Step 3: Preserve package metadata boundary and add CI Python setup**
 
-Add the four exact npm scripts from Step 1. Insert
-`npm run bench:swebench:test` into `test:all` before model/TUI integration work.
+Do not add benchmark scripts to root package metadata, and ensure `test:all`
+contains no benchmark command or wrapper path.
 
 In the Linux verification job, add the official `actions/setup-python` v5 tag
 resolved on 2026-08-18 to commit
@@ -678,7 +674,8 @@ with:
   python-version: "3.12"
 ```
 
-The Linux `ci:checks` path must run the benchmark tests. The macOS job does not
+After pinned Python setup, Linux CI must run
+`bash scripts/run-swebench-release-smoke.sh test` directly. The macOS job does not
 execute root `test:all`, so do not add an unused Python setup step there.
 
 - [ ] **Step 4: Exclude benchmark tooling from installed applications**
@@ -723,7 +720,7 @@ Run:
 
 ```bash
 node --test test/unit/swebench-build.test.mjs test/unit/install-script.test.mjs test/unit/security-gates.test.mjs
-npm run bench:swebench:test
+bash scripts/run-swebench-release-smoke.sh test
 npm test
 npm run test:installer
 npm run release:verify:source
@@ -758,9 +755,9 @@ git commit -m "build: verify SWE-bench release tooling"
 Extend `test/unit/swebench-build.test.mjs` to require:
 
 ```javascript
-assert.match(benchmarkReadme, /npm run bench:swebench:setup/);
-assert.match(benchmarkReadme, /npm run bench:swebench:dry-run/);
-assert.match(benchmarkReadme, /npm run bench:swebench:release/);
+assert.match(benchmarkReadme, /bash scripts\/run-swebench-release-smoke\.sh setup/);
+assert.match(benchmarkReadme, /bash scripts\/run-swebench-release-smoke\.sh dry-run/);
+assert.match(benchmarkReadme, /bash scripts\/run-swebench-release-smoke\.sh release/);
 assert.match(benchmarkReadme, /one-instance smoke/i);
 assert.match(releasing, /manual SWE-bench release gate/i);
 assert.match(releasing, /resolved|unresolved|infrastructure_failure/);
@@ -782,7 +779,7 @@ Expected: FAIL because benchmark and release documentation is absent.
 `benchmarks/swebench/README.md` must document:
 
 - Python 3.11+ (Python 3.12 in CI), Docker, local Ollama, and the exact pinned model digest.
-- `npm run bench:swebench:setup` bootstrap.
+- `bash scripts/run-swebench-release-smoke.sh setup` bootstrap.
 - Fast tests and what they do not execute.
 - Candidate dry-run and real release commands.
 - Clean/pushed SHA and GitHub-remote requirement.
@@ -795,8 +792,8 @@ Expected: FAIL because benchmark and release documentation is absent.
 - Explicit warning that one result is not an Alloy SWE-bench score.
 
 Update `docs/RELEASING.md` with a manual gate after green CI and before tagging.
-The release checklist must require `npm run bench:swebench:dry-run`, then one
-maintainer-authorized `npm run bench:swebench:release`. It must not claim the
+The release checklist must require `bash scripts/run-swebench-release-smoke.sh dry-run`, then one
+maintainer-authorized `bash scripts/run-swebench-release-smoke.sh release`. It must not claim the
 gate ran when no official summary exists.
 
 Add one root README maintainer link. Do not advertise an `alloy benchmark`
@@ -807,7 +804,7 @@ command or end-user Python dependency.
 Run:
 
 ```bash
-npm run bench:swebench:test
+bash scripts/run-swebench-release-smoke.sh test
 npm test
 npm run typecheck:tui
 npm run test:tui
@@ -853,8 +850,8 @@ Before writing timestamps, run the required system clock command:
 
 ```bash
 date "+%Y-%m-%d %H:%M:%S %Z (%A)"
-npm run bench:swebench:setup
-npm run bench:swebench:dry-run
+bash scripts/run-swebench-release-smoke.sh setup
+bash scripts/run-swebench-release-smoke.sh dry-run
 ```
 
 Expected: exit 0; the wrapper installs the exact pushed SHA under disposable

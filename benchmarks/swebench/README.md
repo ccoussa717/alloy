@@ -24,7 +24,7 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
 Bootstrap the pinned `swebench==5.0.0` environment:
 
 ```bash
-npm run bench:swebench:setup
+bash scripts/run-swebench-release-smoke.sh setup
 ```
 
 The environment is created at the ignored path `benchmarks/swebench/.venv/`.
@@ -34,7 +34,7 @@ dependencies.
 ## Fast Tests
 
 ```bash
-npm run bench:swebench:test
+bash scripts/run-swebench-release-smoke.sh test
 ```
 
 The fast suite validates the profile, command construction, provenance checks,
@@ -43,7 +43,9 @@ with fixtures. It does not contact Ollama or the SWE-bench dataset, invoke an
 autonomous Alloy attempt, start Docker evaluation, install a real candidate, or
 produce an official verdict. Normal CI runs these tests only.
 
-The release-only `benchmarks/` tree and
+All benchmark commands are source-only wrapper subcommands. Root and packed
+`package.json` metadata intentionally contain no benchmark command. The
+release-only `benchmarks/` tree and
 `scripts/run-swebench-release-smoke.sh` are excluded from `npm pack`. The source
 installer also removes both from the installed application after validating the
 source snapshot, so benchmark tooling is not shipped in Alloy's runtime.
@@ -58,14 +60,14 @@ equal an advertised branch or tag ref tip on the canonical GitHub remote.
 First verify the complete handoff without running the agent or evaluator:
 
 ```bash
-npm run bench:swebench:dry-run
+bash scripts/run-swebench-release-smoke.sh dry-run
 ```
 
 After reviewing that result, a maintainer may authorize exactly one real
 attempt:
 
 ```bash
-npm run bench:swebench:release
+bash scripts/run-swebench-release-smoke.sh release
 ```
 
 There is no automatic retry. The wrapper invokes the installer and runner once;

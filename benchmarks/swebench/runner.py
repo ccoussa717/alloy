@@ -250,7 +250,9 @@ def run_alloy(
 
 
 def capture_patch(checkout: Path) -> str:
-    patch = run_command(["git", "diff", "--binary", "--no-ext-diff"], checkout, 120).stdout
+    patch = run_command(
+        ["git", "diff", "--binary", "--no-ext-diff", "HEAD", "--"], checkout, 120
+    ).stdout
     untracked = run_command(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], checkout, 120
     ).stdout
@@ -443,16 +445,36 @@ def official_verdict(profile: BenchmarkProfile, evaluation_dir: Path) -> str:
         raise RuntimeError("official evaluator summary is missing or invalid") from error
     if not isinstance(report, dict) or report.get("schema_version") != 2:
         raise RuntimeError("official evaluator produced an unsupported summary schema")
+    categories = (
+        "infra_failure_ids",
+        "ambiguous_failure_ids",
+        "error_ids",
+        "resolved_ids",
+        "unresolved_ids",
+        "empty_patch_ids",
+    )
+    classified: dict[str, list[str]] = {}
+    for category in categories:
+        values = report.get(category, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise RuntimeError(f"official evaluator category {category} must be a list of strings")
+        classified[category] = values
     for category in ("infra_failure_ids", "ambiguous_failure_ids", "error_ids"):
-        if profile.instance_id in report.get(category, []):
+        if profile.instance_id in classified[category]:
             raise RuntimeError(
                 f"official evaluator classified {profile.instance_id} in {category}"
             )
-    if profile.instance_id in report.get("resolved_ids", []):
+    resolved = profile.instance_id in classified["resolved_ids"]
+    unresolved = profile.instance_id in classified["unresolved_ids"] or profile.instance_id in classified[
+        "empty_patch_ids"
+    ]
+    if resolved and unresolved:
+        raise RuntimeError(
+            f"official evaluator produced contradictory verdicts for {profile.instance_id}"
+        )
+    if resolved:
         return "resolved"
-    if profile.instance_id in report.get("unresolved_ids", []) or profile.instance_id in report.get(
-        "empty_patch_ids", []
-    ):
+    if unresolved:
         return "unresolved"
     raise RuntimeError(f"official evaluator produced no verdict for {profile.instance_id}")
 

@@ -415,6 +415,85 @@ time.sleep(60)
             self.assertIn("-before", patch)
             self.assertIn("+after", patch)
 
+    def test_capture_patch_includes_staged_tracked_modification_and_applies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "target"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
+            (source / "tracked.txt").write_text("before\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
+            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
+            (source / "tracked.txt").write_text("staged modification\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+
+            patch = capture_patch(source)
+            patch_path = Path(directory) / "model.patch"
+            patch_path.write_text(patch)
+            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
+
+            self.assertIn("+staged modification", patch)
+
+    def test_capture_patch_includes_staged_new_text_and_binary_files_once_and_applies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "target"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
+            (source / ".gitignore").write_text("ignored.bin\n")
+            subprocess.run(["git", "add", ".gitignore"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
+            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
+            (source / "staged.txt").write_text("staged text sentinel\n")
+            (source / "staged.bin").write_bytes(bytes(range(256)) * 8)
+            subprocess.run(["git", "add", "staged.txt", "staged.bin"], cwd=source, check=True)
+
+            patch = capture_patch(source)
+            patch_path = Path(directory) / "model.patch"
+            patch_path.write_text(patch)
+            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
+
+            self.assertEqual(patch.count("diff --git a/staged.txt b/staged.txt"), 1)
+            self.assertEqual(patch.count("diff --git a/staged.bin b/staged.bin"), 1)
+            self.assertIn("GIT binary patch", patch)
+
+    def test_capture_patch_includes_mixed_staged_unstaged_and_untracked_state_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            target = Path(directory) / "target"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
+            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
+            (source / ".gitignore").write_text("ignored.bin\n")
+            (source / "tracked.txt").write_text("base\n")
+            subprocess.run(["git", "add", ".gitignore", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
+            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
+            (source / "tracked.txt").write_text("staged line\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            (source / "tracked.txt").write_text("staged line\nunstaged line\n")
+            (source / "staged-new.txt").write_text("staged new\n")
+            subprocess.run(["git", "add", "staged-new.txt"], cwd=source, check=True)
+            (source / "untracked.bin").write_bytes(b"\x00untracked binary\n")
+            (source / "ignored.bin").write_bytes(b"ignored\n")
+
+            patch = capture_patch(source)
+            patch_path = Path(directory) / "model.patch"
+            patch_path.write_text(patch)
+            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
+
+            self.assertIn("+staged line", patch)
+            self.assertIn("+unstaged line", patch)
+            self.assertEqual(patch.count("diff --git a/staged-new.txt b/staged-new.txt"), 1)
+            self.assertEqual(patch.count("diff --git a/untracked.bin b/untracked.bin"), 1)
+            self.assertNotIn("ignored.bin", patch)
+
     def test_capture_patch_includes_untracked_but_not_ignored_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -460,6 +539,16 @@ time.sleep(60)
                 patch = capture_patch(root)
 
             self.assertEqual(patch, "bounded binary patch")
+            self.assertEqual(
+                bounded.call_args_list[0],
+                mock.call(
+                    ["git", "diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+                    root,
+                    120,
+                    frozenset({0}),
+                    env=None,
+                ),
+            )
             self.assertEqual(
                 bounded.call_args_list[-1],
                 mock.call(
@@ -668,6 +757,71 @@ class OrchestrationTests(unittest.TestCase):
                     )
                     with self.assertRaisesRegex(RuntimeError, category):
                         official_verdict(PROFILE, root)
+
+    def test_official_verdict_rejects_malformed_relevant_category_values(self):
+        categories = (
+            "infra_failure_ids",
+            "ambiguous_failure_ids",
+            "error_ids",
+            "resolved_ids",
+            "unresolved_ids",
+            "empty_patch_ids",
+        )
+        malformed = ("astropy__astropy-12907", ["valid", 7], {}, None)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "official-summary.json"
+            for category in categories:
+                for value in malformed:
+                    with self.subTest(category=category, value=value):
+                        write_json(summary, {"schema_version": 2, category: value})
+                        with self.assertRaisesRegex(RuntimeError, category):
+                            official_verdict(PROFILE, root)
+
+    def test_official_verdict_rejects_resolved_and_unresolved_contradictions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            summary = root / "official-summary.json"
+            for category in ("unresolved_ids", "empty_patch_ids"):
+                with self.subTest(category=category):
+                    write_json(
+                        summary,
+                        {
+                            "schema_version": 2,
+                            "resolved_ids": [PROFILE.instance_id],
+                            category: [PROFILE.instance_id],
+                        },
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "contradictory"):
+                        official_verdict(PROFILE, root)
+
+    def test_official_verdict_preserves_infrastructure_precedence_over_contradiction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(
+                root / "official-summary.json",
+                {
+                    "schema_version": 2,
+                    "infra_failure_ids": [PROFILE.instance_id],
+                    "resolved_ids": [PROFILE.instance_id],
+                    "unresolved_ids": [PROFILE.instance_id],
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "infra_failure_ids"):
+                official_verdict(PROFILE, root)
+
+    def test_official_verdict_accepts_unrelated_fields_and_empty_patch_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(
+                root / "official-summary.json",
+                {
+                    "schema_version": 2,
+                    "empty_patch_ids": [PROFILE.instance_id],
+                    "official_metadata": {"count": 1},
+                },
+            )
+            self.assertEqual(official_verdict(PROFILE, root), "unresolved")
 
     def test_evaluator_uses_disposable_scratch_and_persists_only_safe_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:

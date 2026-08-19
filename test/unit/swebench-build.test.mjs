@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -15,6 +16,14 @@ const benchmarkReadme = readFileSync(
 );
 const releasing = readFileSync(join(root, "docs", "RELEASING.md"), "utf8");
 const rootReadme = readFileSync(join(root, "README.md"), "utf8");
+const approvedDesign = readFileSync(
+  join(root, "docs", "superpowers", "specs", "2026-08-18-swebench-build-integration-design.md"),
+  "utf8",
+);
+const implementationPlan = readFileSync(
+  join(root, "docs", "superpowers", "plans", "2026-08-18-swebench-build-integration.md"),
+  "utf8",
+);
 const normalizedBenchmarkReadme = benchmarkReadme.replace(/\s+/g, " ");
 const normalizedReleasing = releasing.replace(/\s+/g, " ");
 const scriptsNpmIgnoreLines = readFileSync(join(root, "scripts", ".npmignore"), "utf8")
@@ -26,12 +35,19 @@ const ignoreLines = readFileSync(join(root, ".gitignore"), "utf8")
 
 describe("SWE-bench build boundaries", () => {
   it("documents the maintainer-only SWE-bench release gate", () => {
-    assert.match(benchmarkReadme, /npm run bench:swebench:setup/);
-    assert.match(benchmarkReadme, /npm run bench:swebench:dry-run/);
-    assert.match(benchmarkReadme, /npm run bench:swebench:release/);
+    for (const document of [benchmarkReadme, releasing, approvedDesign, implementationPlan]) {
+      assert.match(document, /bash scripts\/run-swebench-release-smoke\.sh test/);
+      assert.match(document, /bash scripts\/run-swebench-release-smoke\.sh setup/);
+      assert.match(document, /bash scripts\/run-swebench-release-smoke\.sh dry-run/);
+      assert.match(document, /bash scripts\/run-swebench-release-smoke\.sh release/);
+      assert.doesNotMatch(document, /npm run bench:swebench/);
+    }
     assert.match(benchmarkReadme, /one-instance smoke/i);
     assert.match(releasing, /manual SWE-bench release gate/i);
     assert.match(rootReadme, /benchmarks\/swebench\/README\.md/);
+    assert.match(rootReadme, /source-only/i);
+    assert.match(approvedDesign, /package metadata contains no benchmark command/i);
+    assert.match(implementationPlan, /user's command-boundary resolution/i);
   });
 
   it("documents exact truthful verdict completion semantics", () => {
@@ -84,29 +100,21 @@ describe("SWE-bench build boundaries", () => {
     assert.match(benchmarkReadme, /local Ollama service on loopback/i);
   });
 
-  it("wires fast benchmark commands into normal verification", () => {
-    assert.equal(
-      pkg.scripts["bench:swebench:test"],
-      "python3 -m unittest discover -s benchmarks/swebench/tests -v",
-    );
-    assert.equal(
-      pkg.scripts["bench:swebench:setup"],
-      "python3 -m venv benchmarks/swebench/.venv && benchmarks/swebench/.venv/bin/python -m pip install --upgrade pip && benchmarks/swebench/.venv/bin/python -m pip install -r benchmarks/swebench/requirements.txt",
-    );
-    assert.equal(
-      pkg.scripts["bench:swebench:dry-run"],
-      "bash scripts/run-swebench-release-smoke.sh --dry-run",
-    );
-    assert.equal(
-      pkg.scripts["bench:swebench:release"],
-      "bash scripts/run-swebench-release-smoke.sh",
-    );
-    assert.match(pkg.scripts["test:all"], /bench:swebench:test/);
+  it("keeps benchmark commands source-only and invokes tests directly in Linux CI", () => {
+    for (const [key, value] of Object.entries(pkg.scripts)) {
+      assert.doesNotMatch(key, /swebench/i);
+      assert.doesNotMatch(value, /swebench|run-swebench-release-smoke/i);
+    }
     assert.match(
       ci,
       /actions\/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065/,
     );
     assert.match(ci, /python-version: ["']3\.12["']/);
+    assert.match(
+      ci,
+      /bash scripts\/run-swebench-release-smoke\.sh test/,
+    );
+    assert.doesNotMatch(ci, /npm run bench:swebench/);
   });
 
   it("keeps benchmark tooling outside runtime boundaries", () => {
@@ -164,19 +172,36 @@ describe("SWE-bench build boundaries", () => {
   });
 
   it("excludes benchmark tooling from the actual npm pack list", () => {
-    const packed = spawnSync(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["pack", "--dry-run", "--ignore-scripts", "--json"],
-      { cwd: root, encoding: "utf8" },
-    );
-    assert.equal(packed.status, 0, packed.stderr || packed.stdout);
-    const paths = JSON.parse(packed.stdout)[0].files.map(({ path }) => path);
-    assert.equal(paths.includes("scripts/install-cli.sh"), true);
-    assert.equal(
-      paths.some((path) => path === "benchmarks" || path.startsWith("benchmarks/")),
-      false,
-    );
-    assert.equal(paths.includes("scripts/run-swebench-release-smoke.sh"), false);
+    const directory = mkdtempSync(join(tmpdir(), "alloy-swebench-pack-"));
+    try {
+      const packed = spawnSync(
+        process.platform === "win32" ? "npm.cmd" : "npm",
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", directory],
+        { cwd: root, encoding: "utf8" },
+      );
+      assert.equal(packed.status, 0, packed.stderr || packed.stdout);
+      const report = JSON.parse(packed.stdout)[0];
+      const paths = report.files.map(({ path }) => path);
+      assert.equal(paths.includes("scripts/install-cli.sh"), true);
+      assert.equal(
+        paths.some((path) => path === "benchmarks" || path.startsWith("benchmarks/")),
+        false,
+      );
+      assert.equal(paths.includes("scripts/run-swebench-release-smoke.sh"), false);
+      const metadata = spawnSync(
+        "tar",
+        ["-xOf", join(directory, report.filename), "package/package.json"],
+        { encoding: "utf8" },
+      );
+      assert.equal(metadata.status, 0, metadata.stderr || metadata.stdout);
+      const packedPackage = JSON.parse(metadata.stdout);
+      for (const [key, value] of Object.entries(packedPackage.scripts)) {
+        assert.doesNotMatch(key, /swebench/i);
+        assert.doesNotMatch(value, /swebench|run-swebench-release-smoke/i);
+      }
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it("ignores generated benchmark state and Python caches", () => {
