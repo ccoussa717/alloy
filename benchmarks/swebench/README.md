@@ -18,10 +18,10 @@ SWE-bench score, and is not an end-user Alloy command or dependency.
 - Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite` and Python
   package index access for setup.
 
-The real `release` command also requires a functioning Docker daemon that can
-start the official SWE-bench containers, target repository clone access, and
-the image and registry access required by the official evaluator. An installed
-Docker CLI alone is insufficient.
+The real `release` command also requires a reachable, functioning Docker daemon
+that can start the official SWE-bench containers. Target repository clone access
+and the image and registry access required by
+SWE-bench's official evaluator. An installed Docker CLI alone is insufficient.
 
 Bootstrap the pinned `swebench==5.0.0` environment:
 
