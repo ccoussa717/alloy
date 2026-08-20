@@ -525,12 +525,13 @@ git commit -s -m "feat: orchestrate trusted SWE-bench attempts"
 - Root launcher location: `/usr/local/libexec/alloy-swebench-gate`.
 - Root config location: `/etc/alloy/swebench-gate.json`.
 - Protected state location: `/var/lib/alloy-swebench-gate`.
-- Wrapper commands: `test`, `setup`, `provision`, `dry-run <candidate-sha>`, `release <candidate-sha>`, `authorize-retry <candidate-sha> <reason>`.
+- Wrapper commands: `test`, `setup`, `provision <authority-sha>`, `dry-run <candidate-sha>`, `release <candidate-sha>`, `authorize-retry <candidate-sha> <reason>`.
 - Official wrapper modes execute `sudo -n /usr/local/libexec/alloy-swebench-gate`; an unavailable noninteractive sudo policy fails before candidate execution.
+- `provision <authority-sha>` prints an operator-reviewed bootstrap command. It never executes mutable worktree Python or invokes sudo itself.
 
 - [ ] **Step 1: Write launcher and wrapper inversion tests**
 
-Prove the launcher rejects non-root-owned/writable config, dirty or wrong authority checkout, digest drift, alternate config/authority environment variables, wrong public key, and direct coordinator invocation. Prove the wrapper passes only mode and candidate SHA; it never archives candidate benchmark files or executes candidate runner/profile code.
+Prove in subprocesses that the isolated launcher imports no authority module before root, Python-environment, fixed-path, ownership/mode, clean-SHA, tree, policy, launcher, and public-key validation. Import-time tripwires in drifted authority code must remain untouched. Prove the wrapper passes only official mode and candidate SHA/retry reason, and that provisioning prints a fixed explicit-SHA canonical bootstrap command without executing local Python.
 
 - [ ] **Step 2: Run tests and confirm red**
 
@@ -540,11 +541,11 @@ Expected: assertions fail against the current candidate-snapshot wrapper.
 
 - [ ] **Step 3: Implement audited provisioning**
 
-`provision.py` accepts the just-merged authority SHA once, verifies the clean canonical checkout, creates an Ed25519 gate key, writes the public key and all authority digests into root-owned config, installs a minimal launcher, installs/loads AppArmor, initializes mode-0700 state, and prints a machine-readable provisioning receipt. It refuses replacement unless invoked with a separate `--replace-authority <old-sha> <new-sha>` action.
+The operator bootstrap obtains authority bytes directly with `/usr/bin/git` from the hardcoded canonical HTTPS repository at the explicit full SHA into a fresh root-owned mode-0700 directory, proves that object is the canonical `main` tip, then executes that checkout's `provision.py` with `/usr/bin/python3 -I -E -s`. Provisioning uses descriptor-relative no-follow operations, rejects unsafe existing parents/destinations, creates an Ed25519 key, builds and verifies the evaluator from root Python 3.14.4 and binary hash-locked wheels, writes exact authority digests into root-owned config, installs the stdlib-first launcher, loads AppArmor, and emits a machine-readable receipt. It never reads or copies a local `.venv`. Replacement requires a separate `--replace-authority <old-sha> <new-sha>` action from a freshly fetched canonical root-owned checkout.
 
 - [ ] **Step 4: Invert the shell wrapper**
 
-Keep `test` model-free. `setup` prepares the hash-locked evaluator and immutable caches without provisioning authority. Official modes use only `/usr/local/libexec/alloy-swebench-gate`; reject candidate SHAs not matching `[0-9a-f]{40}` and all extra arguments. `release` remains fail-closed unless provisioned config validates.
+Keep `test` model-free and `setup` non-authority. Setup may prepare unprivileged caches but no evaluator state consumed by the official gate. Official modes use only `/usr/local/libexec/alloy-swebench-gate`; reject candidate SHAs not matching `[0-9a-f]{40}` and all extra arguments. `release` remains fail-closed unless stdlib-only pre-import validation succeeds.
 
 - [ ] **Step 5: Run wrapper tests and syntax checks**
 
