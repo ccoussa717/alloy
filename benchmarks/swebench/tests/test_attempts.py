@@ -1,4 +1,6 @@
 import base64
+import errno
+import fcntl
 import json
 import os
 import subprocess
@@ -14,6 +16,7 @@ from benchmarks.swebench.attempts import (
     SignedClaim,
     authorize_retry,
     claim_first_attempt,
+    consume_claim,
     verify_claim,
 )
 
@@ -78,7 +81,7 @@ class AttemptTests(unittest.TestCase):
                 allow_nan=False,
             ).encode("utf-8"),
         )
-        verify_claim(claim, self.public_key, self.key, set())
+        verify_claim(claim, self.public_key, self.key)
 
     def test_claim_records_are_immutable(self):
         claim = claim_first_attempt(self.state_dir, self.key, self.signer)
@@ -96,7 +99,7 @@ class AttemptTests(unittest.TestCase):
 
         persisted = SignedClaim.from_bytes(next(self.state_dir.glob("*.claim.json")).read_bytes())
         self.assertEqual(persisted, first)
-        verify_claim(persisted, self.public_key, self.key, set())
+        verify_claim(persisted, self.public_key, self.key)
 
     def test_failed_atomic_publish_leaves_a_durable_fail_closed_reservation(self):
         with unittest.mock.patch(
@@ -178,22 +181,17 @@ class AttemptTests(unittest.TestCase):
     def test_verification_rejects_implicit_third_attempt_wrong_key_and_wrong_signature(self):
         claim_first_attempt(self.state_dir, self.key, self.signer)
         retry = authorize_retry(self.state_dir, self.key, "explicit retry", self.signer)
-        consumed = set()
-
         with self.assertRaisesRegex(ValueError, "ordinal"):
-            verify_claim(replace(retry, ordinal=3), self.public_key, self.key, consumed)
-        self.assertEqual(consumed, set())
+            verify_claim(replace(retry, ordinal=3), self.public_key, self.key)
 
         with self.assertRaisesRegex(ValueError, "attempt key"):
-            verify_claim(retry, self.public_key, replace(self.key, model_digest="f" * 64), consumed)
-        self.assertEqual(consumed, set())
+            verify_claim(retry, self.public_key, replace(self.key, model_digest="f" * 64))
 
         signature = bytearray(base64.b64decode(retry.signature))
         signature[0] ^= 1
         forged = replace(retry, signature=base64.b64encode(signature).decode("ascii"))
         with self.assertRaisesRegex(ValueError, "signature"):
-            verify_claim(forged, self.public_key, self.key, consumed)
-        self.assertEqual(consumed, set())
+            verify_claim(forged, self.public_key, self.key)
 
         other_private = self.root / "other-key.pem"
         other_public = self.root / "other-key.pub.pem"
@@ -216,18 +214,50 @@ class AttemptTests(unittest.TestCase):
             check=True,
         )
         with self.assertRaisesRegex(ValueError, "signature"):
-            verify_claim(retry, other_public, self.key, consumed)
-        self.assertEqual(consumed, set())
+            verify_claim(retry, other_public, self.key)
 
-    def test_successful_verification_consumes_only_at_verification_and_rejects_replay(self):
+    def test_verification_is_repeatable_and_consumption_is_atomic_at_launch(self):
         claim = claim_first_attempt(self.state_dir, self.key, self.signer)
-        consumed = set()
 
-        self.assertEqual(consumed, set())
-        verify_claim(claim, self.public_key, self.key, consumed)
-        self.assertEqual(consumed, {1})
-        with self.assertRaisesRegex(ValueError, "already consumed"):
-            verify_claim(claim, self.public_key, self.key, consumed)
+        verify_claim(claim, self.public_key, self.key)
+        verify_claim(claim, self.public_key, self.key)
+        self.assertEqual(list(self.state_dir.glob("*.consumed")), [])
+
+        original_open = os.open
+        created = []
+
+        def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+            if isinstance(path, str) and path.endswith(".consumed"):
+                created.append((flags, mode, dir_fd))
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.os.open", recording_open):
+            consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+        self.assertEqual(len(created), 1)
+        flags, mode, dir_fd = created[0]
+        self.assertTrue(flags & os.O_EXCL)
+        self.assertTrue(flags & os.O_NOFOLLOW)
+        self.assertEqual(mode, 0o600)
+        self.assertIsNotNone(dir_fd)
+        consumed = list(self.state_dir.glob("*.consumed"))
+        self.assertEqual(len(consumed), 1)
+        self.assertEqual(consumed[0].stat().st_mode & 0o777, 0o600)
+        verify_claim(claim, self.public_key, self.key)
+        with self.assertRaisesRegex(FileExistsError, "already consumed"):
+            consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+    def test_failed_verification_never_consumes_an_ordinal(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        forged = replace(claim, key=replace(self.key, model_digest="f" * 64))
+
+        with self.assertRaisesRegex(ValueError, "attempt key"):
+            verify_claim(forged, self.public_key, self.key)
+        with self.assertRaisesRegex(ValueError, "attempt key"):
+            consume_claim(self.state_dir, forged, self.public_key, self.key)
+
+        self.assertEqual(list(self.state_dir.glob("*.consumed")), [])
+        consume_claim(self.state_dir, claim, self.public_key, self.key)
 
     def test_rejects_symlinked_state_directory(self):
         actual = self.root / "actual-state"
@@ -257,7 +287,73 @@ class AttemptTests(unittest.TestCase):
 
         claim = claim_first_attempt(self.state_dir, self.key, GateSigner(moved_private))
         with self.assertRaisesRegex(ValueError, "symlinked ancestors"):
-            verify_claim(claim, linked_directory / moved_public.name, self.key, set())
+            verify_claim(claim, linked_directory / moved_public.name, self.key)
+
+    def test_openssl_uses_only_sealed_anonymous_payload_descriptors(self):
+        payload = b'{"canonical":true}'
+        before = set(self.root.rglob("*"))
+        observed = []
+
+        def inspect_signing_command(arguments, **kwargs):
+            self.assertNotIn("input", kwargs)
+            for option in ("-in",):
+                path = arguments[arguments.index(option) + 1]
+                self.assertRegex(path, r"^/proc/self/fd/\d+$")
+                fd = int(path.rsplit("/", 1)[1])
+                seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+                expected = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+                self.assertEqual(seals & expected, expected)
+                os.lseek(fd, 0, os.SEEK_SET)
+                observed.append(os.read(fd, 4096))
+                with self.assertRaises(OSError) as raised:
+                    os.write(fd, b"tamper")
+                self.assertEqual(raised.exception.errno, errno.EPERM)
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"signature", stderr=b"")
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.subprocess.run", inspect_signing_command):
+            signature = self.signer.sign(payload)
+
+        self.assertEqual(signature, b"signature")
+        self.assertEqual(observed, [payload])
+        self.assertEqual(set(self.root.rglob("*")), before)
+
+    def test_verification_uses_sealed_memfds_for_payload_and_signature(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        observed = {}
+
+        def inspect_verification_command(arguments, **kwargs):
+            for option in ("-in", "-sigfile"):
+                path = arguments[arguments.index(option) + 1]
+                self.assertRegex(path, r"^/proc/self/fd/\d+$")
+                fd = int(path.rsplit("/", 1)[1])
+                seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+                expected = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+                self.assertEqual(seals & expected, expected)
+                os.lseek(fd, 0, os.SEEK_SET)
+                observed[option] = os.read(fd, 4096)
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"Signature Verified Successfully", stderr=b"")
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.subprocess.run", inspect_verification_command):
+            verify_claim(claim, self.public_key, self.key)
+
+        self.assertEqual(observed["-in"], claim.signing_bytes())
+        self.assertEqual(observed["-sigfile"], base64.b64decode(claim.signature))
+
+    def test_official_crypto_fails_closed_when_sealed_memfd_is_unavailable(self):
+        with unittest.mock.patch(
+            "benchmarks.swebench.attempts.os.memfd_create",
+            side_effect=OSError(errno.ENOSYS, "memfd unavailable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "sealed memfd"):
+                self.signer.sign(b"payload")
+
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        with unittest.mock.patch(
+            "benchmarks.swebench.attempts.os.memfd_create",
+            side_effect=OSError(errno.ENOSYS, "memfd unavailable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "sealed memfd"):
+                verify_claim(claim, self.public_key, self.key)
 
 
 if __name__ == "__main__":

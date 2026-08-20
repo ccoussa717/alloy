@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import json
 import os
@@ -9,7 +10,6 @@ import re
 import secrets
 import stat
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,8 +65,31 @@ def _open_regular_nofollow(path: Path, label: str) -> int:
 
 
 def _descriptor_path(fd: int) -> str:
-    descriptor_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
-    return f"{descriptor_root}/{fd}"
+    return f"/proc/self/fd/{fd}"
+
+
+def _sealed_memfd(name: str, content: bytes) -> int:
+    try:
+        required = (
+            fcntl.F_SEAL_WRITE
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_SEAL
+        )
+        flags = os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+        fd = os.memfd_create(name, flags)
+    except (AttributeError, OSError) as error:
+        raise ValueError("sealed memfd support is required for gate cryptography") from error
+    try:
+        _write_all(fd, content)
+        os.lseek(fd, 0, os.SEEK_SET)
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, required)
+        if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & required != required:
+            raise ValueError("gate cryptography memfd did not retain all required seals")
+    except (AttributeError, OSError, ValueError) as error:
+        os.close(fd)
+        raise ValueError("sealed memfd creation failed for gate cryptography") from error
+    return fd
 
 
 @dataclass(frozen=True)
@@ -172,38 +195,30 @@ class GateSigner:
 
     def sign(self, payload: bytes) -> bytes:
         key_fd = _open_regular_nofollow(self.private_key, "gate private key")
+        payload_fd = -1
         try:
-            with tempfile.TemporaryDirectory(prefix="alloy-gate-payload-") as directory:
-                payload_path = Path(directory) / "payload.json"
-                payload_fd = os.open(
-                    payload_path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                    0o600,
-                )
-                try:
-                    _write_all(payload_fd, payload)
-                    os.fsync(payload_fd)
-                finally:
-                    os.close(payload_fd)
-                result = subprocess.run(
-                    [
-                        "openssl",
-                        "pkeyutl",
-                        "-sign",
-                        "-rawin",
-                        "-inkey",
-                        _descriptor_path(key_fd),
-                        "-in",
-                        str(payload_path),
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    pass_fds=(key_fd,),
-                    check=True,
-                )
+            payload_fd = _sealed_memfd("alloy-gate-signing-payload", payload)
+            result = subprocess.run(
+                [
+                    "openssl",
+                    "pkeyutl",
+                    "-sign",
+                    "-rawin",
+                    "-inkey",
+                    _descriptor_path(key_fd),
+                    "-in",
+                    _descriptor_path(payload_fd),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                pass_fds=(key_fd, payload_fd),
+                check=True,
+            )
         except (OSError, subprocess.CalledProcessError) as error:
             raise ValueError("gate claim signing failed") from error
         finally:
+            if payload_fd >= 0:
+                os.close(payload_fd)
             os.close(key_fd)
         if not result.stdout:
             raise ValueError("gate claim signing returned an empty signature")
@@ -354,7 +369,6 @@ def verify_claim(
     claim: SignedClaim,
     public_key: Path,
     expected_key: AttemptKey,
-    consumed: set[int],
 ) -> None:
     if claim.ordinal not in {1, 2}:
         raise ValueError("claim ordinal must be 1 or 2")
@@ -364,59 +378,97 @@ def verify_claim(
         raise ValueError("ordinal 2 claim requires an explicit reason")
     if claim.key != expected_key:
         raise ValueError("claim attempt key does not match the expected key")
-    if claim.ordinal in consumed:
-        raise ValueError("claim ordinal is already consumed")
-    key_fd = _open_regular_nofollow(public_key, "gate public key")
     try:
         signature = base64.b64decode(claim.signature, validate=True)
     except (ValueError, binascii.Error) as error:
         raise ValueError("claim signature is invalid") from error
+    key_fd = _open_regular_nofollow(public_key, "gate public key")
+    payload_fd = -1
+    signature_fd = -1
     try:
-        with tempfile.TemporaryDirectory(prefix="alloy-gate-signature-") as directory:
-            payload_path = Path(directory) / "payload.json"
-            signature_path = Path(directory) / "signature.bin"
-            payload_fd = os.open(
-                payload_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
+        payload_fd = _sealed_memfd("alloy-gate-verification-payload", claim.signing_bytes())
+        signature_fd = _sealed_memfd("alloy-gate-verification-signature", signature)
+        try:
+            subprocess.run(
+                [
+                    "openssl",
+                    "pkeyutl",
+                    "-verify",
+                    "-pubin",
+                    "-rawin",
+                    "-inkey",
+                    _descriptor_path(key_fd),
+                    "-sigfile",
+                    _descriptor_path(signature_fd),
+                    "-in",
+                    _descriptor_path(payload_fd),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                pass_fds=(key_fd, payload_fd, signature_fd),
+                check=True,
             )
-            try:
-                _write_all(payload_fd, claim.signing_bytes())
-                os.fsync(payload_fd)
-            finally:
-                os.close(payload_fd)
-            signature_fd = os.open(
-                signature_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-            )
-            try:
-                _write_all(signature_fd, signature)
-                os.fsync(signature_fd)
-            finally:
-                os.close(signature_fd)
-            try:
-                subprocess.run(
-                    [
-                        "openssl",
-                        "pkeyutl",
-                        "-verify",
-                        "-pubin",
-                        "-rawin",
-                        "-inkey",
-                        _descriptor_path(key_fd),
-                        "-sigfile",
-                        str(signature_path),
-                        "-in",
-                        str(payload_path),
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    pass_fds=(key_fd,),
-                    check=True,
-                )
-            except (OSError, subprocess.CalledProcessError) as error:
-                raise ValueError("claim signature verification failed") from error
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise ValueError("claim signature verification failed") from error
     finally:
+        if signature_fd >= 0:
+            os.close(signature_fd)
+        if payload_fd >= 0:
+            os.close(payload_fd)
         os.close(key_fd)
-    consumed.add(claim.ordinal)
+
+
+def _read_persisted_claim(state_fd: int, name: str) -> bytes:
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=state_fd)
+    except OSError as error:
+        raise ValueError("persisted attempt claim is unavailable") from error
+    try:
+        details = os.fstat(fd)
+        if not stat.S_ISREG(details.st_mode) or stat.S_IMODE(details.st_mode) != 0o600:
+            raise ValueError("persisted attempt claim must be a mode-0600 regular file")
+        if details.st_size > 1024 * 1024:
+            raise ValueError("persisted attempt claim is oversized")
+        content = bytearray()
+        while len(content) < details.st_size:
+            chunk = os.read(fd, details.st_size - len(content))
+            if not chunk:
+                raise ValueError("persisted attempt claim changed while being read")
+            content.extend(chunk)
+        if os.read(fd, 1):
+            raise ValueError("persisted attempt claim changed while being read")
+        return bytes(content)
+    finally:
+        os.close(fd)
+
+
+def consume_claim(
+    state_dir: Path,
+    claim: SignedClaim,
+    public_key: Path,
+    expected_key: AttemptKey,
+) -> None:
+    verify_claim(claim, public_key, expected_key)
+    state_fd = _open_state_directory(state_dir)
+    try:
+        _, claim_name = _claim_names(claim.key, claim.ordinal)
+        if _read_persisted_claim(state_fd, claim_name) != claim.canonical_bytes():
+            raise ValueError("persisted attempt claim does not match the launch claim")
+        consumed_name = claim_name.removesuffix(".claim.json") + ".consumed"
+        try:
+            consumed_fd = os.open(
+                consumed_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=state_fd,
+            )
+        except FileExistsError as error:
+            raise FileExistsError("claim ordinal is already consumed") from error
+        try:
+            _write_all(consumed_fd, hashlib.sha256(claim.canonical_bytes()).hexdigest().encode("ascii"))
+            os.fsync(consumed_fd)
+        finally:
+            os.close(consumed_fd)
+        os.fsync(state_fd)
+    finally:
+        os.close(state_fd)
