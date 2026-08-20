@@ -14,7 +14,6 @@ from benchmarks.swebench.runner import (
     alloy_command,
     build_prompt,
     capture_patch,
-    evaluator_command,
     load_instance,
     official_verdict,
     prediction_record,
@@ -28,6 +27,7 @@ from benchmarks.swebench.runner import (
 EXPECTED_DIGEST = "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba"
 PROFILE_PATH = Path(__file__).parents[1] / "profile.json"
 REPO_ROOT = Path(__file__).parents[3]
+VENV_PYTHON = PROFILE_PATH.parent / ".venv" / "bin" / "python"
 PROFILE = swebench_runner.load_profile(PROFILE_PATH, REPO_ROOT)
 GOOD_PROVENANCE = {
     "alloy_version": "1.1.25",
@@ -621,34 +621,33 @@ class OrchestrationTests(unittest.TestCase):
             "--install-manifest", str(install_manifest),
         ]
 
-    def test_load_instance_returns_only_pinned_public_row(self):
-        rows = [
-            {
-                "instance_id": "astropy__astropy-12907",
-                "repo": "astropy/astropy",
-                "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
-                "version": "4.3",
-                "problem_statement": "Fix the public issue.",
-                "patch": "gold",
-                "test_patch": "hidden",
-            }
-        ]
-        with mock.patch("benchmarks.swebench.runner.load_dataset", return_value=rows):
-            instance = load_instance(PROFILE)
-        self.assertEqual(instance["instance_id"], "astropy__astropy-12907")
-        self.assertEqual(instance["base_commit"], "d16bfe05a744909de4b27f5875fe0d4ed41ce607")
-        self.assertNotIn("patch", instance)
-        self.assertNotIn("test_patch", instance)
-
-    def test_load_instance_rejects_commit_drift(self):
+    def test_load_instance_returns_the_verified_full_pinned_row(self):
         row = {
             "instance_id": "astropy__astropy-12907",
             "repo": "astropy/astropy",
-            "base_commit": "wrong",
+            "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
+            "version": "4.3",
             "problem_statement": "Fix the public issue.",
+            "patch": "gold",
+            "test_patch": "hidden",
         }
-        with mock.patch("benchmarks.swebench.runner.load_dataset", return_value=[row]):
-            with self.assertRaisesRegex(RuntimeError, "base commit"):
+        cache = Path("/trusted/dataset-cache")
+        with mock.patch(
+            "benchmarks.swebench.runner.fetch_and_verify_instance", return_value=row
+        ) as fetch:
+            instance = load_instance(PROFILE, cache)
+        self.assertEqual(instance["instance_id"], "astropy__astropy-12907")
+        self.assertEqual(instance["base_commit"], "d16bfe05a744909de4b27f5875fe0d4ed41ce607")
+        self.assertEqual(instance["patch"], "gold")
+        self.assertEqual(instance["test_patch"], "hidden")
+        fetch.assert_called_once_with(cache, PROFILE)
+
+    def test_load_instance_propagates_verified_dataset_drift(self):
+        with mock.patch(
+            "benchmarks.swebench.runner.fetch_and_verify_instance",
+            side_effect=RuntimeError("dataset row SHA-256 mismatch"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
                 load_instance(PROFILE)
 
     def test_prediction_jsonl_is_one_line(self):
@@ -658,14 +657,6 @@ class OrchestrationTests(unittest.TestCase):
             lines = path.read_text().splitlines()
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["model_patch"], "patch")
-
-    def test_evaluator_command_is_pinned_to_one_instance(self):
-        command = evaluator_command(
-            PROFILE, Path("/venv/python"), Path("predictions.jsonl"), "run-1"
-        )
-        self.assertIn("SWE-bench/SWE-bench_Lite", command)
-        self.assertEqual(command[command.index("--instance_ids") + 1], "astropy__astropy-12907")
-        self.assertEqual(command[command.index("--max_workers") + 1], "1")
 
     def test_runtime_probe_parses_installed_alloy_and_pi_versions(self):
         environment = {"HOME": "/disposable"}
@@ -838,24 +829,25 @@ class OrchestrationTests(unittest.TestCase):
             evaluation_dir = root / "results" / "run-1" / "evaluation"
             predictions = root / "results" / "run-1" / "predictions.jsonl"
             write_prediction_jsonl(predictions, prediction_record("id", "model", "patch"))
-            observed_cwds = []
+            row = {"instance_id": PROFILE.instance_id, "patch": "gold", "test_patch": "hidden"}
+            observed = []
 
-            def fake_run(command, cwd, timeout):
-                observed_cwds.append(cwd)
-                (cwd / "eval.sh").write_text("HIDDEN TEST MATERIAL")
-                hidden = cwd / "logs" / "run_evaluation" / "hidden"
-                hidden.mkdir(parents=True)
-                (hidden / "test_output.txt").write_text("HIDDEN TEST OUTPUT")
-                write_json(
-                    cwd / "model.run-1.json",
-                    {
-                        "schema_version": 2,
-                        "resolved_ids": ["astropy__astropy-12907"],
-                    },
-                )
-                return swebench_runner.CommandResult("official stdout", "official stderr", 0)
+            class FakeEvaluator:
+                def run(self, _predictions, dataset_path, _run_id):
+                    observed.append(dataset_path)
+                    (dataset_path.parent / "eval.sh").write_text("HIDDEN TEST MATERIAL")
+                    hidden = dataset_path.parent / "logs" / "run_evaluation" / "hidden"
+                    hidden.mkdir(parents=True)
+                    (hidden / "test_output.txt").write_text("HIDDEN TEST OUTPUT")
+                    return swebench_runner.EvaluationResult(
+                        "official stdout",
+                        "official stderr",
+                        {"schema_version": 2, "resolved_ids": [PROFILE.instance_id]},
+                    )
 
-            with mock.patch("benchmarks.swebench.runner.run_command", side_effect=fake_run):
+            with mock.patch(
+                "benchmarks.swebench.runner.EvaluatorEnvironment", return_value=FakeEvaluator()
+            ):
                 verdict = swebench_runner.run_official_evaluation(
                     PROFILE,
                     Path("/venv/python"),
@@ -863,12 +855,12 @@ class OrchestrationTests(unittest.TestCase):
                     "run-1",
                     work_root,
                     evaluation_dir,
+                    row,
                 )
 
             self.assertEqual(verdict, "resolved")
-            self.assertEqual(len(observed_cwds), 1)
-            self.assertEqual(observed_cwds[0].parent, work_root)
-            self.assertFalse(observed_cwds[0].exists())
+            self.assertEqual(len(observed), 1)
+            self.assertFalse(observed[0].parent.exists())
             self.assertEqual(
                 sorted(path.name for path in evaluation_dir.iterdir()),
                 ["official-summary.json", "stderr.log", "stdout.log"],
@@ -878,24 +870,75 @@ class OrchestrationTests(unittest.TestCase):
             self.assertFalse(any(path.name == "eval.sh" for path in root.rglob("*")))
             self.assertNotIn("HIDDEN TEST", (evaluation_dir / "official-summary.json").read_text())
 
+    def test_production_evaluation_uses_verified_private_local_dataset_environment(self):
+        row = {
+            "instance_id": PROFILE.instance_id,
+            "repo": "astropy/astropy",
+            "base_commit": PROFILE.base_commit,
+            "problem_statement": "public",
+            "patch": "gold",
+            "test_patch": "hidden",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.jsonl"
+            predictions.write_text("{}\n")
+            evaluation_dir = root / "evaluation"
+            observed = {}
+
+            class FakeEvaluator:
+                def run(self, prediction_path, dataset_path, run_id):
+                    observed["predictions"] = prediction_path
+                    observed["dataset_path"] = dataset_path
+                    observed["mode"] = dataset_path.stat().st_mode & 0o777
+                    observed["dataset"] = json.loads(dataset_path.read_text())
+                    observed["run_id"] = run_id
+                    return swebench_runner.EvaluationResult(
+                        "official stdout",
+                        "official stderr",
+                        {"schema_version": 2, "resolved_ids": [PROFILE.instance_id]},
+                    )
+
+            with mock.patch(
+                "benchmarks.swebench.runner.EvaluatorEnvironment",
+                return_value=FakeEvaluator(),
+            ):
+                verdict = swebench_runner.run_official_evaluation(
+                    PROFILE,
+                    VENV_PYTHON,
+                    predictions,
+                    "run-1",
+                    root / ".work",
+                    evaluation_dir,
+                    row,
+                )
+
+            self.assertEqual(verdict, "resolved")
+            self.assertEqual(observed["dataset"], [row])
+            self.assertEqual(observed["mode"], 0o600)
+            self.assertEqual(observed["run_id"], "run-1")
+            self.assertFalse(observed["dataset_path"].exists())
+            self.assertEqual((evaluation_dir / "stdout.log").read_text(), "official stdout")
+            self.assertEqual((evaluation_dir / "stderr.log").read_text(), "official stderr")
+
     def test_evaluator_nonzero_and_timeout_persist_partial_streams(self):
         cases = (
             (
                 "nonzero",
-                lambda: swebench_runner.CommandFailed(
-                    command=["/venv/python", "-m", "swebench.harness.run_evaluation"],
-                    stdout="evaluator nonzero stdout\n",
+                lambda: subprocess.CalledProcessError(
+                    9,
+                    ["/venv/python", "-m", "swebench.harness.run_evaluation"],
+                    output="evaluator nonzero stdout\n",
                     stderr="evaluator nonzero stderr\n",
-                    returncode=9,
                 ),
             ),
             (
                 "timeout",
-                lambda: swebench_runner.CommandTimedOut(
-                    command=["/venv/python", "-m", "swebench.harness.run_evaluation"],
-                    stdout="evaluator timeout partial stdout\n",
-                    stderr="evaluator timeout partial stderr\n",
+                lambda: subprocess.TimeoutExpired(
+                    cmd=["/venv/python", "-m", "swebench.harness.run_evaluation"],
                     timeout=2400,
+                    output="evaluator timeout partial stdout\n",
+                    stderr="evaluator timeout partial stderr\n",
                 ),
             ),
         )
@@ -905,7 +948,11 @@ class OrchestrationTests(unittest.TestCase):
                 predictions = root / "predictions.jsonl"
                 predictions.write_text("{}\n")
                 evaluation_dir = root / "results" / "evaluation"
-                with mock.patch("benchmarks.swebench.runner.run_command", side_effect=failure()):
+                evaluator = mock.MagicMock()
+                evaluator.run.side_effect = failure()
+                with mock.patch(
+                    "benchmarks.swebench.runner.EvaluatorEnvironment", return_value=evaluator
+                ):
                     with self.assertRaises(swebench_runner.CommandError) as raised:
                         swebench_runner.run_official_evaluation(
                             PROFILE,
@@ -914,6 +961,7 @@ class OrchestrationTests(unittest.TestCase):
                             "run-1",
                             root / ".work",
                             evaluation_dir,
+                            {"instance_id": PROFILE.instance_id},
                         )
 
                 self.assertEqual(
@@ -1068,8 +1116,13 @@ class OrchestrationTests(unittest.TestCase):
                 manifest["install_manifest"], {"commit": "a" * 40, "version": "1.1.25"}
             )
             self.assertEqual(
-                manifest["commands"]["evaluator"][0],
-                str(venv_python),
+                manifest["commands"]["evaluator"],
+                [
+                    "EvaluatorEnvironment.run",
+                    str(run_dir / "predictions.jsonl"),
+                    "<verified-private-dataset.json>",
+                    "run-1",
+                ],
             )
             self.assertNotIn("environment", manifest["commands"])
             summary = json.loads((run_dir / "summary.json").read_text())
@@ -1281,16 +1334,6 @@ class OrchestrationTests(unittest.TestCase):
             run_dir = root / "run-1"
             run_dir.mkdir()
 
-            def fake_evaluator(command, cwd, timeout):
-                write_json(
-                    cwd / "model.run-1.json",
-                    {
-                        "schema_version": 2,
-                        "unresolved_ids": ["astropy__astropy-12907"],
-                    },
-                )
-                return swebench_runner.CommandResult("", "", 0)
-
             previous_cwd = Path.cwd()
             try:
                 os.chdir(root)
@@ -1309,7 +1352,10 @@ class OrchestrationTests(unittest.TestCase):
                         return_value=swebench_runner.CommandResult("", "", 0),
                     ) as alloy,
                     mock.patch("benchmarks.swebench.runner.capture_patch", return_value="patch"),
-                    mock.patch("benchmarks.swebench.runner.run_command", side_effect=fake_evaluator),
+                    mock.patch(
+                        "benchmarks.swebench.runner.run_official_evaluation",
+                        return_value="unresolved",
+                    ),
                     mock.patch(
                         "benchmarks.swebench.runner.utc_now",
                         side_effect=["2026-08-18T06:00:00+00:00", "2026-08-18T06:00:01+00:00"],
@@ -1329,8 +1375,13 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(alloy.call_count, 1)
             manifest = json.loads((run_dir / "manifest.json").read_text())
             self.assertEqual(
-                manifest["commands"]["evaluator"][0],
-                str(bench_root / ".venv" / "bin" / "python"),
+                manifest["commands"]["evaluator"],
+                [
+                    "EvaluatorEnvironment.run",
+                    str(run_dir / "predictions.jsonl"),
+                    "<verified-private-dataset.json>",
+                    "run-1",
+                ],
             )
             summary = json.loads((run_dir / "summary.json").read_text())
             self.assertEqual(summary["status"], "evaluated")

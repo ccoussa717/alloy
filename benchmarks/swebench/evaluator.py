@@ -174,14 +174,13 @@ class EvaluatorEnvironment:
             raise RuntimeError("evaluator requirements lock SHA-256 mismatch")
         expected = locked_distributions(self.lock_path)
         installed = self._installed_distributions()
-        bootstrap = {name: version for name, version in installed.items() if name == "pip"}
-        if {name: version for name, version in installed.items() if name not in bootstrap} != expected:
+        if installed != expected:
             raise RuntimeError("installed evaluator distributions do not equal requirements.lock")
         if expected.get("swebench") != self.profile.swebench_version:
             raise RuntimeError("locked SWE-bench version does not match the benchmark profile")
         self._apply_verified_patch()
         self.runtime.preflight()
-        self._image_id = self.runtime.pull_and_verify(self.profile.evaluator_image)
+        self._image_id = self.runtime.verify_local_image(self.profile.evaluator_image)
 
     def _command(
         self, predictions: Path, dataset_json: Path, run_id: str, report_dir: Path
@@ -214,6 +213,8 @@ class EvaluatorEnvironment:
             scratch = Path(directory)
             command[command.index("--report_dir") + 1] = str(scratch)
             policy = self.profile.security_policy
+            if self._image_id is None:
+                raise RuntimeError("local evaluator image was not verified")
             environment = {
                 "HOME": str(scratch),
                 "LANG": "C.UTF-8",
@@ -222,6 +223,7 @@ class EvaluatorEnvironment:
                 "DOCKER_HOST": "unix:///var/run/docker.sock",
                 "SWEBENCH_EVALUATOR_IMAGE": self.profile.evaluator_image.reference,
                 "SWEBENCH_EVALUATOR_IMAGE_DIGEST": self.profile.evaluator_image.manifest_digest,
+                "SWEBENCH_EVALUATOR_IMAGE_ID": self._image_id,
                 "SWEBENCH_SECCOMP_PATH": str(
                     self.authority_root / policy.seccomp_path
                 ),

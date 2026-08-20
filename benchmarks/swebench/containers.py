@@ -338,6 +338,10 @@ class DockerRuntime:
     def pull_and_verify(self, image: ImagePin) -> str:
         self._validate_image(image)
         self._run(self._docker_arguments("pull", "--platform", "linux/amd64", image.reference))
+        return self.verify_local_image(image)
+
+    def verify_local_image(self, image: ImagePin) -> str:
+        self._validate_image(image)
         metadata = self._json_object(
             self._run(self._docker_arguments("image", "inspect", image.reference)),
             "image inspection",

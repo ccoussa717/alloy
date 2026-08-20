@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -16,14 +15,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from benchmarks.swebench.dataset import (
+    fetch_and_verify_instance,
+    prompt_instance,
+    write_private_dataset_json,
+)
+from benchmarks.swebench.evaluator import EvaluationResult, EvaluatorEnvironment
 from benchmarks.swebench.profile import BenchmarkProfile, load_profile, parse_profile
 
-try:
-    from datasets import load_dataset
-except ImportError:
-    load_dataset = None
-
-PRIVATE_FIELDS = {"patch", "test_patch"}
 BENCH_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = BENCH_ROOT.parents[1]
 PROFILE_PATH = BENCH_ROOT / "profile.json"
@@ -223,7 +222,7 @@ def capture_patch(checkout: Path) -> str:
 
 
 def public_instance(row: dict) -> dict:
-    return {key: value for key, value in row.items() if key not in PRIVATE_FIELDS}
+    return prompt_instance(row)
 
 
 def build_prompt(instance: dict) -> str:
@@ -247,48 +246,14 @@ def prediction_record(instance_id: str, model: str, patch: str) -> dict:
     }
 
 
-def load_instance(profile: BenchmarkProfile) -> dict:
-    if load_dataset is None:
-        raise RuntimeError("install requirements-swebench.txt in .venv first")
-    rows = load_dataset(profile.dataset.name, split=profile.split)
-    matches = [row for row in rows if row["instance_id"] == profile.instance_id]
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"expected one dataset row for {profile.instance_id}, found {len(matches)}"
-        )
-    row = matches[0]
-    if row["base_commit"] != profile.base_commit:
-        raise RuntimeError(f"dataset base commit drift for {profile.instance_id}")
-    return public_instance(dict(row))
+def load_instance(profile: BenchmarkProfile, cache: Path | None = None) -> dict:
+    dataset_cache = BENCH_ROOT / ".cache" / "dataset" if cache is None else cache
+    return fetch_and_verify_instance(dataset_cache, profile)
 
 
 def write_prediction_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-
-
-def evaluator_command(
-    profile: BenchmarkProfile, python: Path, predictions: Path, run_id: str
-) -> list[str]:
-    return [
-        str(python),
-        "-m",
-        "swebench.harness.run_evaluation",
-        "--dataset_name",
-        profile.dataset.name,
-        "--split",
-        profile.split,
-        "--instance_ids",
-        profile.instance_id,
-        "--predictions_path",
-        str(predictions),
-        "--max_workers",
-        "1",
-        "--timeout",
-        str(profile.agent_timeout_seconds),
-        "--run_id",
-        run_id,
-    ]
 
 
 def agent_environment(
@@ -442,31 +407,49 @@ def run_official_evaluation(
     run_id: str,
     work_root: Path,
     evaluation_dir: Path,
+    instance: dict,
 ) -> str:
     work_root.mkdir(parents=True, exist_ok=True)
     evaluation_dir.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix=f"{run_id}-evaluator-", dir=work_root) as directory:
         scratch = Path(directory)
+        dataset_json = scratch / "verified-dataset.json"
+        write_private_dataset_json(dataset_json, instance)
+        evaluator = EvaluatorEnvironment(profile, REPO_ROOT, python)
         try:
-            evaluation = run_command(
-                evaluator_command(profile, python, predictions.resolve(), run_id),
-                scratch,
-                profile.evaluator_timeout_seconds,
+            evaluation = evaluator.run(predictions.resolve(), dataset_json, run_id)
+        except subprocess.TimeoutExpired as error:
+            timeout = CommandTimedOut(
+                list(error.cmd) if isinstance(error.cmd, (list, tuple)) else [str(error.cmd)],
+                _process_output(error.stdout),
+                _process_output(error.stderr),
+                error.timeout,
             )
-        except CommandError as error:
             write_command_logs(
-                evaluation_dir / "stdout.log", evaluation_dir / "stderr.log", error
+                evaluation_dir / "stdout.log", evaluation_dir / "stderr.log", timeout
             )
-            raise
+            raise timeout from error
+        except subprocess.CalledProcessError as error:
+            failed = CommandFailed(
+                list(error.cmd) if isinstance(error.cmd, (list, tuple)) else [str(error.cmd)],
+                _process_output(error.stdout),
+                _process_output(error.stderr),
+                error.returncode,
+            )
+            write_command_logs(
+                evaluation_dir / "stdout.log", evaluation_dir / "stderr.log", failed
+            )
+            raise failed from error
         (evaluation_dir / "stdout.log").write_text(evaluation.stdout)
         (evaluation_dir / "stderr.log").write_text(evaluation.stderr)
-        summaries = list(scratch.glob(f"*.{run_id}.json"))
-        if len(summaries) != 1:
-            raise RuntimeError(
-                f"official evaluator produced {len(summaries)} run summaries for {run_id}"
-            )
-        shutil.copyfile(summaries[0], evaluation_dir / "official-summary.json")
+        write_json(evaluation_dir / "official-summary.json", evaluation.summary)
     return official_verdict(profile, evaluation_dir)
+
+
+def _process_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
 
 def utc_now() -> str:
@@ -608,9 +591,12 @@ def main(
         "candidate_source_root": str(candidate.root),
         "commands": {
             "alloy": alloy_command(alloy_bin, profile.model, "<problem.md contents>"),
-            "evaluator": evaluator_command(
-                profile, venv_python, predictions.resolve(), run_id
-            ),
+            "evaluator": [
+                "EvaluatorEnvironment.run",
+                str(predictions.resolve()),
+                "<verified-private-dataset.json>",
+                run_id,
+            ],
             "ollama_model_probe": "GET local Ollama /api/tags",
             "runtime_probe": [str(alloy_bin), "--version"],
             "swebench_probe": [
@@ -687,7 +673,7 @@ def main(
         print(f"error: {error}", file=sys.stderr)
         return 3
 
-    prompt = build_prompt(instance)
+    prompt = build_prompt(public_instance(instance))
     (run_dir / "problem.md").write_text(prompt)
     if args.dry_run:
         write_json(run_dir / "summary.json", summarize_run(run_id, "dry_run", started_at))
@@ -757,6 +743,7 @@ def main(
             run_id,
             args.work_root,
             evaluation_dir,
+            instance,
         )
     except CommandTimedOut as error:
         write_json(

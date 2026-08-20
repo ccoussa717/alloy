@@ -1,5 +1,12 @@
 # SWE-bench Release Smoke
 
+The evaluator dependency input is an authority-owned, fully exact Python 3.14.4
+closure in `requirements.in`, including bootstrap `pip`. Authority upgrades must
+regenerate `requirements.lock` with hashes, verify exact input/lock project and
+version equality, and explicitly review and accept the new lock SHA-256 in
+`profile.json`. Runtime verification accepts only that recorded lock digest and
+never resolves or upgrades a package.
+
 This maintainer-only gate runs one pinned SWE-bench Lite instance against an
 exact Alloy release candidate. It is a one-instance smoke, not an Alloy
 SWE-bench score, and is not an end-user Alloy command or dependency.

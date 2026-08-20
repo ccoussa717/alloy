@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -75,8 +76,39 @@ class EvaluatorLockTests(unittest.TestCase):
     def test_designated_environment_installed_distributions_equal_lock(self):
         environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, VENV_PYTHON)
         installed = environment._installed_distributions()
-        installed.pop("pip", None)
         self.assertEqual(installed, locked_distributions(LOCK_PATH))
+
+    def test_requirements_input_is_the_exact_closed_lock_set_including_pip(self):
+        inputs = {}
+        for line in (BENCH_ROOT / "requirements.in").read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            match = re.fullmatch(r"([a-z0-9][a-z0-9._-]*)==([^\s]+)", stripped)
+            self.assertIsNotNone(match, stripped)
+            assert match is not None
+            inputs[match.group(1)] = match.group(2)
+        self.assertIn("pip", inputs)
+        self.assertEqual(inputs, locked_distributions(LOCK_PATH))
+
+    def test_offline_lock_regeneration_cannot_resolve_different_versions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            regenerated = Path(directory) / "requirements.lock"
+            subprocess.run(
+                [
+                    "uv", "pip", "compile",
+                    "--offline",
+                    "--python", str(VENV_PYTHON),
+                    "--generate-hashes",
+                    "--no-emit-index-url",
+                    "--output-file", str(regenerated),
+                    str(BENCH_ROOT / "requirements.in"),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(locked_distributions(regenerated), locked_distributions(LOCK_PATH))
 
 
 class EvaluatorConfinementTests(unittest.TestCase):
@@ -106,7 +138,7 @@ class EvaluatorConfinementTests(unittest.TestCase):
             mock.patch.object(environment, "_installed_distributions", return_value=locked_distributions(LOCK_PATH)),
             mock.patch.object(environment, "_apply_verified_patch") as apply_patch,
             mock.patch.object(environment.runtime, "preflight"),
-            mock.patch.object(environment.runtime, "pull_and_verify", return_value="sha256:" + "a" * 64),
+            mock.patch.object(environment.runtime, "verify_local_image", return_value="sha256:" + "a" * 64),
         ):
             environment.verify()
         apply_patch.assert_called_once_with()
@@ -155,6 +187,153 @@ class EvaluatorConfinementTests(unittest.TestCase):
         self.assertIn("--no_pull", command)
         teardown.assert_called_once_with("run-1")
         self.assertEqual(result.summary["schema_version"], 2)
+
+
+class InstalledPatchedEvaluatorTests(unittest.TestCase):
+    def test_installed_patched_create_path_enforces_exact_confinement_without_pull(self):
+        source = BENCH_ROOT / ".venv" / "lib" / "python3.14" / "site-packages" / "swebench" / "harness" / "run_evaluation.py"
+        self.assertEqual(
+            hashlib.sha256(source.read_bytes()).hexdigest(),
+            PROFILE.evaluator.patched_run_evaluation_sha256,
+        )
+        script = textwrap.dedent(
+            f"""
+            import json
+            import os
+            import types
+            import docker
+            import swebench.harness.run_evaluation as patched
+
+            digest = {PROFILE.evaluator_image.manifest_digest!r}
+            reference = {PROFILE.evaluator_image.reference!r}
+            image_id = "sha256:" + "a" * 64
+            run_id = "run-actual-patch"
+            os.environ.update({{
+                "SWEBENCH_EVALUATOR_IMAGE": reference,
+                "SWEBENCH_EVALUATOR_IMAGE_DIGEST": digest,
+                "SWEBENCH_EVALUATOR_IMAGE_ID": image_id,
+                "SWEBENCH_SECCOMP_PATH": {str(REPO_ROOT / PROFILE.security_policy.seccomp_path)!r},
+                "SWEBENCH_APPARMOR_NAME": {PROFILE.security_policy.apparmor_name!r},
+            }})
+
+            class Logger:
+                log_file = "fake.log"
+                def info(self, *_): pass
+                def error(self, *_): pass
+
+            class Image:
+                id = image_id
+                attrs = {{"RepoDigests": [reference], "Os": "linux", "Architecture": "amd64"}}
+                def reload(self): pass
+
+            class Images:
+                pull_calls = 0
+                def get(self, value):
+                    assert value == reference
+                    return Image()
+                def pull(self, *_):
+                    self.pull_calls += 1
+                    raise AssertionError("pull forbidden")
+
+            class Volume:
+                attrs = {{"Labels": {{"alloy.swebench.gate": run_id}}, "Driver": "local", "Options": None, "Scope": "local"}}
+                def reload(self): pass
+
+            class Volumes:
+                def get(self, _): raise docker.errors.NotFound("missing")
+                def create(self, **kwargs):
+                    self.kwargs = kwargs
+                    return Volume()
+
+            class Container:
+                id = "container-id"
+                attrs = {{
+                    "Image": image_id,
+                    "Config": {{"User": "65532:65532", "Labels": {{"alloy.swebench.gate": run_id}}}},
+                    "HostConfig": {{
+                        "Privileged": False, "CapDrop": ["ALL"],
+                        "SecurityOpt": ["no-new-privileges:true", "seccomp=" + os.environ["SWEBENCH_SECCOMP_PATH"], "apparmor=alloy-swebench-gate"],
+                        "ReadonlyRootfs": True, "Init": True, "PidsLimit": 512,
+                        "Memory": 17179869184, "NanoCpus": 4000000000,
+                        "PidMode": "", "IpcMode": "private", "UTSMode": "",
+                        "NetworkMode": "none", "Devices": [],
+                    }},
+                    "NetworkSettings": {{"Networks": {{}}}},
+                    "Mounts": [{{"Type": "volume", "Name": "alloy-eval-workspace-" + run_id, "Destination": "/testbed", "RW": True}}],
+                }}
+                def reload(self): pass
+
+            class Containers:
+                def get(self, _): raise docker.errors.NotFound("missing")
+                def create(self, **kwargs):
+                    self.kwargs = kwargs
+                    return Container()
+
+            client = types.SimpleNamespace(images=Images(), volumes=Volumes(), containers=Containers())
+            spec = types.SimpleNamespace(instance_id={PROFILE.instance_id!r}, image="mutable:forbidden")
+            container = patched.create_container(spec, client, run_id, Logger())
+            assert container.id == "container-id"
+            assert client.images.pull_calls == 0
+            kwargs = client.containers.kwargs
+            assert kwargs["image"] == reference
+            assert kwargs["cap_drop"] == ["ALL"]
+            assert kwargs["network_disabled"] is True
+            assert kwargs["read_only"] is True
+            assert kwargs["user"] == "65532:65532"
+            print(json.dumps(kwargs, sort_keys=True))
+            """
+        )
+        result = subprocess.run(
+            [str(VENV_PYTHON), "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        kwargs = json.loads(result.stdout)
+        self.assertEqual(kwargs["image"], PROFILE.evaluator_image.reference)
+
+    def test_installed_patch_rejects_verified_image_id_drift(self):
+        script = textwrap.dedent(
+            f"""
+            import os
+            import types
+            import docker
+            import swebench.harness.run_evaluation as patched
+            os.environ.update({{
+                "SWEBENCH_EVALUATOR_IMAGE": {PROFILE.evaluator_image.reference!r},
+                "SWEBENCH_EVALUATOR_IMAGE_DIGEST": {PROFILE.evaluator_image.manifest_digest!r},
+                "SWEBENCH_EVALUATOR_IMAGE_ID": "sha256:" + "b" * 64,
+                "SWEBENCH_SECCOMP_PATH": {str(REPO_ROOT / PROFILE.security_policy.seccomp_path)!r},
+                "SWEBENCH_APPARMOR_NAME": "alloy-swebench-gate",
+            }})
+            class Logger:
+                log_file = "fake.log"
+                def info(self, *_): pass
+                def error(self, *_): pass
+            image = types.SimpleNamespace(
+                id="sha256:" + "a" * 64,
+                attrs={{"RepoDigests": [{PROFILE.evaluator_image.reference!r}], "Os": "linux", "Architecture": "amd64"}},
+                reload=lambda: None,
+            )
+            client = types.SimpleNamespace(images=types.SimpleNamespace(get=lambda _: image))
+            spec = types.SimpleNamespace(instance_id={PROFILE.instance_id!r}, image="ignored")
+            try:
+                patched.create_container(spec, client, "run-id-drift", Logger())
+            except Exception as error:
+                assert "image ID" in str(error), error
+            else:
+                raise AssertionError("patched evaluator accepted image ID drift")
+            """
+        )
+        result = subprocess.run(
+            [str(VENV_PYTHON), "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

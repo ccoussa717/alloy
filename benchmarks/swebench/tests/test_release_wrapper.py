@@ -607,7 +607,7 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
             self.command_log.read_text().splitlines(),
             [
                 f"-m venv {venv}",
-                f"-m pip install -r {self.repo / 'benchmarks' / 'swebench' / 'requirements.txt'}",
+                f"-m pip install --require-hashes -r {self.repo / 'benchmarks' / 'swebench' / 'requirements.lock'}",
             ],
         )
         self.assertFalse(self.installer_log.exists())

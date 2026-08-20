@@ -41,7 +41,7 @@ case "$SUBCOMMAND" in
     ;;
   setup)
     python3 -m venv "$BENCH_ROOT/.venv"
-    exec "$BENCH_ROOT/.venv/bin/python" -m pip install -r "$BENCH_ROOT/requirements.txt"
+    exec "$BENCH_ROOT/.venv/bin/python" -m pip install --require-hashes -r "$BENCH_ROOT/requirements.lock"
     ;;
 esac
 

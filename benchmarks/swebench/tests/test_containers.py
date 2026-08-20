@@ -590,6 +590,27 @@ class DockerRuntimeTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 runtime.pull_and_verify(self.image)
 
+    def test_verify_local_image_never_pulls_and_returns_exact_image_id(self):
+        metadata = {
+            "Id": self.image_id,
+            "Architecture": "amd64",
+            "Os": "linux",
+            "RepoDigests": [f"node@{self.image.manifest_digest}"],
+        }
+        runner = ScriptedRunner(completed(json.dumps([metadata])))
+
+        image_id = self.runtime(runner).verify_local_image(self.image)
+
+        self.assertEqual(image_id, self.image_id)
+        self.assertEqual(
+            runner.calls[0][0],
+            [
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                "image", "inspect", self.image.reference,
+            ],
+        )
+        self.assertEqual(len(runner.calls), 1)
+
     def test_inspection_rejects_every_security_drift(self):
         handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
         changes = (

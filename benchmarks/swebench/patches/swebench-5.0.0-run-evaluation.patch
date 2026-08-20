@@ -1,6 +1,6 @@
 --- a/swebench/harness/run_evaluation.py
 +++ b/swebench/harness/run_evaluation.py
-@@ -85,69 +85,159 @@
+@@ -85,69 +85,162 @@
          logger (logging.Logger): Logger to use for logging the creation process
      """
      container = None
@@ -9,6 +9,7 @@
 -        # Check if the image exists
 +        expected_image = os.environ["SWEBENCH_EVALUATOR_IMAGE"]
 +        expected_digest = os.environ["SWEBENCH_EVALUATOR_IMAGE_DIGEST"]
++        expected_image_id = os.environ["SWEBENCH_EVALUATOR_IMAGE_ID"]
 +        seccomp_path = os.environ["SWEBENCH_SECCOMP_PATH"]
 +        apparmor_name = os.environ["SWEBENCH_APPARMOR_NAME"]
 +        if apparmor_name != "alloy-swebench-gate":
@@ -43,6 +44,8 @@
 +            raise EvaluationError(test_spec.instance_id, "Evaluator image is not linux/amd64", logger)
 +        if not any(value.endswith(f"@{expected_digest}") for value in repo_digests):
 +            raise EvaluationError(test_spec.instance_id, "Evaluator image digest drifted", logger)
++        if image.id != expected_image_id:
++            raise EvaluationError(test_spec.instance_id, "Evaluator image ID drifted", logger)
 
          logger.info(f"Creating container for {test_spec.instance_id}...")
 
@@ -151,7 +154,7 @@
 +            raise EvaluationError(test_spec.instance_id, "Evaluator device or UTS isolation drifted", logger)
 +        if host.get("PidsLimit") != 512 or host.get("Memory") != 17179869184:
 +            raise EvaluationError(test_spec.instance_id, "Evaluator limits drifted", logger)
-+        if host.get("NanoCpus") != 4000000000 or container.attrs.get("Image") != image.id:
++        if host.get("NanoCpus") != 4000000000 or container.attrs.get("Image") != expected_image_id:
 +            raise EvaluationError(test_spec.instance_id, "Evaluator CPU or image ID drifted", logger)
 +        security = set(host.get("SecurityOpt") or [])
 +        security = {
@@ -206,7 +209,7 @@
          raise EvaluationError(test_spec.instance_id, str(e), logger) from e
 
 
-@@ -361,11 +451,11 @@
+@@ -361,11 +454,11 @@
          logger.info(
              f"Eval script for {instance_id} written to {eval_file}; copying to container..."
          )
@@ -220,7 +223,7 @@
          )
          test_output_path = log_dir / LOG_TEST_OUTPUT
          logger.info(f"Test runtime: {total_runtime:_.2f} seconds")
-@@ -425,6 +515,24 @@
+@@ -425,6 +518,24 @@
      finally:
          # Remove instance container + image, close logger
          cleanup_container(client, container, logger)
@@ -245,7 +248,7 @@
          close_logger(logger)
      return
 
-@@ -688,6 +796,7 @@
+@@ -688,6 +799,7 @@
      modal: bool,
      report_dir: str = ".",
      task_repo: str | None = None,
@@ -253,7 +256,7 @@
  ):
      """
      Run evaluation harness for the given dataset and predictions.
-@@ -707,6 +816,8 @@
+@@ -707,6 +819,8 @@
              "repo's Dockerfiles would be ignored while its tests were used. Drop "
              "--task-repo to run on Modal, or drop --modal to build the repo."
          )
@@ -262,7 +265,7 @@
 
      # set open file limit
      assert len(run_id) > 0, "Run ID must be provided"
-@@ -834,6 +945,7 @@
+@@ -834,6 +948,7 @@
      parser.add_argument(
          "--report_dir", type=str, default=".", help="Directory to write reports to"
      )
