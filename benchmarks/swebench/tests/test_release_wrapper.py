@@ -13,12 +13,72 @@ from benchmarks.swebench.host_launcher import (
     _reject_authority_overrides,
     load_trusted_host,
 )
-from benchmarks.swebench.provision import ProvisionPaths, _provision
+from benchmarks.swebench.provision import (
+    ProvisionPaths,
+    _build_evaluator,
+    _ensure_directory,
+    _open_root,
+    _publish_new,
+    _replace_validated,
+    _provision,
+)
 
 
 SHA = "a" * 40
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = REPO_ROOT / "scripts" / "run-swebench-release-smoke.sh"
+
+
+class HostLauncherSubprocessTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="alloy launcher subprocess ")
+        self.root = Path(self.temporary.name)
+        self.authority = self.root / "authority"
+        package = self.authority / "benchmarks/swebench"
+        package.mkdir(parents=True)
+        (self.authority / "benchmarks/__init__.py").write_text("")
+        (package / "__init__.py").write_text("")
+        self.tripwire = self.root / "authority-imported"
+        (package / "attempts.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(self.tripwire)!r}).write_text('imported')\n"
+            "raise RuntimeError('tripwire authority import')\n"
+        )
+        source = (REPO_ROOT / "benchmarks/swebench/host_launcher.py").read_text()
+        self.launcher = self.root / "alloy-swebench-gate"
+        source = source.replace(
+            'LAUNCHER_PATH = Path("/usr/local/libexec/alloy-swebench-gate")',
+            f"LAUNCHER_PATH = Path({str(self.launcher)!r})",
+        ).replace(
+            'AUTHORITY_ROOT = STATE_ROOT / "authority"',
+            f"AUTHORITY_ROOT = Path({str(self.authority)!r})",
+        )
+        self.launcher.write_text(source)
+        self.launcher.chmod(0o755)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_nonroot_rejection_occurs_before_any_authority_import(self):
+        result = subprocess.run(
+            ["/usr/bin/python3", "-I", "-E", "-s", str(self.launcher), "dry-run", SHA],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("requires root", result.stderr)
+        self.assertFalse(self.tripwire.exists())
+
+    def test_launcher_declares_isolated_python_and_no_early_authority_imports(self):
+        source = (REPO_ROOT / "benchmarks/swebench/host_launcher.py").read_text()
+        self.assertEqual(
+            source.splitlines()[0],
+            "#!/usr/bin/env -S /usr/bin/python3 -I -E -s",
+        )
+        validation_end = source.index("# AUTHORITY_IMPORT_BOUNDARY")
+        self.assertNotIn("from benchmarks.", source[:validation_end])
+        self.assertNotIn("import benchmarks.", source[:validation_end])
 
 
 class TrustedHostFixture(unittest.TestCase):
@@ -35,6 +95,11 @@ class TrustedHostFixture(unittest.TestCase):
         (self.source / ".gitignore").write_text(
             "benchmarks/swebench/.venv/\nbenchmarks/swebench/.cache/\n"
         )
+        self.import_tripwire = self.root / "validated-authority-imported"
+        (self.source / "benchmarks/__init__.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(self.import_tripwire)!r}).write_text('imported')\n"
+        )
         self._git("init", "-q")
         self._git("config", "user.email", "tests@example.com")
         self._git("config", "user.name", "Tests")
@@ -49,6 +114,7 @@ class TrustedHostFixture(unittest.TestCase):
         target.mkdir(parents=True)
         (target / "HEAD").write_text("prepared target\n")
         self.paths = ProvisionPaths.under(self.root / "system root")
+        self.paths.root.mkdir(mode=0o700)
         self.apparmor_loads = []
         self.receipt = _provision(
             self.source,
@@ -82,6 +148,43 @@ class TrustedHostFixture(unittest.TestCase):
 
 
 class HostLauncherTests(TrustedHostFixture):
+    def _run_installed_launcher(self, **environment):
+        source = (REPO_ROOT / "benchmarks/swebench/host_launcher.py").read_text()
+        replacements = {
+            'LAUNCHER_PATH = Path("/usr/local/libexec/alloy-swebench-gate")': (
+                f"LAUNCHER_PATH = Path({str(self.paths.launcher)!r})"
+            ),
+            'CONFIG_PATH = Path("/etc/alloy/swebench-gate.json")': (
+                f"CONFIG_PATH = Path({str(self.paths.config)!r})"
+            ),
+            'STATE_ROOT = Path("/var/lib/alloy-swebench-gate")': (
+                f"STATE_ROOT = Path({str(self.paths.state)!r})"
+            ),
+            'FILESYSTEM_ROOT = Path("/")': (
+                f"FILESYSTEM_ROOT = Path({str(self.paths.root)!r})"
+            ),
+            "REQUIRED_UID = 0": f"REQUIRED_UID = {os.geteuid()}",
+        }
+        for old, new in replacements.items():
+            source = source.replace(old, new)
+        launcher = self.root / "subprocess-launcher"
+        launcher.write_text(source)
+        launcher.chmod(0o755)
+        return subprocess.run(
+            ["/usr/bin/python3", "-I", "-E", "-s", str(launcher), "dry-run", SHA],
+            env={
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if not key.startswith("PYTHON")
+                },
+                **environment,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def test_provisioned_host_uses_exact_fixed_tree_policy_and_public_key_digests(self):
         trusted = load_trusted_host(self.host_paths, expected_uid=os.geteuid())
 
@@ -98,6 +201,15 @@ class HostLauncherTests(TrustedHostFixture):
             hashlib.sha256(self.paths.public_key.read_bytes()).hexdigest(),
             trusted.config.gate_public_key_sha256,
         )
+
+    def test_host_validation_rejects_writable_intermediate_parent(self):
+        intermediate = self.paths.root / "var/lib"
+        intermediate.chmod(0o777)
+        try:
+            with self.assertRaisesRegex(ValueError, "writable|mode|unsafe"):
+                load_trusted_host(self.host_paths, expected_uid=os.geteuid())
+        finally:
+            intermediate.chmod(0o755)
 
     def test_rejects_non_owned_or_group_writable_config(self):
         self.paths.config.chmod(0o620)
@@ -168,6 +280,71 @@ class HostLauncherTests(TrustedHostFixture):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "override"):
                 _reject_authority_overrides({name: str(self.root / "attacker")})
 
+    def test_subprocess_rejects_python_environment_before_drifted_import(self):
+        tripwire = self.root / "drift-imported"
+        attempts = self.paths.authority / "benchmarks/swebench/attempts.py"
+        attempts.write_text(
+            f"from pathlib import Path\nPath({str(tripwire)!r}).write_text('imported')\n"
+        )
+        result = self._run_installed_launcher(
+            PYTHONPATH=str(self.root / "attacker"),
+            PYTHONSTARTUP=str(self.root / "startup.py"),
+            PYTHONHOME=str(self.root / "home"),
+            PYTHONINSPECT="1",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Python environment", result.stderr)
+        self.assertFalse(tripwire.exists())
+
+    def test_subprocess_rejects_authority_drift_before_import_tripwire(self):
+        tripwire = self.root / "drift-imported"
+        attempts = self.paths.authority / "benchmarks/swebench/attempts.py"
+        attempts.write_text(
+            f"from pathlib import Path\nPath({str(tripwire)!r}).write_text('imported')\n"
+        )
+        # Build the generated launcher after establishing the drift so its own
+        # bytes remain outside the authority checkout under test.
+        result = self._run_installed_launcher()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("clean", result.stderr)
+        self.assertFalse(tripwire.exists())
+
+    def test_subprocess_rejects_symlinked_state_before_authority_import(self):
+        actual_state = self.root / "actual-state"
+        self.paths.state.rename(actual_state)
+        self.paths.state.symlink_to(actual_state, target_is_directory=True)
+        result = self._run_installed_launcher()
+        self.assertEqual(result.returncode, 2)
+        self.assertRegex(result.stderr, "unsafe|symlink")
+        self.assertFalse(self.import_tripwire.exists())
+
+    def test_subprocess_rejects_wrong_head_before_authority_import(self):
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", "wrong head"],
+            cwd=self.paths.authority,
+            check=True,
+        )
+        result = self._run_installed_launcher()
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("authority commit", result.stderr)
+        self.assertFalse(self.import_tripwire.exists())
+
+    def test_subprocess_rejects_tree_policy_and_key_drift_before_authority_import(self):
+        cases = ("coordinator_tree_sha256", "policy", "gate_public_key_sha256")
+        original = self.config()
+        for field in cases:
+            with self.subTest(field=field):
+                changed = json.loads(json.dumps(original))
+                if field == "policy":
+                    changed["confinement_policy_sha256"]["apparmor"] = "f" * 64
+                else:
+                    changed[field] = "f" * 64
+                self.write_config(changed)
+                result = self._run_installed_launcher()
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(self.import_tripwire.exists())
+        self.write_config(original)
+
     def test_direct_candidate_runner_invocation_remains_blocked(self):
         result = subprocess.run(
             [
@@ -196,6 +373,90 @@ class HostLauncherTests(TrustedHostFixture):
 
 
 class ProvisionTests(TrustedHostFixture):
+    def test_published_files_have_exact_modes_under_restrictive_umask(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            previous_umask = os.umask(0o077)
+            try:
+                _publish_new(parent_fd, "launcher", b"new\n", 0o755)
+                existing = Path(directory) / "config"
+                existing.write_bytes(b"old\n")
+                existing.chmod(0o600)
+                _replace_validated(
+                    parent_fd,
+                    "config",
+                    b"new\n",
+                    0o600,
+                    os.geteuid(),
+                )
+            finally:
+                os.umask(previous_umask)
+                os.close(parent_fd)
+            self.assertEqual((Path(directory) / "launcher").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((Path(directory) / "config").stat().st_mode & 0o777, 0o600)
+
+    def test_descriptor_walk_rejects_symlink_and_writable_existing_parent(self):
+        for unsafe in ("symlink", "writable"):
+            with self.subTest(unsafe=unsafe), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                trusted = root / "trusted"
+                trusted.mkdir(mode=0o700)
+                if unsafe == "symlink":
+                    outside = root / "outside"
+                    outside.mkdir(mode=0o700)
+                    (trusted / "etc").symlink_to(outside, target_is_directory=True)
+                else:
+                    (trusted / "etc").mkdir(mode=0o777)
+                    (trusted / "etc").chmod(0o777)
+                root_fd = _open_root(trusted, os.geteuid())
+                try:
+                    with self.assertRaisesRegex(ValueError, "symlink|writable|mode|unsafe"):
+                        _ensure_directory(
+                            root_fd,
+                            ("etc", "alloy"),
+                            0o755,
+                            os.geteuid(),
+                        )
+                finally:
+                    os.close(root_fd)
+
+    def test_evaluator_build_uses_fixed_python_binary_wheels_and_exact_lock(self):
+        commands = []
+
+        def runner(arguments, **kwargs):
+            commands.append((tuple(map(str, arguments)), kwargs))
+            if arguments[1:] == ["--version"]:
+                return subprocess.CompletedProcess(arguments, 0, "Python 3.14.4\n", "")
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with self.assertRaisesRegex(RuntimeError, "fixture stops after command validation"):
+            _build_evaluator(
+                self.paths.authority,
+                json.loads(
+                    (self.paths.authority / "benchmarks/swebench/profile.json").read_text()
+                ),
+                runner=runner,
+                stop_after_install=True,
+                pass_fds=(42,),
+            )
+        arguments = [item[0] for item in commands]
+        self.assertIn(("/usr/bin/python3.14", "--version"), arguments)
+        pip = next(command for command in arguments if "pip" in command)
+        self.assertIn("--require-hashes", pip)
+        self.assertIn("--only-binary=:all:", pip)
+        self.assertIn("https://pypi.org/simple", pip)
+        self.assertTrue(all(item[1]["pass_fds"] == (42,) for item in commands))
+
+    def test_provision_module_contains_no_local_venv_copy_path(self):
+        source = (REPO_ROOT / "benchmarks/swebench/provision.py").read_text()
+        self.assertNotIn("_copy_prepared_environment", source)
+        self.assertNotIn("shutil.copytree", source)
+
+    def test_malicious_local_evaluator_is_ignored_by_authority_install(self):
+        local_python = self.source / "benchmarks/swebench/.venv/bin/python"
+        self.assertEqual(local_python.read_text(), "prepared evaluator\n")
+        installed_venv = self.paths.authority / "benchmarks/swebench/.venv"
+        self.assertFalse(installed_venv.exists())
     def test_initial_provision_is_audited_private_and_loads_exact_apparmor_policy(self):
         self.assertEqual(self.receipt["schema_version"], 1)
         self.assertEqual(self.receipt["action"], "provision")
@@ -226,6 +487,7 @@ class ProvisionTests(TrustedHostFixture):
 
     def test_failed_initial_apparmor_load_leaves_no_false_provisioning_anchor(self):
         retry_paths = ProvisionPaths.under(self.root / "retry system")
+        retry_paths.root.mkdir(mode=0o700)
 
         def fail_load(_path):
             raise RuntimeError("AppArmor load failed")
@@ -457,6 +719,43 @@ class ReleaseWrapperTests(unittest.TestCase):
         self.assertRegex(source, r'exec /usr/bin/sudo -n /usr/local/libexec/alloy-swebench-gate "\$SUBCOMMAND" "\$CANDIDATE_SHA"')
         self.assertRegex(source, r'authorize-retry.*RETRY_REASON')
         self.assertNotRegex(source, r'ALLOY_SWEBENCH_(?:CONFIG|AUTHORITY)')
+
+    def test_provision_prints_fixed_explicit_sha_ceremony_without_executing_local_code(self):
+        sentinels = []
+        for relative in (
+            "benchmarks/swebench/provision.py",
+            "sitecustomize.py",
+            "benchmarks/__init__.py",
+            "benchmarks/swebench/.venv/bin/python",
+        ):
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            sentinel = self.root / (relative.replace("/", "-") + "-executed")
+            sentinels.append(sentinel)
+            path.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(sentinel)!r}).write_text('executed')\n"
+            )
+            path.chmod(0o755)
+        result = self._run("provision", SHA)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.commands.exists())
+        self.assertTrue(all(not sentinel.exists() for sentinel in sentinels))
+        self.assertIn("https://github.com/ccoussa717/alloy.git", result.stdout)
+        self.assertIn(SHA, result.stdout)
+        self.assertIn("/usr/bin/git", result.stdout)
+        self.assertIn("/usr/bin/python3 -I -E -s", result.stdout)
+        self.assertNotIn(str(self.repo), result.stdout)
+        self.assertNotIn("$'", result.stdout)
+        self.assertIn("/usr/bin/printf '%s\\t%s'", result.stdout)
+
+    def test_provision_requires_one_explicit_full_lowercase_authority_sha(self):
+        for arguments in (("provision",), ("provision", "A" * 40), ("provision", SHA, SHA)):
+            with self.subTest(arguments=arguments):
+                result = self._run(*arguments)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("usage:", result.stderr)
+                self.assertFalse(self.commands.exists())
 
     def test_unknown_or_missing_commands_fail_before_any_tool_execution(self):
         for arguments in ((), ("unknown",)):

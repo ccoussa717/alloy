@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: %s {test|setup|provision|dry-run <candidate-sha>|release <candidate-sha>|authorize-retry <candidate-sha> <reason>}\n' "${0##*/}" >&2
+  printf 'usage: %s {test|setup|provision <authority-sha>|dry-run <candidate-sha>|release <candidate-sha>|authorize-retry <candidate-sha> <reason>}\n' "${0##*/}" >&2
 }
 
 if [[ "$#" -lt 1 ]]; then
@@ -13,11 +13,18 @@ fi
 SUBCOMMAND="$1"
 shift
 case "$SUBCOMMAND" in
-  test|setup|provision)
+  test|setup)
     if [[ "$#" -ne 0 ]]; then
       usage
       exit 64
     fi
+    ;;
+  provision)
+    if [[ "$#" -ne 1 || ! "$1" =~ ^[0-9a-f]{40}$ ]]; then
+      usage
+      exit 64
+    fi
+    AUTHORITY_SHA="$1"
     ;;
   dry-run|release)
     if [[ "$#" -ne 1 || ! "$1" =~ ^[0-9a-f]{40}$ ]]; then
@@ -47,6 +54,27 @@ case "$SUBCOMMAND" in
   authorize-retry)
     exec /usr/bin/sudo -n /usr/local/libexec/alloy-swebench-gate \
       authorize-retry "$CANDIDATE_SHA" "$RETRY_REASON"
+    ;;
+  provision)
+    printf '%s\n' \
+      "/usr/bin/sudo -H /bin/sh -eu -c '" \
+      'umask 077' \
+      'authority="$1"' \
+      'bootstrap="/var/lib/alloy-swebench-bootstrap-$authority"' \
+      'checkout="$bootstrap/authority"' \
+      '/usr/bin/mkdir -m 0700 "$bootstrap"' \
+      '/usr/bin/git init --quiet "$checkout"' \
+      'advertised=$(/usr/bin/git ls-remote https://github.com/ccoussa717/alloy.git refs/heads/main)' \
+      'expected=$(/usr/bin/printf '\''%s\t%s'\'' "$authority" refs/heads/main)' \
+      'test "$advertised" = "$expected"' \
+      '/usr/bin/git -C "$checkout" fetch --quiet --no-tags --depth=1 https://github.com/ccoussa717/alloy.git "$authority"' \
+      '/usr/bin/git -C "$checkout" checkout --quiet --detach FETCH_HEAD' \
+      'test "$(/usr/bin/git -C "$checkout" rev-parse HEAD)" = "$authority"' \
+      'test -z "$(/usr/bin/git -C "$checkout" status --porcelain=v1 --untracked-files=all)"' \
+      '/usr/bin/git -C "$checkout" remote add github https://github.com/ccoussa717/alloy.git' \
+      'exec /usr/bin/python3 -I -E -s "$checkout/benchmarks/swebench/provision.py" "$authority"' \
+      "' sh '$AUTHORITY_SHA'"
+    exit 0
     ;;
 esac
 
@@ -88,14 +116,5 @@ case "$SUBCOMMAND" in
     fi
     chmod -R a-w "$TARGET_CACHE"
     chmod 0700 "$BENCH_ROOT/.cache" "$BENCH_ROOT/.cache/artifacts" "$BENCH_ROOT/.cache/dataset"
-    ;;
-  provision)
-    AUTHORITY_SHA="$(git rev-parse HEAD)"
-    if [[ ! "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-      printf 'error: authority commit must be a full lowercase Git SHA\n' >&2
-      exit 1
-    fi
-    exec /usr/bin/sudo -n /usr/bin/python3 \
-      "$BENCH_ROOT/provision.py" "$AUTHORITY_SHA"
     ;;
 esac
