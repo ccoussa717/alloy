@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Callable, Sequence
 
 from benchmarks.swebench.profile import BenchmarkProfile, ImagePin
@@ -15,6 +17,18 @@ from benchmarks.swebench.profile import BenchmarkProfile, ImagePin
 LABEL = "alloy.swebench.gate"
 CONTAINER_USER = "65532:65532"
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+DOCKER_BIN = "/usr/bin/docker"
+DOCKER_ENDPOINT = "unix:///var/run/docker.sock"
+DOCKER_SOCKET = "/var/run/docker.sock"
+DOCKER_SOCKET_CANONICAL = "/run/docker.sock"
+APPARMOR_PARSER_BIN = "/usr/sbin/apparmor_parser"
+AA_STATUS_BIN = "/usr/sbin/aa-status"
+FIXED_ENV = MappingProxyType({
+    "HOME": "/root",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+})
 
 
 @dataclass(frozen=True)
@@ -50,6 +64,15 @@ class ContainerHandle:
 
 
 @dataclass(frozen=True)
+class DaemonIdentity:
+    endpoint: str
+    daemon_id: str
+    name: str
+    root_dir: str
+    server_version: str
+
+
+@dataclass(frozen=True)
 class PreflightReport:
     cgroup_version: str
     apparmor: bool
@@ -60,9 +83,14 @@ class PreflightReport:
     seccomp_sha256: str
     apparmor_sha256: str
     profile_fingerprint: str
+    daemon_identity: DaemonIdentity
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+class _DaemonIdentityDrift(RuntimeError):
+    pass
 
 
 class DockerRuntime:
@@ -83,6 +111,7 @@ class DockerRuntime:
             self.authority_root / profile.security_policy.apparmor_path
         ).resolve()
         self._completed_preflight: str | None = None
+        self._daemon_identity: DaemonIdentity | None = None
 
     def _run(
         self,
@@ -97,7 +126,12 @@ class DockerRuntime:
             text=True,
             check=check,
             timeout=timeout,
+            env=FIXED_ENV,
         )
+
+    @staticmethod
+    def _docker_arguments(*arguments: str) -> list[str]:
+        return [DOCKER_BIN, "--host", DOCKER_ENDPOINT, *arguments]
 
     @staticmethod
     def _json_object(result: subprocess.CompletedProcess[str], label: str) -> dict[str, object]:
@@ -132,6 +166,50 @@ class DockerRuntime:
         return hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
+    def _validate_local_docker_socket() -> None:
+        try:
+            metadata = os.lstat(DOCKER_SOCKET)
+            canonical = os.path.realpath(DOCKER_SOCKET)
+        except OSError as error:
+            raise RuntimeError("local Docker Unix socket is unavailable") from error
+        if not stat.S_ISSOCK(metadata.st_mode):
+            raise RuntimeError("local Docker endpoint must be a Unix socket")
+        if metadata.st_uid != 0:
+            raise RuntimeError("local Docker Unix socket must be root-owned")
+        if canonical != DOCKER_SOCKET_CANONICAL:
+            raise RuntimeError("local Docker socket is not at the expected canonical location")
+
+    @staticmethod
+    def _identity_from_info(info: dict[str, object]) -> DaemonIdentity:
+        names = {
+            "daemon_id": "ID",
+            "name": "Name",
+            "root_dir": "DockerRootDir",
+            "server_version": "ServerVersion",
+        }
+        values: dict[str, str] = {}
+        for field, key in names.items():
+            value = info.get(key)
+            if not isinstance(value, str) or not value:
+                raise RuntimeError(f"Docker daemon identity field {key} is missing")
+            values[field] = value
+        return DaemonIdentity(endpoint=DOCKER_ENDPOINT, **values)
+
+    def _current_daemon_identity(self) -> DaemonIdentity:
+        self._validate_local_docker_socket()
+        info = self._json_object(
+            self._run(self._docker_arguments("info", "--format", "{{json .}}")),
+            "host information",
+        )
+        return self._identity_from_info(info)
+
+    def _assert_daemon_identity(self) -> None:
+        if self._daemon_identity is None:
+            raise RuntimeError("official preflight did not record a Docker daemon identity")
+        if self._current_daemon_identity() != self._daemon_identity:
+            raise _DaemonIdentityDrift("Docker daemon identity drifted after preflight")
+
+    @staticmethod
     def _apparmor_profile_mode(status: dict[str, object], name: str) -> str | None:
         profiles = status.get("profiles")
         if isinstance(profiles, dict):
@@ -156,11 +234,17 @@ class DockerRuntime:
 
     def preflight(self) -> PreflightReport:
         self._completed_preflight = None
+        self._daemon_identity = None
         if os.geteuid() != 0:
             raise RuntimeError("official container preflight must run as root")
+        for variable in ("DOCKER_HOST", "DOCKER_CONTEXT"):
+            if os.environ.get(variable):
+                raise RuntimeError(f"official preflight rejects nonempty {variable}")
+        self._validate_local_docker_socket()
         self._verify_policy_bytes()
-        result = self._run(["docker", "info", "--format", "{{json .}}"])
+        result = self._run(self._docker_arguments("info", "--format", "{{json .}}"))
         info = self._json_object(result, "host information")
+        daemon_identity = self._identity_from_info(info)
         cgroup_version = str(info.get("CgroupVersion", ""))
         os_type = str(info.get("OSType", ""))
         architecture = str(info.get("Architecture", ""))
@@ -181,9 +265,9 @@ class DockerRuntime:
             raise RuntimeError("official runs require a Linux Docker daemon")
         if architecture not in {"amd64", "x86_64"}:
             raise RuntimeError("official runs require an amd64 Docker daemon")
-        self._run(["apparmor_parser", "-r", str(self.apparmor_path)])
+        self._run([APPARMOR_PARSER_BIN, "-r", str(self.apparmor_path)])
         status = self._json_object(
-            self._run(["aa-status", "--json"]), "AppArmor status"
+            self._run([AA_STATUS_BIN, "--json"]), "AppArmor status"
         )
         policy = self.profile.security_policy
         mode = self._apparmor_profile_mode(status, policy.apparmor_name)
@@ -202,8 +286,10 @@ class DockerRuntime:
             policy.seccomp_sha256,
             policy.apparmor_sha256,
             fingerprint,
+            daemon_identity,
         )
         self._completed_preflight = fingerprint
+        self._daemon_identity = daemon_identity
         return report
 
     @staticmethod
@@ -217,9 +303,10 @@ class DockerRuntime:
 
     def pull_and_verify(self, image: ImagePin) -> str:
         self._validate_image(image)
-        self._run(["docker", "pull", "--platform", "linux/amd64", image.reference])
+        self._run(self._docker_arguments("pull", "--platform", "linux/amd64", image.reference))
         metadata = self._json_object(
-            self._run(["docker", "image", "inspect", image.reference]), "image inspection"
+            self._run(self._docker_arguments("image", "inspect", image.reference)),
+            "image inspection",
         )
         if metadata.get("Os") != "linux" or metadata.get("Architecture") != "amd64":
             raise RuntimeError("pulled image must be linux/amd64")
@@ -299,7 +386,9 @@ class DockerRuntime:
         policy = self.profile.security_policy
         limits = self.profile.limits
         arguments = [
-            "docker",
+            DOCKER_BIN,
+            "--host",
+            DOCKER_ENDPOINT,
             "create",
             "--name",
             spec.name,
@@ -347,7 +436,7 @@ class DockerRuntime:
                 continue
             name = str(mount.source)
             inspected = self._json_object(
-                self._run(["docker", "volume", "inspect", name]),
+                self._run(self._docker_arguments("volume", "inspect", name)),
                 "volume inspection",
             )
             labels = self._mapping(inspected.get("Labels"))
@@ -366,6 +455,7 @@ class DockerRuntime:
         self._verify_policy_bytes()
         self._validate_spec(spec)
         self._verify_volume_ownership(spec)
+        self._assert_daemon_identity()
         result = self._run(self._create_arguments(spec))
         container_id = result.stdout.strip()
         if not container_id:
@@ -373,14 +463,17 @@ class DockerRuntime:
         handle = ContainerHandle(spec.name, container_id, spec.run_id)
         try:
             self.inspect_security(handle, spec)
-            self._run(["docker", "start", container_id])
+            self._assert_daemon_identity()
+            self._run(self._docker_arguments("start", container_id))
+        except _DaemonIdentityDrift:
+            raise
         except BaseException:
             self.force_remove(handle)
             raise
         return handle
 
     def _inspect(self, identifier: str, *, check: bool = True) -> tuple[dict[str, object] | None, int]:
-        result = self._run(["docker", "inspect", identifier], check=check)
+        result = self._run(self._docker_arguments("inspect", identifier), check=check)
         if result.returncode != 0:
             if "No such object" in result.stderr or "No such container" in result.stderr:
                 return None, result.returncode
@@ -470,7 +563,9 @@ class DockerRuntime:
             raise RuntimeError("container mounts drifted")
 
     def wait(self, handle: ContainerHandle, *, timeout: int | None = None) -> int:
-        result = self._run(["docker", "wait", handle.container_id], timeout=timeout)
+        result = self._run(
+            self._docker_arguments("wait", handle.container_id), timeout=timeout
+        )
         try:
             return int(result.stdout.strip())
         except ValueError as error:
@@ -484,7 +579,7 @@ class DockerRuntime:
         labels = self._mapping(self._mapping(inspected.get("Config")).get("Labels"))
         if labels.get(LABEL) != handle.run_id:
             raise RuntimeError("container name was reused with a different ownership label")
-        self._run(["docker", "rm", "--force", handle.name])
+        self._run(self._docker_arguments("rm", "--force", handle.name))
         self.assert_absent(handle)
 
     def assert_absent(self, handle: ContainerHandle) -> None:
