@@ -32,6 +32,8 @@
 
 **Files:**
 - Create: `benchmarks/swebench/profile.py`
+- Create: `benchmarks/swebench/policies/untrusted-seccomp.json`
+- Create: `benchmarks/swebench/policies/alloy-swebench-gate.apparmor`
 - Modify: `benchmarks/swebench/profile.json`
 - Modify: `benchmarks/swebench/runner.py`
 - Create: `benchmarks/swebench/tests/test_profile.py`
@@ -40,7 +42,7 @@
 **Interfaces:**
 - Produces: `DatasetPin`, `ImagePin`, `SecurityPolicy`, `ResourceLimits`, `ProxyPolicy`, and `BenchmarkProfile` frozen dataclasses.
 - Produces: `load_profile(path: Path, authority_root: Path) -> BenchmarkProfile`.
-- Consumes: authority-owned policy files added in Task 4.
+- Produces: authority-owned seccomp and AppArmor files whose hashes are pinned by the profile and enforced by Task 4.
 
 - [ ] **Step 1: Write strict profile tests**
 
@@ -77,7 +79,7 @@ def _manifest_digest(value: object, label: str) -> str:
     return value
 ```
 
-Move profile parsing out of `runner.py`; retain imports there so existing callers migrate without duplicate schemas. Populate `profile.json` with every Global Constraints pin plus explicit limits: 1,800-second agent timeout, 2,400-second evaluator timeout, 512 PIDs, 16 GiB memory, 4 CPUs, 20,000 files, 16 MiB per file, and 256 MiB total export.
+Move profile parsing out of `runner.py`; retain imports there so existing callers migrate without duplicate schemas. Create the final authority-owned seccomp and AppArmor policies, hash their exact bytes, and populate `profile.json` with those hashes, every Global Constraints pin, and explicit limits: 1,800-second agent timeout, 2,400-second evaluator timeout, 512 PIDs, 16 GiB memory, 4 CPUs, 20,000 files, 16 MiB per file, and 256 MiB total export. Task 4 may add enforcement code and tests but must not alter the pinned policy bytes without updating the profile and rerunning Task 1 tests.
 
 - [ ] **Step 4: Run profile and legacy runner tests**
 
@@ -88,7 +90,7 @@ Expected: all tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/swebench/profile.py benchmarks/swebench/profile.json benchmarks/swebench/runner.py benchmarks/swebench/tests/test_profile.py benchmarks/swebench/tests/test_runner.py
+git add benchmarks/swebench/profile.py benchmarks/swebench/profile.json benchmarks/swebench/policies benchmarks/swebench/runner.py benchmarks/swebench/tests/test_profile.py benchmarks/swebench/tests/test_runner.py
 git commit -s -m "refactor: define trusted SWE-bench profile pins"
 ```
 
@@ -216,8 +218,8 @@ git commit -s -m "feat: sign single-use benchmark attempts"
 
 **Files:**
 - Create: `benchmarks/swebench/containers.py`
-- Create: `benchmarks/swebench/policies/untrusted-seccomp.json`
-- Create: `benchmarks/swebench/policies/alloy-swebench-gate.apparmor`
+- Modify only if a demonstrated defect requires it: `benchmarks/swebench/policies/untrusted-seccomp.json`
+- Modify only if a demonstrated defect requires it: `benchmarks/swebench/policies/alloy-swebench-gate.apparmor`
 - Create: `benchmarks/swebench/tests/test_containers.py`
 
 **Interfaces:**
