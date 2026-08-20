@@ -590,7 +590,9 @@ class DockerRuntime:
         return handle
 
     def _inspect(self, identifier: str, *, check: bool = True) -> tuple[dict[str, object] | None, int]:
-        result = self._run(self._docker_arguments("inspect", identifier), check=check)
+        result = self._run(
+            self._docker_arguments("container", "inspect", identifier), check=check
+        )
         if result.returncode != 0:
             stderr = result.stderr.lower()
             if "no such object" in stderr or "no such container" in stderr:
@@ -885,7 +887,10 @@ class DockerRuntime:
         assert inspected is not None
         labels = self._mapping(self._mapping(inspected.get("Config")).get("Labels"))
         if labels.get(LABEL) != handle.run_id:
-            raise RuntimeError("container name was reused with a different ownership label")
+            raise RuntimeError(
+                "container name was reused with a different ownership label: "
+                f"expected {handle.run_id!r}, observed {labels.get(LABEL)!r}"
+            )
         self._assert_daemon_identity(handle)
         self._run(self._docker_arguments("rm", "--force", handle.name))
         self.assert_absent(handle)

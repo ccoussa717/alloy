@@ -385,7 +385,7 @@ class DockerRuntimeTests(unittest.TestCase):
             runner.calls[7][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                "inspect", "container-id",
+                "container", "inspect", "container-id",
             ],
         )
         self.assertEqual(runner.calls[8][0], identity_command)
@@ -455,7 +455,9 @@ class DockerRuntimeTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             runtime.create(self.spec, before_create=lambda: attempted.append(True))
         self.assertEqual(attempted, [True])
-        self.assertEqual(scripted.calls[-1][0][-2:], ["inspect", self.spec.name])
+        self.assertEqual(
+            scripted.calls[-1][0][-3:], ["container", "inspect", self.spec.name]
+        )
 
     def test_explicit_dns_servers_are_validated_emitted_and_inspected(self):
         spec = dataclasses.replace(self.spec, dns_servers=("192.0.2.1",))
@@ -957,7 +959,7 @@ class DockerRuntimeTests(unittest.TestCase):
             runner.calls[9][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                "inspect", "alloy-agent-run-123",
+                "container", "inspect", "alloy-agent-run-123",
             ],
         )
         self.assertEqual(
@@ -971,7 +973,7 @@ class DockerRuntimeTests(unittest.TestCase):
             runner.calls[13][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                "inspect", "alloy-agent-run-123",
+                "container", "inspect", "alloy-agent-run-123",
             ],
         )
 
@@ -1192,7 +1194,8 @@ class DockerRuntimeTests(unittest.TestCase):
             "deny /proc/*/mem rwklx,",
             "deny /sys/** wklx,",
             "signal (send, receive) peer=alloy-swebench-gate,",
-            "deny signal (send, receive) peer=unconfined,",
+            "signal receive peer=unconfined,",
+            "deny signal send peer=unconfined,",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, policy)

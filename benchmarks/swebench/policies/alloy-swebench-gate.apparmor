@@ -16,7 +16,8 @@ profile alloy-swebench-gate flags=(attach_disconnected,mediate_deleted) {
   deny pivot_root,
   deny ptrace (read, trace),
   signal (send, receive) peer=alloy-swebench-gate,
-  deny signal (send, receive) peer=unconfined,
+  signal receive peer=unconfined,
+  deny signal send peer=unconfined,
 
   deny /proc/acpi/** rwklx,
   deny /proc/*/mem rwklx,

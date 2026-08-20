@@ -218,7 +218,7 @@ class TrustedRunServices:
 
     def __init__(self, config: TrustedServiceConfig) -> None:
         self.config = config
-        self.candidate = None
+        self.verified_candidate = None
         self.fetched: FetchedCandidate | None = None
         self.install: VerifiedCandidateInstall | None = None
         self.target: PreparedTarget | None = None
@@ -297,17 +297,17 @@ class TrustedRunServices:
         if observed_tree != config.host_config.coordinator_tree_sha256:
             raise RuntimeError("coordinator tree digest differs from the host trust anchor")
         policy = load_policy_from_commit(config.repository, config.authority_commit)
-        self.candidate = verify_candidate(
+        self.verified_candidate = verify_candidate(
             config.repository, config.authority_commit, candidate_commit, policy
         )
         self._run_id = (
-            f"alloy-{self.candidate.version}-{candidate_commit[:12]}-{secrets.token_hex(6)}"
+            f"alloy-{self.verified_candidate.version}-{candidate_commit[:12]}-{secrets.token_hex(6)}"
         )
         self.writer = ResultWriter(config.results_root, self.run_id)
         state.run_dir = str(self.writer.run_dir)
         state.manifest.update(
             schema_version=1,
-            authority_commit=self.candidate.authority_commit,
+            authority_commit=self.verified_candidate.authority_commit,
             coordinator_tree_sha256=observed_tree,
             host_config={
                 "gate_public_key_sha256": config.host_config.gate_public_key_sha256,
@@ -318,9 +318,9 @@ class TrustedRunServices:
         )
 
     def candidate(self, candidate_commit: str, state: _RunState) -> None:
-        if self.candidate is None:
+        if self.verified_candidate is None:
             raise RuntimeError("candidate verification did not complete")
-        fetched = self.config.fetcher.fetch_candidate(self.candidate)
+        fetched = self.config.fetcher.fetch_candidate(self.verified_candidate)
         npm_cache = self.config.fetcher.fetch_npm_cache(fetched)
         bun = self.config.fetcher.fetch_bun()
         self.fetched = replace(fetched, npm_cache=npm_cache, bun_archive=bun)
@@ -426,10 +426,10 @@ class TrustedRunServices:
                 }
             )
         ).hexdigest()
-        if self.candidate is None:
+        if self.verified_candidate is None:
             raise RuntimeError("candidate verification did not complete")
         return AttemptKey(
-            self.candidate.candidate_commit,
+            self.verified_candidate.candidate_commit,
             profile.instance_id,
             profile.dataset.revision,
             profile.dataset.row_sha256,

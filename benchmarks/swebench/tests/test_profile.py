@@ -70,7 +70,7 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             profile.security_policy.apparmor_sha256,
-            "aa784c3e41c4467450c85bc313c97ef3bd1b0770bf8900a6a61bd75ba09f6d50",
+            "205bdc1b42fc317558e89e450f1810801b2db817e212f5701d07b5aa12799eeb",
         )
 
     def test_profile_dataclasses_are_frozen(self):

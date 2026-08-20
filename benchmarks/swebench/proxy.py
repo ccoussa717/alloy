@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from benchmarks.swebench.cleanup import CleanupUncertaintyError
+try:
+    from benchmarks.swebench.cleanup import CleanupUncertaintyError
+except ModuleNotFoundError as error:
+    if error.name not in {"benchmarks", "benchmarks.swebench"}:
+        raise
+    from cleanup import CleanupUncertaintyError
 
 if TYPE_CHECKING:
     from benchmarks.swebench.containers import ContainerHandle, DockerRuntime
@@ -612,23 +617,29 @@ class ProxyNetwork:
     def _ruleset(
         table: str,
         run_id: str,
-        bridge: str,
+        agent_bridge: str | None,
+        egress_bridge: str,
         proxy_ip: str,
         relay_ip: str,
         relay_port: int,
     ) -> str:
+        agent_input = "" if agent_bridge is None else (
+            f'  iifname "{agent_bridge}" ip saddr 0.0.0.0/0 drop\n'
+            f'  iifname "{agent_bridge}" ip6 saddr ::/0 drop\n'
+        )
         return f"""table inet {table} {{
  comment \"{LABEL}={run_id}\"
  chain input {{
   type filter hook input priority -1; policy accept;
-  iifname \"{bridge}\" ip saddr {proxy_ip} ip daddr {relay_ip} tcp dport {relay_port} accept
-  iifname \"{bridge}\" ip saddr 0.0.0.0/0 drop
-  iifname \"{bridge}\" ip6 saddr ::/0 drop
+{agent_input}\
+  iifname \"{egress_bridge}\" ip saddr {proxy_ip} ip daddr {relay_ip} tcp dport {relay_port} accept
+  iifname \"{egress_bridge}\" ip saddr 0.0.0.0/0 drop
+  iifname \"{egress_bridge}\" ip6 saddr ::/0 drop
  }}
  chain forward {{
   type filter hook forward priority -1; policy accept;
-  iifname \"{bridge}\" ip saddr 0.0.0.0/0 drop
-  iifname \"{bridge}\" ip6 saddr ::/0 drop
+  iifname \"{egress_bridge}\" ip saddr 0.0.0.0/0 drop
+  iifname \"{egress_bridge}\" ip6 saddr ::/0 drop
  }}
 }}
 """
@@ -637,6 +648,11 @@ class ProxyNetwork:
         self._nft(("-f", "-"), input=ruleset)
         if self._nft_owner(table) != self._run_id:
             raise ProxyStateError("could not prove nftables ownership after transaction")
+
+    def _replace_firewall(self, table: str, ruleset: str) -> None:
+        self._nft(("-f", "-"), input=f"delete table inet {table}\n{ruleset}")
+        if self._nft_owner(table) != self._run_id:
+            raise ProxyStateError("could not prove nftables ownership after replacement")
 
     def _start_proxy(
         self,
@@ -650,6 +666,7 @@ class ProxyNetwork:
 
         proxy_path = self.authority_root / "benchmarks/swebench/proxy.py"
         server_path = self.authority_root / "benchmarks/swebench/proxy_server.py"
+        cleanup_path = self.authority_root / "benchmarks/swebench/cleanup.py"
         spec = ContainerSpec(
             name=f"alloy-proxy-{token}",
             run_id=run_id,
@@ -665,6 +682,7 @@ class ProxyNetwork:
             mounts=(
                 MountSpec(proxy_path, "/gate/proxy.py", True, "bind"),
                 MountSpec(server_path, "/gate/proxy_server.py", True, "bind"),
+                MountSpec(cleanup_path, "/gate/cleanup.py", True, "bind"),
             ),
             dns_servers=("192.0.2.1",),
         )
@@ -762,7 +780,13 @@ class ProxyNetwork:
             self._relay = self.relay_factory((relay_ip, 0), self.ollama_origin)
             relay_port = int(self._relay.address[1])
             ruleset = self._ruleset(
-                nft_table, run_id, f"ase{token}", egress_ip, relay_ip, relay_port
+                nft_table,
+                run_id,
+                None,
+                f"ase{token}",
+                egress_ip,
+                relay_ip,
+                relay_port,
             )
             self._nft_table = nft_table
             self._apply_firewall(nft_table, ruleset)
@@ -777,6 +801,16 @@ class ProxyNetwork:
                 egress_ip,
             )
             self.ready_probe(agent_ip, PROXY_PORT)
+            final_ruleset = self._ruleset(
+                nft_table,
+                run_id,
+                f"asa{token}",
+                f"ase{token}",
+                egress_ip,
+                relay_ip,
+                relay_port,
+            )
+            self._replace_firewall(nft_table, final_ruleset)
             inspection = self.runtime.inspect_security(
                 self._container,
                 proxy_spec,

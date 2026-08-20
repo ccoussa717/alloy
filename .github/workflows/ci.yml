@@ -66,6 +66,16 @@ jobs:
         env:
           ALLOY_REQUIRE_DOCKER_TEST: "1"
 
+      - name: Verify SWE-bench Docker isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apparmor-utils nftables
+          sudo apparmor_parser -r benchmarks/swebench/policies/alloy-swebench-gate.apparmor
+          sudo --preserve-env=PATH,ALLOY_SWEBENCH_REQUIRE_DOCKER \
+            python3 -m unittest benchmarks.swebench.tests.test_docker_integration -v
+        env:
+          ALLOY_SWEBENCH_REQUIRE_DOCKER: "1"
+
       - name: Verify packed OpenTUI with the real backend in a PTY
         run: npm run verify:opentui-packed
 

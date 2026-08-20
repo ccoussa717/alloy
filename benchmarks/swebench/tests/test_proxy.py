@@ -475,9 +475,14 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(len(creates), 2)
         self.assertIn("--internal", creates[0])
         self.assertNotIn("--internal", creates[1])
-        transaction = [kwargs["input"] for args, kwargs in self.nft_calls if args[-2:] == ("-f", "-")][0]
+        transactions = [
+            kwargs["input"] for args, kwargs in self.nft_calls if args[-2:] == ("-f", "-")
+        ]
+        self.assertEqual(len(transactions), 2)
+        transaction = transactions[-1]
         self.assertIn("table inet alloy_swe_272812a7", transaction)
         self.assertIn("ip saddr 172.29.0.2 ip daddr 172.29.0.1 tcp dport 43123 accept", transaction)
+        self.assertIn('iifname "asa272812a7" ip saddr 0.0.0.0/0 drop', transaction)
         self.assertIn('iifname "ase272812a7"', transaction)
         self.assertIn("ip6 saddr ::/0 drop", transaction)
         self.assertIn("forward", transaction)

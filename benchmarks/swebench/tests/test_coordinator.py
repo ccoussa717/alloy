@@ -681,7 +681,7 @@ class TrustedRunServicesTests(unittest.TestCase):
         )
         services = TrustedRunServices(config)
         services._run_id = "run"
-        services.candidate = VerifiedCandidate("b" * 40, SHA, "1.1.26", ())
+        services.verified_candidate = VerifiedCandidate("b" * 40, SHA, "1.1.26", ())
         services.install = VerifiedCandidateInstall(
             "sha256:" + "1" * 64,
             "1.1.26",
