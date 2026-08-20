@@ -300,13 +300,15 @@ leaves the claim in place and blocks another attempt.
 
 Official release evidence is accepted only from the designated release host and
 includes a signed claim and result manifest using a gate-specific signing key
-whose public key is pinned by the authority commit. The private key remains in
-host-protected storage and is never mounted into any container. An override is a
-separate explicit CLI action requiring a maintainer-supplied reason. It mints
-exactly one signed next-ordinal claim, appends an audit record, and cannot
-authorize a third run without another explicit action. Runs elsewhere or
-without a valid signed unconsumed ordinal may be experiments but cannot satisfy
-the release gate.
+whose public-key digest is pinned by the root-owned host configuration and its
+audited provisioning receipt before the candidate exists. Authority code
+contains the signature-verification implementation but does not choose or
+replace that external trust root. The private key remains in host-protected
+storage and is never mounted into any container. An override is a separate
+explicit CLI action requiring a maintainer-supplied reason. It mints exactly one
+signed next-ordinal claim, appends an audit record, and cannot authorize a third
+run without another explicit action. Runs elsewhere or without a valid signed
+unconsumed ordinal may be experiments but cannot satisfy the release gate.
 
 ## Verification
 
