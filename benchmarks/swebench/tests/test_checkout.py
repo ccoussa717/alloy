@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import os
 import subprocess
@@ -57,6 +58,21 @@ def archive_worktree(source: Path, destination: Path) -> None:
             )
 
 
+def write_sparse_tar(path: Path, members: list[tuple[str, int]]) -> None:
+    with path.open("wb") as output:
+        for name, size in members:
+            member = tarfile.TarInfo(name)
+            member.uid = member.gid = 65532
+            member.size = size
+            output.write(member.tobuf())
+            output.seek((size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE * tarfile.BLOCKSIZE, 1)
+        output.write(b"\0" * tarfile.RECORDSIZE)
+
+
+def staging_root(exported) -> Path:
+    return Path(os.readlink(f"/proc/self/fd/{exported._owner.root_fd}"))
+
+
 class ExportValidationTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -99,8 +115,11 @@ class ExportValidationTests(unittest.TestCase):
 
         self.assertEqual(exported.file_count, 3)
         self.assertEqual(exported.total_bytes, 5)
-        self.assertEqual((exported.root / "bin" / "tool").stat().st_mode & 0o777, 0o755)
-        self.assertEqual(os.readlink(exported.root / "current"), "bin/tool")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            exported.total_bytes = 0
+        root = staging_root(exported)
+        self.assertEqual((root / "bin" / "tool").stat().st_mode & 0o777, 0o755)
+        self.assertEqual(os.readlink(root / "current"), "bin/tool")
         exported.close()
 
     def test_rejects_non_normalized_absolute_parent_and_git_paths(self):
@@ -207,6 +226,21 @@ class ExportValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "file count"):
             validate_exported_tar(self.archive, self.bounds)
 
+    def test_rejects_exact_256_mib_plus_one_total_from_sparse_tar(self):
+        write_sparse_tar(
+            self.archive,
+            [(f"part-{index:02d}", 16 * 1024**2) for index in range(16)]
+            + [("overflow", 1)],
+        )
+        self.assertLess(self.archive.stat().st_blocks * 512, 1024 * 1024)
+        with mock.patch.object(
+            checkout_module,
+            "_write_regular",
+            side_effect=AssertionError("payload extraction must not start"),
+        ):
+            with self.assertRaisesRegex(ValueError, "total"):
+                validate_exported_tar(self.archive, self.bounds)
+
     def test_rejects_untrusted_ownership_and_archive_symlinks(self):
         member, content = self.file("owned")
         member.uid = member.gid = 1234
@@ -267,8 +301,9 @@ class TrustedCheckoutTests(unittest.TestCase):
                 output.addfile(member, io.BytesIO(b"x"))
             exported = validate_exported_tar(archive, ExportBounds(max_files=3))
             self.assertEqual(exported.file_count, 3)
-            self.assertEqual((exported.root / "one").stat().st_mode & 0o777, 0o755)
-            self.assertEqual((exported.root / "one" / "two").stat().st_mode & 0o777, 0o755)
+            root_path = staging_root(exported)
+            self.assertEqual((root_path / "one").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((root_path / "one" / "two").stat().st_mode & 0o777, 0o755)
             exported.close()
 
     def test_non_utf8_text_is_recaptured_as_an_applicable_binary_patch(self):
@@ -295,6 +330,81 @@ class TrustedCheckoutTests(unittest.TestCase):
             self.assertIn(b"GIT binary patch", patch)
             git(target, "apply", "--binary", "-", input=patch)
             self.assertEqual((target / "changed.txt").read_bytes(), b"\xffafter\n")
+            exported.close()
+
+    def test_reconstruction_rejects_staging_mutation_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            initialize_repository(base)
+            export = root / "export.tar"
+            archive_worktree(base, export)
+            exported = validate_exported_tar(export, ExportBounds())
+            staged = staging_root(exported) / "changed.txt"
+            staged.write_bytes(b"evil\n")
+
+            with self.assertRaisesRegex(RuntimeError, "changed|digest|size"):
+                reconstruct_trusted_checkout(base, exported, root / "trusted")
+            exported.close()
+
+    def test_capture_is_immune_to_trusted_checkout_mutation_after_reconstruction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            agent = root / "agent"
+            target = root / "target"
+            trusted = root / "trusted"
+            initialize_repository(base)
+            git(root, "clone", "-q", str(base), str(agent))
+            git(root, "clone", "-q", str(base), str(target))
+            (agent / "changed.txt").write_text("exported\n")
+            export = root / "export.tar"
+            archive_worktree(agent, export)
+            exported = validate_exported_tar(export, ExportBounds())
+            reconstruct_trusted_checkout(base, exported, trusted)
+            (trusted / "changed.txt").write_text("mutated later\n")
+
+            patch = capture_patch(trusted)
+            git(target, "apply", "--binary", "-", input=patch)
+            self.assertEqual((target / "changed.txt").read_text(), "exported\n")
+            exported.close()
+
+    def test_capture_includes_exported_files_even_when_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            agent = root / "agent"
+            target = root / "target"
+            trusted = root / "trusted"
+            initialize_repository(base)
+            git(root, "clone", "-q", str(base), str(agent))
+            git(root, "clone", "-q", str(base), str(target))
+            (agent / "ignored.bin").write_bytes(b"\0ignored but exported\n")
+            export = root / "export.tar"
+            archive_worktree(agent, export)
+            exported = validate_exported_tar(export, ExportBounds())
+            reconstruct_trusted_checkout(base, exported, trusted)
+
+            patch = capture_patch(trusted)
+            git(target, "apply", "--binary", "-", input=patch)
+            self.assertEqual((target / "ignored.bin").read_bytes(), b"\0ignored but exported\n")
+            exported.close()
+
+    def test_patch_output_limit_fails_before_returning_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            agent = root / "agent"
+            initialize_repository(base)
+            git(root, "clone", "-q", str(base), str(agent))
+            (agent / "changed.txt").write_text("a much larger changed value\n")
+            export = root / "export.tar"
+            archive_worktree(agent, export)
+            exported = validate_exported_tar(export, ExportBounds())
+
+            with mock.patch.object(checkout_module, "_patch_limit", return_value=32):
+                with self.assertRaisesRegex(RuntimeError, "patch output.*bound"):
+                    reconstruct_trusted_checkout(base, exported, root / "trusted")
             exported.close()
 
     def test_reconstructs_complete_tree_and_patch_applies_to_another_clean_clone(self):
@@ -338,7 +448,7 @@ class TrustedCheckoutTests(unittest.TestCase):
             self.assertFalse((target / "deleted.txt").exists())
             self.assertTrue((target / "safe-link").is_symlink())
             self.assertEqual(os.readlink(target / "safe-link"), "new.txt")
-            self.assertFalse((target / "ignored.bin").exists())
+            self.assertEqual((target / "ignored.bin").read_bytes(), b"ignored\n")
             self.assertIn(b"GIT binary patch", patch)
             for call in run.call_args_list:
                 command = call.args[0]
@@ -348,6 +458,37 @@ class TrustedCheckoutTests(unittest.TestCase):
                     ["-c", "core.hooksPath=/dev/null", "-c", "diff.external="],
                 )
                 self.assertEqual(dict(call.kwargs["env"]), dict(checkout_module.FIXED_GIT_ENV))
+            exported.close()
+
+    def test_twenty_thousand_files_use_constant_git_process_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            initialize_repository(base)
+            archive = root / "export.tar"
+            with tarfile.open(archive, "w") as output:
+                for index in range(20_000):
+                    member = tarfile.TarInfo(f"generated/file-{index:05d}")
+                    member.uid = member.gid = 65532
+                    output.addfile(member, io.BytesIO())
+            exported = validate_exported_tar(archive, ExportBounds(max_files=20_001))
+            trusted = root / "trusted"
+
+            real_popen = subprocess.Popen
+            commands = []
+
+            def recording_popen(*args, **kwargs):
+                commands.append(args[0])
+                return real_popen(*args, **kwargs)
+
+            with mock.patch.object(
+                checkout_module.subprocess,
+                "Popen",
+                side_effect=recording_popen,
+            ):
+                reconstruct_trusted_checkout(base, exported, trusted)
+            self.assertEqual(len([command for command in commands if "add" in command]), 1)
+            self.assertEqual(len([command for command in commands if "diff" in command]), 1)
             exported.close()
 
     def test_agent_git_metadata_is_rejected_and_never_copied(self):

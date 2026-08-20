@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
 import tempfile
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
+from typing import BinaryIO
 
 
 GIT = "/usr/bin/git"
@@ -33,7 +38,9 @@ FIXED_GIT_ENV = MappingProxyType(
     }
 )
 GIT_SECURITY_OPTIONS = ("-c", "core.hooksPath=/dev/null", "-c", "diff.external=")
-_TRUSTED_CHECKOUTS: set[tuple[int, int, str]] = set()
+PATCH_EXPANSION_FACTOR = 3
+PATCH_FILE_OVERHEAD = 8192
+PATCH_FIXED_OVERHEAD = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,24 +63,79 @@ class _TreeEntry:
     kind: str
     mode: int
     linkname: str | None = None
+    size: int = 0
+    digest: str = ""
+    device: int = 0
+    inode: int = 0
 
 
-@dataclass
+@dataclass(frozen=True)
+class _ScannedEntry:
+    path: PurePosixPath
+    kind: str
+    mode: int
+    linkname: str | None
+    size: int
+    implicit: bool = False
+
+
+class _TreeOwner:
+    def __init__(self, temporary: tempfile.TemporaryDirectory[str], root_fd: int) -> None:
+        self.temporary = temporary
+        self.root_fd = root_fd
+        self.consumed = False
+
+    def consume(self) -> int:
+        if self.consumed or self.root_fd < 0:
+            raise ValueError("validated export has already been consumed")
+        self.consumed = True
+        return os.dup(self.root_fd)
+
+    def close(self) -> None:
+        if self.root_fd >= 0:
+            os.close(self.root_fd)
+            self.root_fd = -1
+        self.temporary.cleanup()
+
+
+@dataclass(frozen=True)
 class ValidatedTree:
-    root: Path
     entries: tuple[_TreeEntry, ...]
     file_count: int
     total_bytes: int
-    _temporary: tempfile.TemporaryDirectory[str] = field(repr=False, compare=False)
+    bounds: ExportBounds
+    _owner: _TreeOwner
 
     def close(self) -> None:
-        self._temporary.cleanup()
+        self._owner.close()
 
     def __enter__(self) -> ValidatedTree:
         return self
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+class _CapturedPatch:
+    def __init__(self, output: BinaryIO, size: int) -> None:
+        self.output = output
+        self.size = size
+
+    def read(self) -> bytes:
+        try:
+            self.output.seek(0)
+            data = self.output.read(self.size + 1)
+            if len(data) != self.size:
+                raise RuntimeError("captured patch storage changed size")
+            return data
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.output.close()
+
+
+_CAPTURED_PATCHES: dict[tuple[int, int, str], _CapturedPatch] = {}
 
 
 def _normalized_path(name: str) -> PurePosixPath:
@@ -124,7 +186,9 @@ def _safe_symlink_target(path: PurePosixPath, target: str) -> str:
     return target
 
 
-def _validate_symlink_graph(entries: dict[PurePosixPath, _TreeEntry]) -> None:
+def _validate_symlink_graph(
+    entries: dict[PurePosixPath, _TreeEntry | _ScannedEntry],
+) -> None:
     links = {
         path: PurePosixPath(entry.linkname or "")
         for path, entry in entries.items()
@@ -221,7 +285,7 @@ def _write_regular(
     mode: int,
     bounds: ExportBounds,
     total_bytes: int,
-) -> int:
+) -> tuple[int, str]:
     if member.size < 0 or member.size > bounds.max_file_bytes:
         raise ValueError("archive member exceeds the per-file byte bound")
     if total_bytes + member.size > bounds.max_total_bytes:
@@ -232,6 +296,7 @@ def _write_regular(
     parent = _open_directory(root_fd, path.parent.parts, create=True)
     descriptor = -1
     written = 0
+    digest = hashlib.sha256()
     try:
         descriptor = os.open(
             path.name,
@@ -248,13 +313,14 @@ def _write_regular(
                 count = os.write(descriptor, view)
                 view = view[count:]
             written += len(chunk)
+            digest.update(chunk)
         os.fchmod(descriptor, mode)
     finally:
         source.close()
         if descriptor >= 0:
             os.close(descriptor)
         os.close(parent)
-    return total_bytes + written
+    return total_bytes + written, digest.hexdigest()
 
 
 def _create_directory(root_fd: int, path: PurePosixPath, mode: int) -> None:
@@ -299,98 +365,204 @@ class _BoundedTarReader:
         return self.source.tell()  # type: ignore[no-any-return, union-attr]
 
 
-def validate_exported_tar(path: Path, bounds: ExportBounds) -> ValidatedTree:
-    temporary = tempfile.TemporaryDirectory(prefix="alloy-swebench-export-")
-    root = Path(temporary.name)
-    root_fd = -1
-    archive_fd = -1
-    entries: dict[PurePosixPath, _TreeEntry] = {}
+def _archive_limit(bounds: ExportBounds) -> int:
+    archive_overhead = bounds.max_files * (
+        2 * tarfile.BLOCKSIZE + MAX_PATH_BYTES + tarfile.BLOCKSIZE
+    ) + tarfile.RECORDSIZE
+    return bounds.max_total_bytes + archive_overhead
+
+
+def _snapshot_archive(path: Path, bounds: ExportBounds) -> BinaryIO:
+    try:
+        source_fd = os.open(path, os.O_RDONLY | NOFOLLOW)
+    except OSError as error:
+        raise ValueError("exported tar is malformed or unsafe") from error
+    snapshot = tempfile.TemporaryFile()
+    copied = 0
+    try:
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise ValueError("export must be a regular tar file")
+        limit = _archive_limit(bounds)
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > limit:
+                raise ValueError("tar file exceeds the archive byte bound")
+            view = memoryview(chunk)
+            while view:
+                written = snapshot.write(view)
+                if written is None or written <= 0:
+                    raise OSError("could not snapshot exported tar")
+                view = view[written:]
+        snapshot.flush()
+        snapshot.seek(0)
+        return snapshot
+    except BaseException:
+        snapshot.close()
+        raise
+    finally:
+        os.close(source_fd)
+
+
+def _open_archive(snapshot: BinaryIO) -> tarfile.TarFile:
+    snapshot.seek(0)
+    return tarfile.open(fileobj=_BoundedTarReader(snapshot), mode="r:")
+
+
+def _scan_archive(snapshot: BinaryIO, bounds: ExportBounds) -> tuple[tuple[_ScannedEntry, ...], int]:
+    entries: dict[PurePosixPath, _ScannedEntry] = {}
+    explicit_order: list[PurePosixPath] = []
     implicit_directories: set[PurePosixPath] = set()
     total_bytes = 0
     try:
-        try:
-            archive_fd = os.open(path, os.O_RDONLY | NOFOLLOW)
-        except OSError as error:
-            raise ValueError("exported tar is malformed or unsafe") from error
-        metadata = os.fstat(archive_fd)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("export must be a regular tar file")
-        archive_overhead = bounds.max_files * (
-            2 * tarfile.BLOCKSIZE + MAX_PATH_BYTES + tarfile.BLOCKSIZE
-        ) + tarfile.RECORDSIZE
-        if metadata.st_size > bounds.max_total_bytes + archive_overhead:
-            raise ValueError("tar file exceeds the archive byte bound")
-        root_fd = os.open(root, os.O_RDONLY | DIRECTORY | NOFOLLOW)
-        with os.fdopen(archive_fd, "rb", closefd=True) as archive_file:
-            archive_fd = -1
-            try:
-                archive = tarfile.open(fileobj=_BoundedTarReader(archive_file), mode="r:")
-                with archive:
-                    for member in archive:
-                        path_value = _normalized_path(member.name)
-                        if path_value in entries:
-                            raise ValueError("archive contains duplicate member names")
-                        kind = _member_kind(member)
-                        _validate_owner(member)
-                        mode = _normalized_mode(member, kind)
-                        ancestors = tuple(path_value.parents)[:-1]
-                        for ancestor in ancestors:
-                            existing = entries.get(ancestor)
-                            if existing is not None and existing.kind != "directory":
-                                raise ValueError("archive member path has a parent type conflict")
-                            if existing is None and ancestor not in implicit_directories:
-                                if len(entries) + len(implicit_directories) >= bounds.max_files:
-                                    raise ValueError("archive exceeds the file count bound")
-                                implicit_directories.add(ancestor)
-                        if path_value not in implicit_directories:
-                            if len(entries) + len(implicit_directories) >= bounds.max_files:
-                                raise ValueError("archive exceeds the file count bound")
-                        if path_value in implicit_directories and kind != "directory":
-                            raise ValueError("archive member path has an implicit directory conflict")
-                        linkname = None
-                        if kind == "symlink":
-                            linkname = _safe_symlink_target(path_value, member.linkname)
-                            _create_symlink(root_fd, path_value, linkname)
-                        elif kind == "directory":
-                            _create_directory(root_fd, path_value, mode)
-                        else:
-                            total_bytes = _write_regular(
-                                archive,
-                                member,
-                                root_fd,
-                                path_value,
-                                mode,
-                                bounds,
-                                total_bytes,
-                            )
-                        if kind == "directory":
-                            implicit_directories.discard(path_value)
-                        entries[path_value] = _TreeEntry(path_value, kind, mode, linkname)
-                    _validate_symlink_graph(entries)
-            except (tarfile.TarError, OSError) as error:
-                raise ValueError("exported tar is malformed or unsafe") from error
-        implicit_entries = tuple(
-            _TreeEntry(path, "directory", 0o755)
-            for path in sorted(
-                implicit_directories - entries.keys(), key=lambda value: (len(value.parts), value.parts)
-            )
+        with _open_archive(snapshot) as archive:
+            for member in archive:
+                path_value = _normalized_path(member.name)
+                if path_value in entries:
+                    raise ValueError("archive contains duplicate member names")
+                kind = _member_kind(member)
+                _validate_owner(member)
+                mode = _normalized_mode(member, kind)
+                size = member.size if kind == "file" else 0
+                if size < 0 or size > bounds.max_file_bytes:
+                    raise ValueError("archive member exceeds the per-file byte bound")
+                if total_bytes + size > bounds.max_total_bytes:
+                    raise ValueError("archive exceeds the total byte bound")
+                total_bytes += size
+                ancestors = tuple(path_value.parents)[:-1]
+                for ancestor in ancestors:
+                    existing = entries.get(ancestor)
+                    if existing is not None and existing.kind != "directory":
+                        raise ValueError("archive member path has a parent type conflict")
+                    if existing is None and ancestor not in implicit_directories:
+                        if len(entries) + len(implicit_directories) >= bounds.max_files:
+                            raise ValueError("archive exceeds the file count bound")
+                        implicit_directories.add(ancestor)
+                if path_value not in implicit_directories:
+                    if len(entries) + len(implicit_directories) >= bounds.max_files:
+                        raise ValueError("archive exceeds the file count bound")
+                if path_value in implicit_directories and kind != "directory":
+                    raise ValueError("archive member path has an implicit directory conflict")
+                linkname = (
+                    _safe_symlink_target(path_value, member.linkname)
+                    if kind == "symlink"
+                    else None
+                )
+                if kind == "directory":
+                    implicit_directories.discard(path_value)
+                entries[path_value] = _ScannedEntry(
+                    path_value, kind, mode, linkname, size
+                )
+                explicit_order.append(path_value)
+        _validate_symlink_graph(entries)
+    except (tarfile.TarError, OSError) as error:
+        raise ValueError("exported tar is malformed or unsafe") from error
+    implicit_entries = tuple(
+        _ScannedEntry(path, "directory", 0o755, None, 0, True)
+        for path in sorted(
+            implicit_directories - entries.keys(),
+            key=lambda value: (len(value.parts), value.parts),
         )
-        for entry in implicit_entries:
+    )
+    return (
+        *implicit_entries,
+        *(entries[path] for path in explicit_order),
+    ), total_bytes
+
+
+def _entry_metadata(root_fd: int, scanned: _ScannedEntry, digest: str = "") -> _TreeEntry:
+    parent = _open_directory(root_fd, scanned.path.parent.parts, create=False)
+    try:
+        metadata = os.stat(scanned.path.name, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+    return _TreeEntry(
+        scanned.path,
+        scanned.kind,
+        scanned.mode,
+        scanned.linkname,
+        scanned.size,
+        digest,
+        metadata.st_dev,
+        metadata.st_ino,
+    )
+
+
+def _extract_archive(
+    snapshot: BinaryIO,
+    scanned_entries: tuple[_ScannedEntry, ...],
+    bounds: ExportBounds,
+    root_fd: int,
+) -> tuple[_TreeEntry, ...]:
+    explicit = [entry for entry in scanned_entries if not entry.implicit]
+    digests: dict[PurePosixPath, str] = {}
+    total_bytes = 0
+    try:
+        with _open_archive(snapshot) as archive:
+            for member, expected in zip(archive, explicit, strict=True):
+                observed = _normalized_path(member.name)
+                kind = _member_kind(member)
+                mode = _normalized_mode(member, kind)
+                if (
+                    observed != expected.path
+                    or kind != expected.kind
+                    or mode != expected.mode
+                    or member.size != expected.size
+                    or (kind == "symlink" and member.linkname != expected.linkname)
+                ):
+                    raise RuntimeError("owned tar snapshot changed after validation")
+                if kind == "symlink":
+                    assert expected.linkname is not None
+                    _create_symlink(root_fd, expected.path, expected.linkname)
+                elif kind == "directory":
+                    _create_directory(root_fd, expected.path, expected.mode)
+                else:
+                    total_bytes, digest = _write_regular(
+                        archive,
+                        member,
+                        root_fd,
+                        expected.path,
+                        expected.mode,
+                        bounds,
+                        total_bytes,
+                    )
+                    digests[expected.path] = digest
+    except (tarfile.TarError, OSError) as error:
+        raise ValueError("exported tar is malformed or unsafe") from error
+    for entry in scanned_entries:
+        if entry.implicit:
             _create_directory(root_fd, entry.path, entry.mode)
-        validated_entries = (*implicit_entries, *entries.values())
+    return tuple(
+        _entry_metadata(root_fd, entry, digests.get(entry.path, ""))
+        for entry in scanned_entries
+    )
+
+
+def validate_exported_tar(path: Path, bounds: ExportBounds) -> ValidatedTree:
+    snapshot = _snapshot_archive(path, bounds)
+    temporary = tempfile.TemporaryDirectory(prefix="alloy-swebench-export-")
+    root = Path(temporary.name)
+    root_fd = -1
+    try:
+        scanned_entries, total_bytes = _scan_archive(snapshot, bounds)
+        root_fd = os.open(root, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        validated_entries = _extract_archive(snapshot, scanned_entries, bounds, root_fd)
+        owner = _TreeOwner(temporary, root_fd)
+        root_fd = -1
         return ValidatedTree(
-            root,
             validated_entries,
-            len(entries.keys() | implicit_directories),
+            len(validated_entries),
             total_bytes,
-            temporary,
+            bounds,
+            owner,
         )
     except BaseException:
         temporary.cleanup()
         raise
     finally:
-        if archive_fd >= 0:
-            os.close(archive_fd)
+        snapshot.close()
         if root_fd >= 0:
             os.close(root_fd)
 
@@ -435,14 +607,30 @@ def _remove_at(parent_fd: int, name: str) -> None:
     os.rmdir(name, dir_fd=parent_fd)
 
 
-def _copy_regular(source_root: int, destination_root: int, entry: _TreeEntry) -> None:
+def _copy_regular(
+    source_root: int,
+    destination_root: int,
+    entry: _TreeEntry,
+    bounds: ExportBounds,
+    total_bytes: int,
+) -> int:
     source_parent = _open_directory(source_root, entry.path.parent.parts, create=False)
     destination_parent = _open_directory(destination_root, entry.path.parent.parts, create=True)
     source = destination = -1
+    copied = 0
+    digest = hashlib.sha256()
     try:
         source = os.open(entry.path.name, os.O_RDONLY | NOFOLLOW, dir_fd=source_parent)
-        if not stat.S_ISREG(os.fstat(source).st_mode):
-            raise RuntimeError("validated export staging tree changed type")
+        before = os.fstat(source)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_dev != entry.device
+            or before.st_ino != entry.inode
+            or before.st_size != entry.size
+        ):
+            raise RuntimeError("validated export staging file changed identity or size")
+        if entry.size > bounds.max_file_bytes or total_bytes + entry.size > bounds.max_total_bytes:
+            raise RuntimeError("validated export exceeds copy byte bounds")
         destination = os.open(
             entry.path.name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
@@ -453,10 +641,23 @@ def _copy_regular(source_root: int, destination_root: int, entry: _TreeEntry) ->
             chunk = os.read(source, 1024 * 1024)
             if not chunk:
                 break
+            copied += len(chunk)
+            if copied > entry.size or total_bytes + copied > bounds.max_total_bytes:
+                raise RuntimeError("validated export changed size while copying")
+            digest.update(chunk)
             view = memoryview(chunk)
             while view:
                 count = os.write(destination, view)
                 view = view[count:]
+        after = os.fstat(source)
+        if (
+            copied != entry.size
+            or after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_size != before.st_size
+            or digest.hexdigest() != entry.digest
+        ):
+            raise RuntimeError("validated export staging file changed size or digest")
         os.fchmod(destination, entry.mode)
     finally:
         if source >= 0:
@@ -465,12 +666,141 @@ def _copy_regular(source_root: int, destination_root: int, entry: _TreeEntry) ->
             os.close(destination)
         os.close(source_parent)
         os.close(destination_parent)
+    return total_bytes + copied
+
+
+def _verify_nonregular(source_root: int, entry: _TreeEntry) -> None:
+    parent = _open_directory(source_root, entry.path.parent.parts, create=False)
+    try:
+        metadata = os.stat(entry.path.name, dir_fd=parent, follow_symlinks=False)
+        if metadata.st_dev != entry.device or metadata.st_ino != entry.inode:
+            raise RuntimeError("validated export staging entry changed identity")
+        if entry.kind == "directory" and not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError("validated export staging directory changed type")
+        if entry.kind == "symlink":
+            if not stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError("validated export staging symlink changed type")
+            if os.readlink(entry.path.name, dir_fd=parent) != entry.linkname:
+                raise RuntimeError("validated export staging symlink changed target")
+    finally:
+        os.close(parent)
+
+
+def _inventory_paths(root_fd: int) -> set[PurePosixPath]:
+    paths: set[PurePosixPath] = set()
+
+    def walk(directory_fd: int, prefix: PurePosixPath) -> None:
+        for name in os.listdir(directory_fd):
+            path = prefix / name
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            paths.add(path)
+            if stat.S_ISDIR(metadata.st_mode):
+                child = os.open(name, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=directory_fd)
+                try:
+                    walk(child, path)
+                finally:
+                    os.close(child)
+
+    walk(root_fd, PurePosixPath())
+    return paths
+
+
+def _patch_limit(bounds: ExportBounds) -> int:
+    return (
+        bounds.max_total_bytes * PATCH_EXPANSION_FACTOR
+        + bounds.max_files * PATCH_FILE_OVERHEAD
+        + PATCH_FIXED_OVERHEAD
+    )
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def _bounded_git_diff(checkout: Path, maximum_bytes: int) -> _CapturedPatch:
+    output = tempfile.TemporaryFile()
+    try:
+        process = subprocess.Popen(
+            [
+                GIT,
+                *GIT_SECURITY_OPTIONS,
+                "diff",
+                "--cached",
+                "--binary",
+                "--no-ext-diff",
+                "HEAD",
+                "--",
+            ],
+            cwd=checkout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=FIXED_GIT_ENV,
+            start_new_session=True,
+        )
+    except BaseException:
+        output.close()
+        raise
+    assert process.stdout is not None and process.stderr is not None
+    selector = selectors.DefaultSelector()
+    size = 0
+    stderr = bytearray()
+    deadline = time.monotonic() + 120
+    try:
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process(process)
+                raise RuntimeError("trusted Git diff timed out")
+            events = selector.select(min(remaining, 1.0))
+            for key, _mask in events:
+                chunk = os.read(key.fd, 1024 * 1024)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                if key.data == "stdout":
+                    size += len(chunk)
+                    if size > maximum_bytes:
+                        _terminate_process(process)
+                        raise RuntimeError("patch output exceeds the configured bound")
+                    view = memoryview(chunk)
+                    while view:
+                        written = output.write(view)
+                        if written is None or written <= 0:
+                            raise OSError("could not persist bounded patch output")
+                        view = view[written:]
+                elif len(stderr) < 4096:
+                    stderr.extend(chunk[: 4096 - len(stderr)])
+        returncode = process.wait()
+        if returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            message = f"trusted Git diff failed with exit {returncode}"
+            raise RuntimeError(f"{message}: {detail}" if detail else message)
+        output.flush()
+        output.seek(0)
+        return _CapturedPatch(output, size)
+    except BaseException:
+        if process.poll() is None:
+            _terminate_process(process)
+        output.close()
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
 
 
 def reconstruct_trusted_checkout(base: Path, exported: ValidatedTree, destination: Path) -> None:
     if destination.exists() or destination.is_symlink():
         raise ValueError("trusted checkout destination must not exist")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    source_fd = exported._owner.consume()
+    captured: _CapturedPatch | None = None
     try:
         _git(
             destination.parent,
@@ -489,41 +819,59 @@ def reconstruct_trusted_checkout(base: Path, exported: ValidatedTree, destinatio
         os.chmod(destination, 0o700)
         _git(destination, ("checkout", "--quiet", "--detach", "HEAD"))
         destination_fd = os.open(destination, os.O_RDONLY | DIRECTORY | NOFOLLOW)
-        source_fd = os.open(exported.root, os.O_RDONLY | DIRECTORY | NOFOLLOW)
         try:
+            expected_paths = {entry.path for entry in exported.entries}
+            if _inventory_paths(source_fd) != expected_paths:
+                raise RuntimeError("validated export staging inventory changed")
             for name in os.listdir(destination_fd):
                 if name != ".git":
                     _remove_at(destination_fd, name)
+            copied_bytes = 0
             for entry in exported.entries:
                 if entry.kind == "directory":
+                    _verify_nonregular(source_fd, entry)
                     _create_directory(destination_fd, entry.path, entry.mode)
                 elif entry.kind == "symlink":
+                    _verify_nonregular(source_fd, entry)
                     assert entry.linkname is not None
                     _create_symlink(destination_fd, entry.path, entry.linkname)
                 else:
-                    _copy_regular(source_fd, destination_fd, entry)
+                    copied_bytes = _copy_regular(
+                        source_fd,
+                        destination_fd,
+                        entry,
+                        exported.bounds,
+                        copied_bytes,
+                    )
+            if copied_bytes != exported.total_bytes:
+                raise RuntimeError("validated export copy total changed")
         finally:
-            os.close(source_fd)
             os.close(destination_fd)
+        git_fd, info_fd = _force_binary_attributes(destination)
+        try:
+            _git(destination, ("add", "-A", "-f", "--", "."))
+            captured = _bounded_git_diff(destination, _patch_limit(exported.bounds))
+        finally:
+            os.unlink("attributes", dir_fd=info_fd)
+            os.close(info_fd)
+            os.close(git_fd)
         os.chmod(destination, 0o755)
         metadata = os.stat(destination, follow_symlinks=False)
-        _TRUSTED_CHECKOUTS.add((metadata.st_dev, metadata.st_ino, str(destination.resolve())))
+        identity = (metadata.st_dev, metadata.st_ino, str(destination.resolve()))
+        previous = _CAPTURED_PATCHES.pop(identity, None)
+        if previous is not None:
+            previous.close()
+        assert captured is not None
+        _CAPTURED_PATCHES[identity] = captured
+        captured = None
     except BaseException:
+        if captured is not None:
+            captured.close()
         shutil.rmtree(destination, ignore_errors=True)
         raise
-
-
-def _capture_patch_bytes(checkout: Path) -> bytes:
-    patch = _git(checkout, ("diff", "--binary", "--no-ext-diff", "HEAD", "--"))
-    untracked = _git(checkout, ("ls-files", "--others", "--exclude-standard", "-z"))
-    for encoded_path in filter(None, untracked.split(b"\0")):
-        relative = os.fsdecode(encoded_path)
-        patch += _git(
-            checkout,
-            ("diff", "--binary", "--no-ext-diff", "--no-index", "--", "/dev/null", relative),
-            accepted_returncodes=frozenset({0, 1}),
-        )
-    return patch
+    finally:
+        os.close(source_fd)
+        exported.close()
 
 
 def _force_binary_attributes(checkout: Path) -> tuple[int, int]:
@@ -537,7 +885,9 @@ def _force_binary_attributes(checkout: Path) -> tuple[int, int]:
             0o600,
             dir_fd=info_fd,
         )
-        content = memoryview(b"* binary\n")
+        content = memoryview(
+            b"* binary -text -filter -ident -working-tree-encoding\n"
+        )
         while content:
             content = content[os.write(attributes_fd, content):]
         os.fsync(attributes_fd)
@@ -554,19 +904,7 @@ def _force_binary_attributes(checkout: Path) -> tuple[int, int]:
 def capture_patch(checkout: Path) -> bytes:
     metadata = os.stat(checkout, follow_symlinks=False)
     identity = (metadata.st_dev, metadata.st_ino, str(checkout.resolve()))
-    if identity not in _TRUSTED_CHECKOUTS:
+    captured = _CAPTURED_PATCHES.pop(identity, None)
+    if captured is None:
         raise ValueError("patch capture requires a freshly reconstructed trusted checkout")
-    _TRUSTED_CHECKOUTS.remove(identity)
-    patch = _capture_patch_bytes(checkout)
-    try:
-        patch.decode("utf-8")
-    except UnicodeDecodeError:
-        git_fd, info_fd = _force_binary_attributes(checkout)
-        try:
-            patch = _capture_patch_bytes(checkout)
-            patch.decode("utf-8")
-        finally:
-            os.unlink("attributes", dir_fd=info_fd)
-            os.close(info_fd)
-            os.close(git_fd)
-    return patch
+    return captured.read()
