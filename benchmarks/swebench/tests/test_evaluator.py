@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from benchmarks.swebench.evaluator import (
+    EvaluationExecution,
     EvaluatorEnvironment,
     install_locked_requirements,
     locked_distributions,
@@ -172,11 +173,17 @@ class EvaluatorConfinementTests(unittest.TestCase):
             predictions.write_text("{}\n")
             dataset.write_text("[]\n")
             environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
-            summary = root / "model.run-1.json"
+            scratch = root / "scratch"
+            scratch.mkdir()
+            summary = scratch / "model.run-1.json"
             summary.write_text(json.dumps({"schema_version": 2, "resolved_ids": [PROFILE.instance_id]}))
             with (
                 mock.patch.object(environment, "verify"),
-                mock.patch.object(environment, "_run_evaluator", return_value=("stdout", "stderr", summary)) as run,
+                mock.patch.object(
+                    environment,
+                    "_run_evaluator",
+                    return_value=EvaluationExecution("stdout", "stderr", scratch, "run-1"),
+                ) as run,
                 mock.patch.object(environment, "_verify_and_teardown_container") as teardown,
             ):
                 result = environment.run(predictions, dataset, "run-1")
@@ -186,6 +193,91 @@ class EvaluatorConfinementTests(unittest.TestCase):
         self.assertEqual(command[command.index("--max_workers") + 1], "1")
         self.assertIn("--no_pull", command)
         teardown.assert_called_once_with("run-1")
+        self.assertEqual(result.summary["schema_version"], 2)
+
+    def test_summary_is_not_located_read_or_parsed_before_verified_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.jsonl"
+            dataset = root / "dataset.json"
+            predictions.write_text("{}\n")
+            dataset.write_text("[]\n")
+            environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, VENV_PYTHON)
+            environment._image_id = "sha256:" + "a" * 64
+            events = []
+            original_glob = Path.glob
+            original_read_text = Path.read_text
+            original_json_loads = json.loads
+            executions = []
+            commands = []
+
+            def run_evaluator_process(command, **kwargs):
+                commands.append(command)
+                scratch = kwargs["cwd"]
+                (scratch / "model.run-order.json").write_text(
+                    json.dumps({"schema_version": 2, "resolved_ids": [PROFILE.instance_id]})
+                )
+                return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
+
+            def record_glob(path, pattern):
+                if pattern == "*.run-order.json":
+                    events.append("locate-summary")
+                return original_glob(path, pattern)
+
+            def record_read_text(path, *args, **kwargs):
+                if path.name == "model.run-order.json":
+                    events.append("read-summary")
+                return original_read_text(path, *args, **kwargs)
+
+            def record_json_loads(value, *args, **kwargs):
+                events.append("parse-summary")
+                return original_json_loads(value, *args, **kwargs)
+
+            run_evaluator = environment._run_evaluator
+
+            def record_execution(command):
+                execution = run_evaluator(command)
+                executions.append(execution)
+                return execution
+
+            def record_verified_teardown(_handle):
+                events.extend(["inspect-container", "force-remove", "absence-verified"])
+
+            with (
+                mock.patch.object(environment, "verify"),
+                mock.patch(
+                    "benchmarks.swebench.evaluator.subprocess.run", side_effect=run_evaluator_process
+                ),
+                mock.patch.object(environment, "_run_evaluator", side_effect=record_execution),
+                mock.patch.object(
+                    environment.runtime,
+                    "force_remove",
+                    side_effect=record_verified_teardown,
+                ),
+                mock.patch.object(Path, "glob", record_glob),
+                mock.patch.object(Path, "read_text", record_read_text),
+                mock.patch("benchmarks.swebench.evaluator.json.loads", side_effect=record_json_loads),
+            ):
+                result = environment.run(predictions, dataset, "run-order")
+
+        self.assertEqual(
+            events,
+            [
+                "inspect-container",
+                "force-remove",
+                "absence-verified",
+                "locate-summary",
+                "read-summary",
+                "parse-summary",
+            ],
+        )
+        self.assertEqual(
+            commands[0][:3],
+            [str(VENV_PYTHON), "-m", "swebench.harness.run_evaluation"],
+        )
+        self.assertEqual(len(executions), 1)
+        self.assertIsInstance(executions[0], EvaluationExecution)
+        self.assertFalse(executions[0].scratch.exists())
         self.assertEqual(result.summary["schema_version"], 2)
 
 

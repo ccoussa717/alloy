@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -64,6 +65,14 @@ class EvaluationResult:
     stdout: str
     stderr: str
     summary: dict[str, object]
+
+
+@dataclass(frozen=True)
+class EvaluationExecution:
+    stdout: str
+    stderr: str
+    scratch: Path
+    run_id: str
 
 
 class EvaluatorEnvironment:
@@ -208,10 +217,11 @@ class EvaluatorEnvironment:
             "--no_pull",
         ]
 
-    def _run_evaluator(self, command: list[str]) -> tuple[str, str, dict[str, object]]:
-        with tempfile.TemporaryDirectory(prefix="alloy-evaluator-") as directory:
-            scratch = Path(directory)
+    def _run_evaluator(self, command: list[str]) -> EvaluationExecution:
+        scratch = Path(tempfile.mkdtemp(prefix="alloy-evaluator-"))
+        try:
             command[command.index("--report_dir") + 1] = str(scratch)
+            run_id = command[command.index("--run_id") + 1]
             policy = self.profile.security_policy
             if self._image_id is None:
                 raise RuntimeError("local evaluator image was not verified")
@@ -238,13 +248,20 @@ class EvaluatorEnvironment:
                 text=True,
                 timeout=self.profile.evaluator_timeout_seconds,
             )
-            summaries = list(scratch.glob(f"*.{command[command.index('--run_id') + 1]}.json"))
-            if len(summaries) != 1:
-                raise RuntimeError(f"official evaluator produced {len(summaries)} run summaries")
-            summary = json.loads(summaries[0].read_text())
-            if not isinstance(summary, dict):
-                raise RuntimeError("official evaluator summary must be an object")
-            return completed.stdout, completed.stderr, summary
+            return EvaluationExecution(completed.stdout, completed.stderr, scratch, run_id)
+        except BaseException:
+            shutil.rmtree(scratch)
+            raise
+
+    @staticmethod
+    def _read_summary(execution: EvaluationExecution) -> dict[str, object]:
+        summaries = list(execution.scratch.glob(f"*.{execution.run_id}.json"))
+        if len(summaries) != 1:
+            raise RuntimeError(f"official evaluator produced {len(summaries)} run summaries")
+        summary = json.loads(summaries[0].read_text())
+        if not isinstance(summary, dict) or summary.get("schema_version") != 2:
+            raise RuntimeError("official evaluator produced an unsupported summary schema")
+        return summary
 
     def _verify_and_teardown_container(self, run_id: str) -> None:
         name = f"sweb.eval.{self.profile.instance_id.lower()}.{run_id}"
@@ -257,12 +274,14 @@ class EvaluatorEnvironment:
             raise ValueError("run ID must be safe for an owned Docker resource name")
         self.verify()
         command = self._command(predictions, dataset_json, run_id, dataset_json.parent)
+        execution = None
         try:
-            stdout, stderr, summary_value = self._run_evaluator(command)
+            try:
+                execution = self._run_evaluator(command)
+            finally:
+                self._verify_and_teardown_container(run_id)
+            summary = self._read_summary(execution)
+            return EvaluationResult(execution.stdout, execution.stderr, summary)
         finally:
-            self._verify_and_teardown_container(run_id)
-        if isinstance(summary_value, Path):
-            summary_value = json.loads(summary_value.read_text())
-        if not isinstance(summary_value, dict) or summary_value.get("schema_version") != 2:
-            raise RuntimeError("official evaluator produced an unsupported summary schema")
-        return EvaluationResult(stdout, stderr, summary_value)
+            if execution is not None:
+                shutil.rmtree(execution.scratch)
