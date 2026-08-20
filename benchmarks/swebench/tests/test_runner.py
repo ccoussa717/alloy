@@ -583,6 +583,27 @@ time.sleep(60)
             subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
 
 
+class OfficialVerdictTests(unittest.TestCase):
+    test_official_verdict_reads_schema_v2_benchmark_results = (
+        lambda self: OrchestrationTests.test_official_verdict_reads_schema_v2_benchmark_results(self)
+    )
+    test_official_verdict_rejects_schema_v2_infrastructure_categories = (
+        lambda self: OrchestrationTests.test_official_verdict_rejects_schema_v2_infrastructure_categories(self)
+    )
+    test_official_verdict_rejects_malformed_relevant_category_values = (
+        lambda self: OrchestrationTests.test_official_verdict_rejects_malformed_relevant_category_values(self)
+    )
+    test_official_verdict_rejects_resolved_and_unresolved_contradictions = (
+        lambda self: OrchestrationTests.test_official_verdict_rejects_resolved_and_unresolved_contradictions(self)
+    )
+    test_official_verdict_preserves_infrastructure_precedence_over_contradiction = (
+        lambda self: OrchestrationTests.test_official_verdict_preserves_infrastructure_precedence_over_contradiction(self)
+    )
+    test_official_verdict_accepts_unrelated_fields_and_empty_patch_unresolved = (
+        lambda self: OrchestrationTests.test_official_verdict_accepts_unrelated_fields_and_empty_patch_unresolved(self)
+    )
+
+
 class OrchestrationTests(unittest.TestCase):
     def candidate_args(self, root: Path) -> list[str]:
         candidate_root = root / "candidate"

@@ -1,1 +1,1 @@
-swebench==5.0.0
+# Install with --require-hashes from requirements.lock.

@@ -36,6 +36,19 @@ class ProfileTests(unittest.TestCase):
             profile.evaluator_image.manifest_digest,
             "sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
         )
+        self.assertEqual(profile.evaluator.python_version, "3.14.4")
+        self.assertEqual(
+            profile.evaluator.requirements_lock_sha256,
+            "d6d4d38ed9b9881b76685eee820ec539e7924cdd54c2e35d59f9111b87d1d106",
+        )
+        self.assertEqual(
+            profile.evaluator.upstream_run_evaluation_sha256,
+            "9b3dc406fab87fe2901cea91aa02d594bd7b2a12dc011fa294bb784ea0f145e6",
+        )
+        self.assertEqual(
+            profile.evaluator.patched_run_evaluation_sha256,
+            "906189c9f6897f44c60eb77204458c7fa99aa84c49fb4d4f95bfdaeabab5c772",
+        )
         self.assertEqual(profile.agent_image.platform, "linux/amd64")
         self.assertEqual(profile.proxy_image.platform, "linux/amd64")
         self.assertEqual(profile.evaluator_image.platform, "linux/amd64")
@@ -76,6 +89,7 @@ class ProfileTests(unittest.TestCase):
             "agent_image": "platform",
             "proxy_image": "platform",
             "evaluator_image": "platform",
+            "evaluator": "patch_sha256",
             "security_policy": "apparmor_name",
             "limits": "pids",
             "proxy": "allowed_routes",

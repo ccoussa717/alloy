@@ -29,6 +29,15 @@
     "manifest_digest": "sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
     "platform": "linux/amd64"
   },
+  "evaluator": {
+    "python_version": "3.14.4",
+    "requirements_lock_path": "benchmarks/swebench/requirements.lock",
+    "requirements_lock_sha256": "d6d4d38ed9b9881b76685eee820ec539e7924cdd54c2e35d59f9111b87d1d106",
+    "patch_path": "benchmarks/swebench/patches/swebench-5.0.0-run-evaluation.patch",
+    "patch_sha256": "eba7f3a3ee6142bcb5501b45406cb300640428ab37a351702bae98aa32eba611",
+    "upstream_run_evaluation_sha256": "9b3dc406fab87fe2901cea91aa02d594bd7b2a12dc011fa294bb784ea0f145e6",
+    "patched_run_evaluation_sha256": "906189c9f6897f44c60eb77204458c7fa99aa84c49fb4d4f95bfdaeabab5c772"
+  },
   "security_policy": {
     "seccomp_path": "benchmarks/swebench/policies/untrusted-seccomp.json",
     "seccomp_sha256": "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",

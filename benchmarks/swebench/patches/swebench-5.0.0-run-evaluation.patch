@@ -1,0 +1,272 @@
+--- a/swebench/harness/run_evaluation.py
++++ b/swebench/harness/run_evaluation.py
+@@ -85,69 +85,159 @@
+         logger (logging.Logger): Logger to use for logging the creation process
+     """
+     container = None
++    volume = None
+     try:
+-        # Check if the image exists
++        expected_image = os.environ["SWEBENCH_EVALUATOR_IMAGE"]
++        expected_digest = os.environ["SWEBENCH_EVALUATOR_IMAGE_DIGEST"]
++        seccomp_path = os.environ["SWEBENCH_SECCOMP_PATH"]
++        apparmor_name = os.environ["SWEBENCH_APPARMOR_NAME"]
++        if apparmor_name != "alloy-swebench-gate":
++            raise EvaluationError(test_spec.instance_id, "Evaluator AppArmor profile drifted", logger)
++        if not expected_image.endswith(f"@{expected_digest}"):
++            raise EvaluationError(
++                test_spec.instance_id,
++                "Evaluator image is not qualified by the pinned manifest digest",
++                logger,
++            )
+         try:
+-            client.images.get(test_spec.image)
++            image = client.images.get(expected_image)
+         except docker.errors.ImageNotFound:
+-            try:
+-                logger.info("Image not found locally, attempting to pull...")
+-                client.images.pull(test_spec.image)
+-            except docker.errors.ImageNotFound:
+-                raise EvaluationError(
+-                    test_spec.instance_id,
+-                    f"Image {test_spec.image} not found for {test_spec.instance_id}",
+-                    logger,
+-                )
++            raise EvaluationError(
++                test_spec.instance_id,
++                f"Pinned image {expected_image} is not installed; evaluator pulls are disabled",
++                logger,
++            )
++        image.reload()
++        repo_digests = image.attrs.get("RepoDigests") or []
++        if image.attrs.get("Os") != "linux" or image.attrs.get("Architecture") != "amd64":
++            raise EvaluationError(test_spec.instance_id, "Evaluator image is not linux/amd64", logger)
++        if not any(value.endswith(f"@{expected_digest}") for value in repo_digests):
++            raise EvaluationError(test_spec.instance_id, "Evaluator image digest drifted", logger)
+
+         logger.info(f"Creating container for {test_spec.instance_id}...")
+
+         container_name = f"sweb.eval.{test_spec.instance_id.lower()}.{run_id}"
+-        # Remove any existing container with this name (handles ghost containers)
+         try:
+-            old = client.containers.get(container_name)
+-            old.remove(force=True)
+-            logger.info(f"Removed existing container {container_name}")
++            client.containers.get(container_name)
+         except docker.errors.NotFound:
+             pass
+-        except Exception:
+-            pass
++        else:
++            raise EvaluationError(
++                test_spec.instance_id,
++                f"Refusing to reuse existing evaluator container {container_name}",
++                logger,
++            )
++
++        volume_name = f"alloy-eval-workspace-{run_id}"
+         try:
+-            container = client.containers.create(
+-                image=test_spec.image,
+-                name=container_name,
+-                user=CONTAINER_USER,
+-                detach=True,
+-                command="tail -f /dev/null",
+-                # Docker's default seccomp profile only permits CLONE_NEWUSER with
+-                # CAP_SYS_ADMIN, which browser sandboxes need (e.g. openlayers karma)
+-                cap_add=["SYS_ADMIN"],
+-            )
+-        except docker.errors.APIError as e:
+-            if "409" in str(e) or "Conflict" in str(e):
+-                # Ghost container — use a unique suffix
+-                import time
+-
+-                container_name = f"{container_name}.{int(time.time())}"
+-                logger.info(f"Retrying with unique name: {container_name}")
+-                container = client.containers.create(
+-                    image=test_spec.image,
+-                    name=container_name,
+-                    user=CONTAINER_USER,
+-                    detach=True,
+-                    command="tail -f /dev/null",
+-                    # Docker's default seccomp profile only permits CLONE_NEWUSER with
+-                    # CAP_SYS_ADMIN, which browser sandboxes need (e.g. openlayers karma)
+-                    cap_add=["SYS_ADMIN"],
+-                )
+-            else:
+-                raise
++            client.volumes.get(volume_name)
++        except docker.errors.NotFound:
++            pass
++        else:
++            raise EvaluationError(
++                test_spec.instance_id,
++                f"Refusing to reuse existing evaluator volume {volume_name}",
++                logger,
++            )
++        volume = client.volumes.create(
++            name=volume_name,
++            labels={"alloy.swebench.gate": run_id},
++            driver="local",
++        )
++        container = client.containers.create(
++            image=expected_image,
++            name=container_name,
++            user="65532:65532",
++            detach=True,
++            command="tail -f /dev/null",
++            labels={"alloy.swebench.gate": run_id},
++            cap_drop=["ALL"],
++            security_opt=[
++                "no-new-privileges",
++                f"seccomp={seccomp_path}",
++                f"apparmor={apparmor_name}",
++            ],
++            read_only=True,
++            init=True,
++            pids_limit=512,
++            mem_limit=17179869184,
++            nano_cpus=4000000000,
++            network_disabled=True,
++            volumes={volume_name: {"bind": CONTAINER_WORKDIR, "mode": "rw"}},
++            tmpfs={"/tmp": "rw,nosuid,nodev,noexec,size=268435456"},
++        )
++        container.reload()
++        host = container.attrs.get("HostConfig") or {}
++        config = container.attrs.get("Config") or {}
++        labels = config.get("Labels") or {}
++        if config.get("User") != "65532:65532":
++            raise EvaluationError(test_spec.instance_id, "Evaluator user drifted", logger)
++        if labels.get("alloy.swebench.gate") != run_id:
++            raise EvaluationError(test_spec.instance_id, "Evaluator ownership label drifted", logger)
++        if {value.upper() for value in host.get("CapDrop") or []} != {"ALL"}:
++            raise EvaluationError(test_spec.instance_id, "Evaluator capabilities drifted", logger)
++        if host.get("Privileged") is not False or host.get("ReadonlyRootfs") is not True:
++            raise EvaluationError(test_spec.instance_id, "Evaluator isolation drifted", logger)
++        if host.get("Init") is not True or host.get("NetworkMode") != "none":
++            raise EvaluationError(test_spec.instance_id, "Evaluator runtime isolation drifted", logger)
++        if host.get("PidMode") not in ("", None) or host.get("IpcMode") not in ("", "private", None):
++            raise EvaluationError(test_spec.instance_id, "Evaluator namespace drifted", logger)
++        if host.get("UTSMode") not in ("", None) or host.get("Devices") not in ([], None):
++            raise EvaluationError(test_spec.instance_id, "Evaluator device or UTS isolation drifted", logger)
++        if host.get("PidsLimit") != 512 or host.get("Memory") != 17179869184:
++            raise EvaluationError(test_spec.instance_id, "Evaluator limits drifted", logger)
++        if host.get("NanoCpus") != 4000000000 or container.attrs.get("Image") != image.id:
++            raise EvaluationError(test_spec.instance_id, "Evaluator CPU or image ID drifted", logger)
++        security = set(host.get("SecurityOpt") or [])
++        security = {
++            "no-new-privileges:true" if item == "no-new-privileges" else item
++            for item in security
++        }
++        if security != {
++            "no-new-privileges:true",
++            f"seccomp={seccomp_path}",
++            f"apparmor={apparmor_name}",
++        }:
++            raise EvaluationError(test_spec.instance_id, "Evaluator security options drifted", logger)
++        networks = (container.attrs.get("NetworkSettings") or {}).get("Networks")
++        if not isinstance(networks, dict) or set(networks) - {"none"}:
++            raise EvaluationError(test_spec.instance_id, "Evaluator network membership drifted", logger)
++        mounts = container.attrs.get("Mounts") or []
++        expected_mount = {
++            "Type": "volume",
++            "Name": volume_name,
++            "Destination": CONTAINER_WORKDIR,
++            "RW": True,
++        }
++        if (
++            len(mounts) != 1
++            or not isinstance(mounts[0], dict)
++            or any(mounts[0].get(key) != value for key, value in expected_mount.items())
++        ):
++            raise EvaluationError(test_spec.instance_id, "Evaluator workspace mount drifted", logger)
++        volume.reload()
++        volume_labels = volume.attrs.get("Labels") or {}
++        if volume_labels.get("alloy.swebench.gate") != run_id:
++            raise EvaluationError(test_spec.instance_id, "Evaluator volume ownership drifted", logger)
++        if (
++            volume.attrs.get("Driver") != "local"
++            or volume.attrs.get("Options") not in (None, {})
++            or volume.attrs.get("Scope") != "local"
++        ):
++            raise EvaluationError(test_spec.instance_id, "Evaluator volume driver drifted", logger)
+         logger.info(f"Container for {test_spec.instance_id} created: {container.id}")
+         return container
+     except Exception as e:
+         logger.error(f"Error creating container for {test_spec.instance_id}: {e}")
+         logger.info(traceback.format_exc())
+         cleanup_container(client, container, logger)
++        if volume is not None:
++            volume.reload()
++            if (volume.attrs.get("Labels") or {}).get("alloy.swebench.gate") != run_id:
++                raise EvaluationError(
++                    test_spec.instance_id, "Cannot prove evaluator volume ownership", logger
++                ) from e
++            volume.remove(force=True)
+         raise EvaluationError(test_spec.instance_id, str(e), logger) from e
+
+
+@@ -361,11 +451,11 @@
+         logger.info(
+             f"Eval script for {instance_id} written to {eval_file}; copying to container..."
+         )
+-        copy_to_container(container, eval_file, PurePosixPath("/eval.sh"))
++        copy_to_container(container, eval_file, PurePosixPath("/tmp/eval.sh"))
+
+         # Run eval script, write output to logs
+         test_output, timed_out, total_runtime = exec_run_with_timeout(
+-            container, "/bin/bash /eval.sh", timeout
++            container, "/bin/bash /tmp/eval.sh", timeout
+         )
+         test_output_path = log_dir / LOG_TEST_OUTPUT
+         logger.info(f"Test runtime: {total_runtime:_.2f} seconds")
+@@ -425,6 +515,24 @@
+     finally:
+         # Remove instance container + image, close logger
+         cleanup_container(client, container, logger)
++        if container is not None:
++            forced_teardown = False
++            try:
++                client.containers.get(container.name)
++            except docker.errors.NotFound:
++                pass
++            else:
++                container.remove(force=True)
++                forced_teardown = True
++                try:
++                    client.containers.get(container.name)
++                except docker.errors.NotFound:
++                    pass
++                else:
++                    raise EvaluationError(instance_id, "Forced evaluator teardown was not final", logger)
++            client.volumes.get(f"alloy-eval-workspace-{run_id}").remove(force=True)
++            if forced_teardown:
++                raise EvaluationError(instance_id, "Evaluator required forced teardown", logger)
+         close_logger(logger)
+     return
+
+@@ -688,6 +796,7 @@
+     modal: bool,
+     report_dir: str = ".",
+     task_repo: str | None = None,
++    no_pull: bool = False,
+ ):
+     """
+     Run evaluation harness for the given dataset and predictions.
+@@ -707,6 +816,8 @@
+             "repo's Dockerfiles would be ignored while its tests were used. Drop "
+             "--task-repo to run on Modal, or drop --modal to build the repo."
+         )
++    if not no_pull:
++        raise ValueError("Official evaluation requires --no_pull")
+
+     # set open file limit
+     assert len(run_id) > 0, "Run ID must be provided"
+@@ -834,6 +945,7 @@
+     parser.add_argument(
+         "--report_dir", type=str, default=".", help="Directory to write reports to"
+     )
++    parser.add_argument("--no_pull", action="store_true", help="Require the pinned local image")
+
+     # Modal execution args
+     parser.add_argument("--modal", type=str2bool, default=False, help="Run on Modal")

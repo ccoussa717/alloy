@@ -62,6 +62,17 @@ class ResourceLimits:
 
 
 @dataclass(frozen=True)
+class EvaluatorPin:
+    python_version: str
+    requirements_lock_path: str
+    requirements_lock_sha256: str
+    patch_path: str
+    patch_sha256: str
+    upstream_run_evaluation_sha256: str
+    patched_run_evaluation_sha256: str
+
+
+@dataclass(frozen=True)
 class ProxyPolicy:
     allowed_routes: tuple[tuple[str, str], ...]
 
@@ -77,6 +88,7 @@ class BenchmarkProfile:
     agent_image: ImagePin
     proxy_image: ImagePin
     evaluator_image: ImagePin
+    evaluator: EvaluatorPin
     security_policy: SecurityPolicy
     limits: ResourceLimits
     proxy: ProxyPolicy
@@ -262,6 +274,47 @@ def _security_policy(value: object, authority_root: Path) -> SecurityPolicy:
     )
 
 
+def _evaluator(value: object, authority_root: Path) -> EvaluatorPin:
+    raw = _object(value, "evaluator")
+    names = {
+        "python_version",
+        "requirements_lock_path",
+        "requirements_lock_sha256",
+        "patch_path",
+        "patch_sha256",
+        "upstream_run_evaluation_sha256",
+        "patched_run_evaluation_sha256",
+    }
+    _keys(raw, names, "evaluator")
+    lock_relative, lock_path = _policy_path(
+        authority_root, raw["requirements_lock_path"], "evaluator.requirements_lock_path"
+    )
+    patch_relative, patch_path = _policy_path(
+        authority_root, raw["patch_path"], "evaluator.patch_path"
+    )
+    lock_sha256 = _sha256(raw["requirements_lock_sha256"], "evaluator.requirements_lock_sha256")
+    patch_sha256 = _sha256(raw["patch_sha256"], "evaluator.patch_sha256")
+    if hashlib.sha256(lock_path.read_bytes()).hexdigest() != lock_sha256:
+        raise ValueError("evaluator requirements lock SHA-256 mismatch")
+    if hashlib.sha256(patch_path.read_bytes()).hexdigest() != patch_sha256:
+        raise ValueError("evaluator patch SHA-256 mismatch")
+    return EvaluatorPin(
+        python_version=_string(raw["python_version"], "evaluator.python_version"),
+        requirements_lock_path=lock_relative,
+        requirements_lock_sha256=lock_sha256,
+        patch_path=patch_relative,
+        patch_sha256=patch_sha256,
+        upstream_run_evaluation_sha256=_sha256(
+            raw["upstream_run_evaluation_sha256"],
+            "evaluator.upstream_run_evaluation_sha256",
+        ),
+        patched_run_evaluation_sha256=_sha256(
+            raw["patched_run_evaluation_sha256"],
+            "evaluator.patched_run_evaluation_sha256",
+        ),
+    )
+
+
 def parse_profile(value: object, authority_root: Path) -> BenchmarkProfile:
     raw = _object(value, "benchmark profile")
     expected = {
@@ -274,6 +327,7 @@ def parse_profile(value: object, authority_root: Path) -> BenchmarkProfile:
         "agent_image",
         "proxy_image",
         "evaluator_image",
+        "evaluator",
         "security_policy",
         "limits",
         "proxy",
@@ -282,6 +336,8 @@ def parse_profile(value: object, authority_root: Path) -> BenchmarkProfile:
     version = _string(raw["swebench_version"], "swebench_version")
     if SEMANTIC_VERSION.fullmatch(version) is None:
         raise ValueError("swebench_version must be a semantic version")
+    security_policy = _security_policy(raw["security_policy"], authority_root)
+    evaluator = _evaluator(raw["evaluator"], authority_root)
     return BenchmarkProfile(
         canonical_repository=_string(raw["canonical_repository"], "canonical_repository"),
         dataset=_dataset(raw["dataset"]),
@@ -292,7 +348,8 @@ def parse_profile(value: object, authority_root: Path) -> BenchmarkProfile:
         agent_image=_image(raw["agent_image"], "agent_image"),
         proxy_image=_image(raw["proxy_image"], "proxy_image"),
         evaluator_image=_image(raw["evaluator_image"], "evaluator_image"),
-        security_policy=_security_policy(raw["security_policy"], authority_root),
+        evaluator=evaluator,
+        security_policy=security_policy,
         limits=_limits(raw["limits"]),
         proxy=_proxy(raw["proxy"]),
     )
