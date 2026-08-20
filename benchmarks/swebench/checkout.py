@@ -1,0 +1,572 @@
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import subprocess
+import tarfile
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
+
+
+GIT = "/usr/bin/git"
+try:
+    NOFOLLOW = os.O_NOFOLLOW
+    DIRECTORY = os.O_DIRECTORY
+except AttributeError as error:
+    raise RuntimeError("trusted checkout reconstruction requires O_NOFOLLOW and O_DIRECTORY") from error
+MAX_PATH_BYTES = 4096
+MAX_PATH_COMPONENTS = 128
+MAX_COMPONENT_BYTES = 255
+MAX_TAR_READ = 1024 * 1024
+FIXED_GIT_ENV = MappingProxyType(
+    {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+    }
+)
+GIT_SECURITY_OPTIONS = ("-c", "core.hooksPath=/dev/null", "-c", "diff.external=")
+_TRUSTED_CHECKOUTS: set[tuple[int, int, str]] = set()
+
+
+@dataclass(frozen=True)
+class ExportBounds:
+    max_files: int = 20_000
+    max_file_bytes: int = 16 * 1024**2
+    max_total_bytes: int = 256 * 1024**2
+
+    def __post_init__(self) -> None:
+        values = (self.max_files, self.max_file_bytes, self.max_total_bytes)
+        if any(type(value) is not int or value <= 0 for value in values):
+            raise ValueError("export bounds must be positive integers")
+        if self.max_file_bytes > self.max_total_bytes:
+            raise ValueError("max_file_bytes must not exceed max_total_bytes")
+
+
+@dataclass(frozen=True)
+class _TreeEntry:
+    path: PurePosixPath
+    kind: str
+    mode: int
+    linkname: str | None = None
+
+
+@dataclass
+class ValidatedTree:
+    root: Path
+    entries: tuple[_TreeEntry, ...]
+    file_count: int
+    total_bytes: int
+    _temporary: tempfile.TemporaryDirectory[str] = field(repr=False, compare=False)
+
+    def close(self) -> None:
+        self._temporary.cleanup()
+
+    def __enter__(self) -> ValidatedTree:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def _normalized_path(name: str) -> PurePosixPath:
+    if not isinstance(name, str) or not name or "\0" in name:
+        raise ValueError("archive member path is invalid")
+    path = PurePosixPath(name)
+    if path.is_absolute() or path.as_posix() != name or path in (PurePosixPath("."),):
+        raise ValueError(f"archive member path is not a normalized relative path: {name!r}")
+    if any(part in ("", ".", "..") for part in path.parts):
+        raise ValueError(f"archive member path is not a normalized relative path: {name!r}")
+    encoded_parts = [os.fsencode(part) for part in path.parts]
+    if len(os.fsencode(name)) > MAX_PATH_BYTES or any(
+        len(part) > MAX_COMPONENT_BYTES for part in encoded_parts
+    ):
+        raise ValueError("archive member path exceeds the length bound")
+    if len(path.parts) > MAX_PATH_COMPONENTS:
+        raise ValueError("archive member path exceeds the depth bound")
+    if ".git" in path.parts:
+        raise ValueError("archive contains forbidden Git metadata")
+    return path
+
+
+def _safe_symlink_target(path: PurePosixPath, target: str) -> str:
+    if not isinstance(target, str) or not target or "\0" in target:
+        raise ValueError("archive symlink target is invalid")
+    link = PurePosixPath(target)
+    if link.is_absolute():
+        raise ValueError("archive symlink target must be relative")
+    encoded_parts = [os.fsencode(part) for part in link.parts]
+    if len(os.fsencode(target)) > MAX_PATH_BYTES or any(
+        len(part) > MAX_COMPONENT_BYTES for part in encoded_parts
+    ):
+        raise ValueError("archive symlink target exceeds the length bound")
+    if len(link.parts) > MAX_PATH_COMPONENTS:
+        raise ValueError("archive symlink target exceeds the depth bound")
+    resolved = list(path.parent.parts)
+    for part in link.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not resolved:
+                raise ValueError("archive symlink escapes the exported tree")
+            resolved.pop()
+        else:
+            resolved.append(part)
+    if ".git" in resolved:
+        raise ValueError("archive symlink targets forbidden Git metadata")
+    return target
+
+
+def _validate_symlink_graph(entries: dict[PurePosixPath, _TreeEntry]) -> None:
+    links = {
+        path: PurePosixPath(entry.linkname or "")
+        for path, entry in entries.items()
+        if entry.kind == "symlink"
+    }
+    for path, target in links.items():
+        remaining = list(target.parts)
+        resolved = list(path.parent.parts)
+        followed: set[PurePosixPath] = set()
+        steps = 0
+        while remaining:
+            steps += 1
+            if steps > MAX_PATH_COMPONENTS * 2:
+                raise ValueError("archive symlink chain exceeds the depth bound")
+            part = remaining.pop(0)
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not resolved:
+                    raise ValueError("archive symlink chain escapes the exported tree")
+                resolved.pop()
+                continue
+            resolved.append(part)
+            if len(resolved) > MAX_PATH_COMPONENTS:
+                raise ValueError("archive symlink chain exceeds the depth bound")
+            candidate = PurePosixPath(*resolved)
+            linked = links.get(candidate)
+            if linked is None:
+                continue
+            if candidate in followed:
+                raise ValueError("archive symlink chain contains a cycle")
+            followed.add(candidate)
+            resolved.pop()
+            remaining = [*linked.parts, *remaining]
+        if ".git" in resolved:
+            raise ValueError("archive symlink chain targets forbidden Git metadata")
+
+
+def _member_kind(member: tarfile.TarInfo) -> str:
+    if member.isreg():
+        return "file"
+    if member.isdir():
+        return "directory"
+    if member.issym():
+        return "symlink"
+    if member.islnk():
+        raise ValueError("archive hard links are forbidden")
+    raise ValueError("archive member type is forbidden")
+
+
+def _validate_owner(member: tarfile.TarInfo) -> None:
+    if member.uid not in (0, 65532) or member.gid not in (0, 65532):
+        raise ValueError("archive member ownership is forbidden")
+
+
+def _normalized_mode(member: tarfile.TarInfo, kind: str) -> int:
+    mode = member.mode
+    if type(mode) is not int or mode < 0 or mode & ~0o777:
+        raise ValueError("archive member mode is forbidden")
+    if kind == "directory":
+        return 0o755
+    if kind == "symlink":
+        return 0o777
+    return 0o755 if mode & 0o111 else 0o644
+
+
+def _open_directory(root_fd: int, parts: tuple[str, ...], *, create: bool) -> int:
+    current = os.dup(root_fd)
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=current)
+            metadata = os.fstat(child)
+            if not stat.S_ISDIR(metadata.st_mode):
+                os.close(child)
+                raise ValueError("archive path conflicts with a non-directory")
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _write_regular(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    root_fd: int,
+    path: PurePosixPath,
+    mode: int,
+    bounds: ExportBounds,
+    total_bytes: int,
+) -> int:
+    if member.size < 0 or member.size > bounds.max_file_bytes:
+        raise ValueError("archive member exceeds the per-file byte bound")
+    if total_bytes + member.size > bounds.max_total_bytes:
+        raise ValueError("archive exceeds the total byte bound")
+    source = archive.extractfile(member)
+    if source is None:
+        raise ValueError("archive regular file has no content")
+    parent = _open_directory(root_fd, path.parent.parts, create=True)
+    descriptor = -1
+    written = 0
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+            0o600,
+            dir_fd=parent,
+        )
+        while written < member.size:
+            chunk = source.read(min(1024 * 1024, member.size - written))
+            if not chunk:
+                raise ValueError("archive regular file ended before its declared size")
+            view = memoryview(chunk)
+            while view:
+                count = os.write(descriptor, view)
+                view = view[count:]
+            written += len(chunk)
+        os.fchmod(descriptor, mode)
+    finally:
+        source.close()
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent)
+    return total_bytes + written
+
+
+def _create_directory(root_fd: int, path: PurePosixPath, mode: int) -> None:
+    parent = _open_directory(root_fd, path.parent.parts, create=True)
+    descriptor = -1
+    try:
+        try:
+            os.mkdir(path.name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        descriptor = os.open(path.name, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=parent)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise ValueError("archive directory conflicts with another member")
+        os.fchmod(descriptor, mode)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent)
+
+
+def _create_symlink(root_fd: int, path: PurePosixPath, target: str) -> None:
+    parent = _open_directory(root_fd, path.parent.parts, create=True)
+    try:
+        os.symlink(target, path.name, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+class _BoundedTarReader:
+    def __init__(self, source: object) -> None:
+        self.source = source
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0 or size > MAX_TAR_READ:
+            raise ValueError("tar metadata read exceeds the memory bound")
+        return self.source.read(size)  # type: ignore[no-any-return, union-attr]
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        return self.source.seek(offset, whence)  # type: ignore[no-any-return, union-attr]
+
+    def tell(self) -> int:
+        return self.source.tell()  # type: ignore[no-any-return, union-attr]
+
+
+def validate_exported_tar(path: Path, bounds: ExportBounds) -> ValidatedTree:
+    temporary = tempfile.TemporaryDirectory(prefix="alloy-swebench-export-")
+    root = Path(temporary.name)
+    root_fd = -1
+    archive_fd = -1
+    entries: dict[PurePosixPath, _TreeEntry] = {}
+    implicit_directories: set[PurePosixPath] = set()
+    total_bytes = 0
+    try:
+        try:
+            archive_fd = os.open(path, os.O_RDONLY | NOFOLLOW)
+        except OSError as error:
+            raise ValueError("exported tar is malformed or unsafe") from error
+        metadata = os.fstat(archive_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("export must be a regular tar file")
+        archive_overhead = bounds.max_files * (
+            2 * tarfile.BLOCKSIZE + MAX_PATH_BYTES + tarfile.BLOCKSIZE
+        ) + tarfile.RECORDSIZE
+        if metadata.st_size > bounds.max_total_bytes + archive_overhead:
+            raise ValueError("tar file exceeds the archive byte bound")
+        root_fd = os.open(root, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        with os.fdopen(archive_fd, "rb", closefd=True) as archive_file:
+            archive_fd = -1
+            try:
+                archive = tarfile.open(fileobj=_BoundedTarReader(archive_file), mode="r:")
+                with archive:
+                    for member in archive:
+                        path_value = _normalized_path(member.name)
+                        if path_value in entries:
+                            raise ValueError("archive contains duplicate member names")
+                        kind = _member_kind(member)
+                        _validate_owner(member)
+                        mode = _normalized_mode(member, kind)
+                        ancestors = tuple(path_value.parents)[:-1]
+                        for ancestor in ancestors:
+                            existing = entries.get(ancestor)
+                            if existing is not None and existing.kind != "directory":
+                                raise ValueError("archive member path has a parent type conflict")
+                            if existing is None and ancestor not in implicit_directories:
+                                if len(entries) + len(implicit_directories) >= bounds.max_files:
+                                    raise ValueError("archive exceeds the file count bound")
+                                implicit_directories.add(ancestor)
+                        if path_value not in implicit_directories:
+                            if len(entries) + len(implicit_directories) >= bounds.max_files:
+                                raise ValueError("archive exceeds the file count bound")
+                        if path_value in implicit_directories and kind != "directory":
+                            raise ValueError("archive member path has an implicit directory conflict")
+                        linkname = None
+                        if kind == "symlink":
+                            linkname = _safe_symlink_target(path_value, member.linkname)
+                            _create_symlink(root_fd, path_value, linkname)
+                        elif kind == "directory":
+                            _create_directory(root_fd, path_value, mode)
+                        else:
+                            total_bytes = _write_regular(
+                                archive,
+                                member,
+                                root_fd,
+                                path_value,
+                                mode,
+                                bounds,
+                                total_bytes,
+                            )
+                        if kind == "directory":
+                            implicit_directories.discard(path_value)
+                        entries[path_value] = _TreeEntry(path_value, kind, mode, linkname)
+                    _validate_symlink_graph(entries)
+            except (tarfile.TarError, OSError) as error:
+                raise ValueError("exported tar is malformed or unsafe") from error
+        implicit_entries = tuple(
+            _TreeEntry(path, "directory", 0o755)
+            for path in sorted(
+                implicit_directories - entries.keys(), key=lambda value: (len(value.parts), value.parts)
+            )
+        )
+        for entry in implicit_entries:
+            _create_directory(root_fd, entry.path, entry.mode)
+        validated_entries = (*implicit_entries, *entries.values())
+        return ValidatedTree(
+            root,
+            validated_entries,
+            len(entries.keys() | implicit_directories),
+            total_bytes,
+            temporary,
+        )
+    except BaseException:
+        temporary.cleanup()
+        raise
+    finally:
+        if archive_fd >= 0:
+            os.close(archive_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+
+
+def _git(
+    checkout: Path,
+    arguments: tuple[str, ...],
+    *,
+    accepted_returncodes: frozenset[int] = frozenset({0}),
+    input: bytes | None = None,
+    timeout: int = 120,
+) -> bytes:
+    try:
+        result = subprocess.run(
+            [GIT, *GIT_SECURITY_OPTIONS, *arguments],
+            cwd=checkout,
+            input=input,
+            capture_output=True,
+            env=FIXED_GIT_ENV,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("trusted Git command timed out") from error
+    if result.returncode not in accepted_returncodes:
+        detail = result.stderr.decode("utf-8", errors="replace")[:4096].strip()
+        message = f"trusted Git command failed with exit {result.returncode}"
+        raise RuntimeError(f"{message}: {detail}" if detail else message)
+    return result.stdout
+
+
+def _remove_at(parent_fd: int, name: str) -> None:
+    metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    child = os.open(name, os.O_RDONLY | DIRECTORY | NOFOLLOW, dir_fd=parent_fd)
+    try:
+        for entry in os.listdir(child):
+            _remove_at(child, entry)
+    finally:
+        os.close(child)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _copy_regular(source_root: int, destination_root: int, entry: _TreeEntry) -> None:
+    source_parent = _open_directory(source_root, entry.path.parent.parts, create=False)
+    destination_parent = _open_directory(destination_root, entry.path.parent.parts, create=True)
+    source = destination = -1
+    try:
+        source = os.open(entry.path.name, os.O_RDONLY | NOFOLLOW, dir_fd=source_parent)
+        if not stat.S_ISREG(os.fstat(source).st_mode):
+            raise RuntimeError("validated export staging tree changed type")
+        destination = os.open(
+            entry.path.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+            0o600,
+            dir_fd=destination_parent,
+        )
+        while True:
+            chunk = os.read(source, 1024 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                count = os.write(destination, view)
+                view = view[count:]
+        os.fchmod(destination, entry.mode)
+    finally:
+        if source >= 0:
+            os.close(source)
+        if destination >= 0:
+            os.close(destination)
+        os.close(source_parent)
+        os.close(destination_parent)
+
+
+def reconstruct_trusted_checkout(base: Path, exported: ValidatedTree, destination: Path) -> None:
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("trusted checkout destination must not exist")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _git(
+            destination.parent,
+            (
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                "--no-local",
+                "--no-checkout",
+                "--",
+                str(base.resolve()),
+                str(destination),
+            ),
+            timeout=900,
+        )
+        os.chmod(destination, 0o700)
+        _git(destination, ("checkout", "--quiet", "--detach", "HEAD"))
+        destination_fd = os.open(destination, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        source_fd = os.open(exported.root, os.O_RDONLY | DIRECTORY | NOFOLLOW)
+        try:
+            for name in os.listdir(destination_fd):
+                if name != ".git":
+                    _remove_at(destination_fd, name)
+            for entry in exported.entries:
+                if entry.kind == "directory":
+                    _create_directory(destination_fd, entry.path, entry.mode)
+                elif entry.kind == "symlink":
+                    assert entry.linkname is not None
+                    _create_symlink(destination_fd, entry.path, entry.linkname)
+                else:
+                    _copy_regular(source_fd, destination_fd, entry)
+        finally:
+            os.close(source_fd)
+            os.close(destination_fd)
+        os.chmod(destination, 0o755)
+        metadata = os.stat(destination, follow_symlinks=False)
+        _TRUSTED_CHECKOUTS.add((metadata.st_dev, metadata.st_ino, str(destination.resolve())))
+    except BaseException:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+
+def _capture_patch_bytes(checkout: Path) -> bytes:
+    patch = _git(checkout, ("diff", "--binary", "--no-ext-diff", "HEAD", "--"))
+    untracked = _git(checkout, ("ls-files", "--others", "--exclude-standard", "-z"))
+    for encoded_path in filter(None, untracked.split(b"\0")):
+        relative = os.fsdecode(encoded_path)
+        patch += _git(
+            checkout,
+            ("diff", "--binary", "--no-ext-diff", "--no-index", "--", "/dev/null", relative),
+            accepted_returncodes=frozenset({0, 1}),
+        )
+    return patch
+
+
+def _force_binary_attributes(checkout: Path) -> tuple[int, int]:
+    git_fd = os.open(checkout / ".git", os.O_RDONLY | DIRECTORY | NOFOLLOW)
+    info_fd = _open_directory(git_fd, ("info",), create=True)
+    attributes_fd = -1
+    try:
+        attributes_fd = os.open(
+            "attributes",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+            0o600,
+            dir_fd=info_fd,
+        )
+        content = memoryview(b"* binary\n")
+        while content:
+            content = content[os.write(attributes_fd, content):]
+        os.fsync(attributes_fd)
+        return git_fd, info_fd
+    except BaseException:
+        os.close(info_fd)
+        os.close(git_fd)
+        raise
+    finally:
+        if attributes_fd >= 0:
+            os.close(attributes_fd)
+
+
+def capture_patch(checkout: Path) -> bytes:
+    metadata = os.stat(checkout, follow_symlinks=False)
+    identity = (metadata.st_dev, metadata.st_ino, str(checkout.resolve()))
+    if identity not in _TRUSTED_CHECKOUTS:
+        raise ValueError("patch capture requires a freshly reconstructed trusted checkout")
+    _TRUSTED_CHECKOUTS.remove(identity)
+    patch = _capture_patch_bytes(checkout)
+    try:
+        patch.decode("utf-8")
+    except UnicodeDecodeError:
+        git_fd, info_fd = _force_binary_attributes(checkout)
+        try:
+            patch = _capture_patch_bytes(checkout)
+            patch.decode("utf-8")
+        finally:
+            os.unlink("attributes", dir_fd=info_fd)
+            os.close(info_fd)
+            os.close(git_fd)
+    return patch

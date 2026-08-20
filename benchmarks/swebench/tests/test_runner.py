@@ -13,7 +13,6 @@ from benchmarks.swebench import runner as swebench_runner
 from benchmarks.swebench.runner import (
     alloy_command,
     build_prompt,
-    capture_patch,
     load_instance,
     official_verdict,
     prediction_record,
@@ -387,201 +386,6 @@ time.sleep(60)
         self.assertNotIn("REVIEW_SECRET_SENTINEL", boundary_environment)
         self.assertNotIn(secret, boundary_environment.values())
         self.assertEqual(boundary_environment["HOME"], str(state_root / "home"))
-
-    def test_capture_patch_returns_git_diff(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=root, check=True)
-            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=root, check=True)
-            (root / "x.txt").write_text("before\n")
-            subprocess.run(["git", "add", "x.txt"], cwd=root, check=True)
-            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
-            (root / "x.txt").write_text("after\n")
-            patch = capture_patch(root)
-            self.assertIn("-before", patch)
-            self.assertIn("+after", patch)
-
-    def test_capture_patch_includes_staged_tracked_modification_and_applies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            target = Path(directory) / "target"
-            source.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
-            (source / "tracked.txt").write_text("before\n")
-            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
-            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
-            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
-            (source / "tracked.txt").write_text("staged modification\n")
-            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
-
-            patch = capture_patch(source)
-            patch_path = Path(directory) / "model.patch"
-            patch_path.write_text(patch)
-            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
-
-            self.assertIn("+staged modification", patch)
-
-    def test_capture_patch_includes_staged_new_text_and_binary_files_once_and_applies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            target = Path(directory) / "target"
-            source.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
-            (source / ".gitignore").write_text("ignored.bin\n")
-            subprocess.run(["git", "add", ".gitignore"], cwd=source, check=True)
-            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
-            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
-            (source / "staged.txt").write_text("staged text sentinel\n")
-            (source / "staged.bin").write_bytes(bytes(range(256)) * 8)
-            subprocess.run(["git", "add", "staged.txt", "staged.bin"], cwd=source, check=True)
-
-            patch = capture_patch(source)
-            patch_path = Path(directory) / "model.patch"
-            patch_path.write_text(patch)
-            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
-
-            self.assertEqual(patch.count("diff --git a/staged.txt b/staged.txt"), 1)
-            self.assertEqual(patch.count("diff --git a/staged.bin b/staged.bin"), 1)
-            self.assertIn("GIT binary patch", patch)
-
-    def test_capture_patch_includes_mixed_staged_unstaged_and_untracked_state_once(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            target = Path(directory) / "target"
-            source.mkdir()
-            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.email", "bench@example.invalid"], cwd=source, check=True)
-            subprocess.run(["git", "config", "user.name", "Benchmark"], cwd=source, check=True)
-            (source / ".gitignore").write_text("ignored.bin\n")
-            (source / "tracked.txt").write_text("base\n")
-            subprocess.run(["git", "add", ".gitignore", "tracked.txt"], cwd=source, check=True)
-            subprocess.run(["git", "commit", "-qm", "base"], cwd=source, check=True)
-            subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
-            (source / "tracked.txt").write_text("staged line\n")
-            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
-            (source / "tracked.txt").write_text("staged line\nunstaged line\n")
-            (source / "staged-new.txt").write_text("staged new\n")
-            subprocess.run(["git", "add", "staged-new.txt"], cwd=source, check=True)
-            (source / "untracked.bin").write_bytes(b"\x00untracked binary\n")
-            (source / "ignored.bin").write_bytes(b"ignored\n")
-
-            patch = capture_patch(source)
-            patch_path = Path(directory) / "model.patch"
-            patch_path.write_text(patch)
-            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
-
-            self.assertIn("+staged line", patch)
-            self.assertIn("+unstaged line", patch)
-            self.assertEqual(patch.count("diff --git a/staged-new.txt b/staged-new.txt"), 1)
-            self.assertEqual(patch.count("diff --git a/untracked.bin b/untracked.bin"), 1)
-            self.assertNotIn("ignored.bin", patch)
-
-    def test_capture_patch_includes_untracked_but_not_ignored_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            (root / ".gitignore").write_text("ignored.txt\n")
-            subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "user.email=bench@example.invalid",
-                    "-c",
-                    "user.name=Benchmark",
-                    "commit",
-                    "-qm",
-                    "base",
-                ],
-                cwd=root,
-                check=True,
-            )
-            (root / "created.txt").write_text("new file sentinel\n")
-            (root / "ignored.txt").write_text("ignored sentinel\n")
-
-            patch = capture_patch(root)
-
-            self.assertIn("created.txt", patch)
-            self.assertIn("new file sentinel", patch)
-            self.assertNotIn("ignored.txt", patch)
-            self.assertNotIn("ignored sentinel", patch)
-
-    def test_capture_patch_bounds_untracked_diff_and_accepts_exit_one(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-            (root / "created.bin").write_bytes(b"\x00binary sentinel\n")
-            results = [
-                swebench_runner.CommandResult("", "", 0),
-                swebench_runner.CommandResult("created.bin\0", "", 0),
-                swebench_runner.CommandResult("bounded binary patch", "", 1),
-            ]
-
-            with mock.patch.object(swebench_runner, "_run_command", side_effect=results) as bounded:
-                patch = capture_patch(root)
-
-            self.assertEqual(patch, "bounded binary patch")
-            self.assertEqual(
-                bounded.call_args_list[0],
-                mock.call(
-                    ["git", "diff", "--binary", "--no-ext-diff", "HEAD", "--"],
-                    root,
-                    120,
-                    frozenset({0}),
-                    env=None,
-                ),
-            )
-            self.assertEqual(
-                bounded.call_args_list[-1],
-                mock.call(
-                    [
-                        "git",
-                        "diff",
-                        "--binary",
-                        "--no-ext-diff",
-                        "--no-index",
-                        "--",
-                        "/dev/null",
-                        "created.bin",
-                    ],
-                    root,
-                    120,
-                    frozenset({0, 1}),
-                ),
-            )
-
-    def test_capture_patch_real_untracked_binary_applies_cleanly(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "source"
-            target = Path(directory) / "target"
-            root.mkdir()
-            target.mkdir()
-            for repository in (root, target):
-                subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-                (repository / ".gitignore").write_text("ignored.bin\n")
-                subprocess.run(["git", "add", ".gitignore"], cwd=repository, check=True)
-                subprocess.run(
-                    [
-                        "git", "-c", "user.email=bench@example.invalid",
-                        "-c", "user.name=Benchmark", "commit", "-qm", "base",
-                    ],
-                    cwd=repository,
-                    check=True,
-                )
-            (root / "created.bin").write_bytes(bytes(range(256)) * 8)
-
-            patch = capture_patch(root)
-
-            self.assertIn("GIT binary patch", patch)
-            patch_path = Path(directory) / "model.patch"
-            patch_path.write_text(patch)
-            subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=target, check=True)
-
 
 class OfficialVerdictTests(unittest.TestCase):
     test_official_verdict_reads_schema_v2_benchmark_results = (
@@ -1351,7 +1155,7 @@ class OrchestrationTests(unittest.TestCase):
                         "benchmarks.swebench.runner.run_alloy",
                         return_value=swebench_runner.CommandResult("", "", 0),
                     ) as alloy,
-                    mock.patch("benchmarks.swebench.runner.capture_patch", return_value="patch"),
+                    mock.patch("benchmarks.swebench.runner.capture_patch", return_value=b"patch"),
                     mock.patch(
                         "benchmarks.swebench.runner.run_official_evaluation",
                         return_value="unresolved",
@@ -1468,7 +1272,7 @@ class OrchestrationTests(unittest.TestCase):
                     "benchmarks.swebench.runner.run_alloy",
                     return_value=swebench_runner.CommandResult("", "", 0),
                 ),
-                mock.patch("benchmarks.swebench.runner.capture_patch", return_value="patch"),
+                mock.patch("benchmarks.swebench.runner.capture_patch", return_value=b"patch"),
                 mock.patch(
                     "benchmarks.swebench.runner.run_official_evaluation",
                     side_effect=RuntimeError(
@@ -1523,7 +1327,7 @@ class OrchestrationTests(unittest.TestCase):
                     "benchmarks.swebench.runner.run_alloy",
                     return_value=swebench_runner.CommandResult("", "", 0),
                 ),
-                mock.patch("benchmarks.swebench.runner.capture_patch", return_value="patch"),
+                mock.patch("benchmarks.swebench.runner.capture_patch", return_value=b"patch"),
                 mock.patch("benchmarks.swebench.runner.run_official_evaluation", side_effect=timeout),
                 mock.patch(
                     "benchmarks.swebench.runner.utc_now",

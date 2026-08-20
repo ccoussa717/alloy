@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from benchmarks.swebench.checkout import capture_patch
 from benchmarks.swebench.dataset import (
     fetch_and_verify_instance,
     prompt_instance,
@@ -202,23 +203,6 @@ def run_alloy(
         profile.agent_timeout_seconds,
         env=environment,
     )
-
-
-def capture_patch(checkout: Path) -> str:
-    patch = run_command(
-        ["git", "diff", "--binary", "--no-ext-diff", "HEAD", "--"], checkout, 120
-    ).stdout
-    untracked = run_command(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"], checkout, 120
-    ).stdout
-    for path in filter(None, untracked.split("\0")):
-        patch += _run_command(
-            ["git", "diff", "--binary", "--no-ext-diff", "--no-index", "--", "/dev/null", path],
-            checkout,
-            120,
-            frozenset({0, 1}),
-        ).stdout
-    return patch
 
 
 def public_instance(row: dict) -> dict:
@@ -717,9 +701,10 @@ def main(
     (run_dir / "alloy.stdout.log").write_text(result.stdout)
     (run_dir / "alloy.stderr.log").write_text(result.stderr)
     try:
-        patch_text = capture_patch(checkout)
-        (run_dir / "model_patch.diff").write_text(patch_text)
-        patch_sha = hashlib.sha256(patch_text.encode()).hexdigest()
+        patch_bytes = capture_patch(checkout)
+        patch_text = patch_bytes.decode("utf-8")
+        (run_dir / "model_patch.diff").write_bytes(patch_bytes)
+        patch_sha = hashlib.sha256(patch_bytes).hexdigest()
         prediction = prediction_record(
             profile.instance_id,
             f"alloy-{candidate.alloy_version}/{profile.model}",
@@ -768,7 +753,7 @@ def main(
             started_at,
             instance_id=profile.instance_id,
             model_patch_sha256=patch_sha,
-            patch_bytes=len(patch_text.encode()),
+            patch_bytes=len(patch_bytes),
             verdict=verdict,
         ),
     )
