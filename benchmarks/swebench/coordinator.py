@@ -1085,3 +1085,9 @@ class TrustedCoordinator:
                 f"{phase_name}: {caught}" for phase_name, caught in cleanup_errors
             ),
         )
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        "error: direct coordinator execution is forbidden; use the trusted host launcher"
+    )
