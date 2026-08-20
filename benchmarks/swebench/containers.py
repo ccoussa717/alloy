@@ -110,6 +110,20 @@ class CleanupUncertainError(RuntimeError):
         )
 
 
+class VolumeCleanupUncertainError(RuntimeError):
+    def __init__(
+        self, name: str, run_id: str, original_error: BaseException, cleanup_error: BaseException,
+    ) -> None:
+        self.name = name
+        self.run_id = run_id
+        self.original_error = original_error
+        self.cleanup_error = cleanup_error
+        super().__init__(
+            f"cleanup uncertain for volume {name} (run {run_id}); original failure: "
+            f"{original_error}; cleanup failure: {cleanup_error}"
+        )
+
+
 class DockerRuntime:
     def __init__(
         self,
@@ -420,7 +434,13 @@ class DockerRuntime:
         for mount in spec.mounts:
             self._validate_mount(mount)
 
-    def _create_arguments(self, spec: ContainerSpec) -> list[str]:
+    def _create_arguments(
+        self,
+        spec: ContainerSpec,
+        *,
+        user: str = CONTAINER_USER,
+        cap_add: tuple[str, ...] = (),
+    ) -> list[str]:
         policy = self.profile.security_policy
         limits = self.profile.limits
         arguments = [
@@ -435,7 +455,7 @@ class DockerRuntime:
             "--platform",
             "linux/amd64",
             "--user",
-            CONTAINER_USER,
+            user,
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -455,15 +475,17 @@ class DockerRuntime:
             "--network",
             "none",
         ]
+        for capability in cap_add:
+            arguments.extend(("--cap-add", capability))
         for key, value in spec.environment:
             arguments.extend(("--env", f"{key}={value}"))
         for mount in spec.mounts:
-            mode = "ro" if mount.read_only else "rw"
             mount_type = mount.kind
+            readonly = ",readonly" if mount.read_only else ""
             arguments.extend(
                 (
                     "--mount",
-                    f"type={mount_type},src={mount.source},dst={mount.target},{mode}",
+                    f"type={mount_type},src={mount.source},dst={mount.target}{readonly}",
                 )
             )
         return [*arguments, spec.image.reference, *spec.command]
@@ -526,14 +548,21 @@ class DockerRuntime:
     def _mapping(value: object) -> dict[str, object]:
         return value if isinstance(value, dict) else {}
 
-    def inspect_security(self, handle: ContainerHandle, spec: ContainerSpec) -> None:
+    def inspect_security(
+        self,
+        handle: ContainerHandle,
+        spec: ContainerSpec,
+        *,
+        expected_user: str = CONTAINER_USER,
+        expected_cap_add: tuple[str, ...] = (),
+    ) -> None:
         inspected, _ = self._inspect(handle.container_id)
         assert inspected is not None
         config = self._mapping(inspected.get("Config"))
         host = self._mapping(inspected.get("HostConfig"))
         network = self._mapping(inspected.get("NetworkSettings"))
         labels = self._mapping(config.get("Labels"))
-        if config.get("User") != CONTAINER_USER:
+        if config.get("User") != expected_user:
             raise RuntimeError("container does not use the required numeric non-root user")
         if labels.get(LABEL) != handle.run_id:
             raise RuntimeError("container ownership label drifted")
@@ -542,6 +571,10 @@ class DockerRuntime:
         cap_drop = host.get("CapDrop")
         if not isinstance(cap_drop, list) or {str(value).upper() for value in cap_drop} != {"ALL"}:
             raise RuntimeError("container capability drop drifted")
+        cap_add = host.get("CapAdd")
+        actual_cap_add = () if cap_add in (None, []) else tuple(sorted(str(value).upper() for value in cap_add))
+        if actual_cap_add != tuple(sorted(expected_cap_add)):
+            raise RuntimeError("container capability add drifted")
         expected_options = {
             f"seccomp={self.seccomp_path}",
             f"apparmor={self.profile.security_policy.apparmor_name}",
@@ -612,6 +645,120 @@ class DockerRuntime:
             return int(result.stdout.strip())
         except ValueError as error:
             raise RuntimeError("Docker wait returned an invalid exit code") from error
+
+    def create_volume(self, name: str, run_id: str) -> None:
+        if self._completed_preflight != self._profile_fingerprint():
+            raise RuntimeError("official preflight was not completed for this runtime and profile")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", name) is None:
+            raise ValueError("Docker named volume must use a simple name")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run_id) is None:
+            raise ValueError("run ID must be safe for a Docker resource name")
+        self._verify_policy_bytes()
+        self._assert_daemon_identity()
+        result = self._run(self._docker_arguments("volume", "inspect", name), check=False)
+        if result.returncode == 0:
+            raise RuntimeError("refusing to reuse an existing Docker volume")
+        if "No such volume" not in result.stderr:
+            raise RuntimeError("could not prove Docker volume absence")
+        self._assert_daemon_identity()
+        created = False
+        try:
+            self._run(self._docker_arguments(
+                "volume", "create", "--label", f"{LABEL}={run_id}", name
+            ))
+            created = True
+            spec = ContainerSpec(
+                name="volume-verification", run_id=run_id, image=self.profile.agent_image,
+                image_id="sha256:" + "0" * 64, command=("true",),
+                mounts=(MountSpec(name, "/volume", False, "volume"),),
+            )
+            self._verify_volume_ownership(spec)
+        except BaseException as original_error:
+            if created:
+                try:
+                    self.remove_volume(name, run_id)
+                except BaseException as cleanup_error:
+                    raise VolumeCleanupUncertainError(
+                        name, run_id, original_error, cleanup_error,
+                    ) from original_error
+            raise
+
+    def initialize_volume(
+        self,
+        name: str,
+        target: str,
+        run_id: str,
+        image: ImagePin,
+        image_id: str,
+    ) -> None:
+        if self._completed_preflight != self._profile_fingerprint():
+            raise RuntimeError("official preflight was not completed for this runtime and profile")
+        target_path = Path(target)
+        if (
+            not target_path.is_absolute()
+            or ".." in target_path.parts
+            or re.fullmatch(r"/[A-Za-z0-9][A-Za-z0-9_./-]*", target) is None
+        ):
+            raise ValueError("volume initializer target must be a safe absolute path")
+        spec = ContainerSpec(
+            name=f"alloy-volume-init-{run_id}", run_id=run_id, image=image,
+            image_id=image_id,
+            command=("/bin/sh", "-euc", f"chown 65532:65532 {target}"),
+            mounts=(MountSpec(name, target, False, "volume"),),
+        )
+        self._verify_policy_bytes()
+        self._validate_spec(spec)
+        self._verify_volume_ownership(spec)
+        self._assert_daemon_identity()
+        result = self._run(self._create_arguments(spec, user="0:0", cap_add=("CHOWN",)))
+        container_id = result.stdout.strip()
+        if not container_id:
+            raise RuntimeError("Docker create returned no helper container ID")
+        handle = ContainerHandle(spec.name, container_id, run_id)
+        try:
+            self._assert_daemon_identity(handle)
+            self.inspect_security(
+                handle, spec, expected_user="0:0", expected_cap_add=("CHOWN",),
+            )
+            self._assert_daemon_identity(handle)
+            self._run(self._docker_arguments("start", container_id))
+            if self.wait(handle, timeout=60) != 0:
+                raise RuntimeError("confined volume initializer failed")
+        except BaseException as original_error:
+            try:
+                self.force_remove(handle)
+            except BaseException as cleanup_error:
+                raise CleanupUncertainError(handle, original_error, cleanup_error) from original_error
+            raise
+        self.force_remove(handle)
+
+    def remove_volume(self, name: str, run_id: str) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", name) is None:
+            raise ValueError("Docker named volume must use a simple name")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", run_id) is None:
+            raise ValueError("run ID must be safe for a Docker resource name")
+        self._assert_daemon_identity()
+        result = self._run(self._docker_arguments("volume", "inspect", name), check=False)
+        if result.returncode != 0:
+            if "No such volume" in result.stderr:
+                return
+            raise RuntimeError("could not prove Docker volume state")
+        inspected = self._json_object(result, "volume inspection")
+        labels = self._mapping(inspected.get("Labels"))
+        if inspected.get("Name") != name or labels.get(LABEL) != run_id:
+            raise RuntimeError("named volume ownership label does not match the run")
+        if (
+            inspected.get("Driver") != "local"
+            or inspected.get("Options") not in (None, {})
+            or inspected.get("Scope") != "local"
+        ):
+            raise RuntimeError("named volume must be a plain local volume")
+        self._assert_daemon_identity()
+        self._run(self._docker_arguments("volume", "rm", name))
+        self._assert_daemon_identity()
+        absent = self._run(self._docker_arguments("volume", "inspect", name), check=False)
+        if absent.returncode == 0 or "No such volume" not in absent.stderr:
+            raise RuntimeError("could not prove Docker volume removal")
 
     def force_remove(self, handle: ContainerHandle) -> None:
         self._assert_daemon_identity(handle)

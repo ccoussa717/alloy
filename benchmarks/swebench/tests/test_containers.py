@@ -180,7 +180,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 "--memory", "17179869184",
                 "--cpus", "4",
                 "--network", "none",
-                "--mount", "type=volume,src=alloy-checkout-run-123,dst=/workspace,rw",
+                "--mount", "type=volume,src=alloy-checkout-run-123,dst=/workspace",
                 self.image.reference,
                 "node", "agent.js",
             ],
@@ -866,7 +866,7 @@ class DockerRuntimeTests(unittest.TestCase):
         self.preflighted_runtime(runner).create(spec)
 
         self.assertIn(
-            "type=bind,src=" + str(APPARMOR_PATH) + ",dst=/policy,ro",
+            "type=bind,src=" + str(APPARMOR_PATH) + ",dst=/policy,readonly",
             runner.calls[4][0],
         )
 

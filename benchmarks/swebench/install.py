@@ -51,9 +51,11 @@ class FetchedCandidate:
     pi_version: str
     archive: VerifiedArtifact
     lock_sha256: str
+    bun_lock_sha256: str = ""
     npm_cache: VerifiedArtifact | None = None
     bun_archive: VerifiedArtifact | None = None
     lock: bytes = b""
+    bun_lock: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,17 @@ class PreparedTarget:
     agent_volume: str
 
 
+class ResourceCleanupUncertainError(RuntimeError):
+    def __init__(self, resource: str, original_error: BaseException, cleanup_error: BaseException) -> None:
+        self.resource = resource
+        self.original_error = original_error
+        self.cleanup_error = cleanup_error
+        super().__init__(
+            f"cleanup uncertain for {resource}; original failure: {original_error}; "
+            f"cleanup failure: {cleanup_error}"
+        )
+
+
 def _volume(runtime: DockerRuntime, name: str, run_id: str) -> None:
     create_volume = getattr(runtime, "create_volume", None)
     if create_volume is not None:
@@ -94,6 +107,27 @@ def _volume(runtime: DockerRuntime, name: str, run_id: str) -> None:
     runtime._run(runtime._docker_arguments(
         "volume", "create", "--label", f"alloy.swebench.gate={run_id}", name
     ))
+
+
+def _initialize_volume(
+    runtime: DockerRuntime,
+    name: str,
+    target: str,
+    run_id: str,
+    image: object,
+    image_id: str,
+) -> None:
+    initialize = getattr(runtime, "initialize_volume", None)
+    if initialize is None:
+        raise RuntimeError("Docker runtime does not provide confined volume initialization")
+    initialize(name, target, run_id, image, image_id)
+
+
+def _remove_volume(runtime: DockerRuntime, name: str, run_id: str) -> None:
+    remove = getattr(runtime, "remove_volume", None)
+    if remove is None:
+        raise RuntimeError("Docker runtime does not provide verified volume cleanup")
+    remove(name, run_id)
 
 
 def _logs(runtime: DockerRuntime, container_id: str) -> dict[str, object]:
@@ -115,8 +149,17 @@ INSTALL_SCRIPT = r"""
 set -euo pipefail
 mkdir -p /output/{home,zdotdir,config,cache,data,state,runtime,tmp,prefix}
 mkdir -p /output/input /output/npm-cache /output/shims
+export OBSERVED_ARCHIVE_SHA256="$(sha256sum /input/candidate.tar | cut -d' ' -f1)"
+export OBSERVED_CACHE_SHA256="$(sha256sum /input/npm-cache.tar | cut -d' ' -f1)"
+export OBSERVED_BUN_SHA256="$(sha256sum /input/bun.zip | cut -d' ' -f1)"
 tar -xf /input/candidate.tar -C /output/input --strip-components=1
 tar -xf /input/npm-cache.tar -C /output/npm-cache
+export OBSERVED_LOCK_SHA256="$(sha256sum /output/input/npm-shrinkwrap.json | cut -d' ' -f1)"
+export OBSERVED_BUN_LOCK_SHA256="$(sha256sum /output/input/tui/bun.lock | cut -d' ' -f1)"
+export CACHE_NPM_LOCK_SHA256="$(/usr/local/bin/node -p 'JSON.parse(require("fs").readFileSync("/output/npm-cache/cache-metadata.json")).npm_lock_sha256')"
+export CACHE_BUN_LOCK_SHA256="$(/usr/local/bin/node -p 'JSON.parse(require("fs").readFileSync("/output/npm-cache/cache-metadata.json")).bun_lock_sha256')"
+test "$CACHE_NPM_LOCK_SHA256" = "$OBSERVED_LOCK_SHA256"
+test "$CACHE_BUN_LOCK_SHA256" = "$OBSERVED_BUN_LOCK_SHA256"
 cat > /output/shims/curl <<'CURL'
 #!/bin/bash
 set -euo pipefail
@@ -171,6 +214,7 @@ bash /output/input/install.sh
 /output/prefix/bin/alloy --version > /output/version.txt
 if /usr/local/bin/node -e "const s=require('net').connect(9,'1.1.1.1'); const t=setTimeout(()=>{s.destroy();process.exit(0)},1000); s.on('connect',()=>{clearTimeout(t);process.exit(1)}).on('error',()=>{clearTimeout(t);process.exit(0)})"; then network_ipv4=blocked; else exit 70; fi
 if /usr/local/bin/node -e "const s=require('net').connect({port:9,host:'2606:4700:4700::1111',family:6}); const t=setTimeout(()=>{s.destroy();process.exit(0)},1000); s.on('connect',()=>{clearTimeout(t);process.exit(1)}).on('error',()=>{clearTimeout(t);process.exit(0)})"; then network_ipv6=blocked; else exit 71; fi
+export NETWORK_IPV4="$network_ipv4" NETWORK_IPV6="$network_ipv6"
 printf '%s\n' "network_ipv4=$network_ipv4 network_ipv6=$network_ipv6" >&2
 /usr/local/bin/node - /output/data/alloy/app/package.json /output/data/alloy/install-manifest.json /output/version.txt <<'NODE'
 const fs = require('node:fs');
@@ -184,10 +228,26 @@ const installedPi = pkg.alloy?.piFork?.version;
 const allowedManifest = new Set(['channel', 'commit', 'installedAt', 'ref', 'repository', 'version']);
 if (!alloy || !pi || pkg.version !== alloy || installedPi !== pi ||
     manifest.version !== alloy || manifest.commit !== process.env.CANDIDATE_COMMIT ||
+    manifest.channel !== 'main' || manifest.ref !== process.env.CANDIDATE_COMMIT ||
+    manifest.repository !== 'ccoussa717/alloy' ||
+    process.env.CACHE_NPM_LOCK_SHA256 !== process.env.OBSERVED_LOCK_SHA256 ||
+    process.env.CACHE_BUN_LOCK_SHA256 !== process.env.OBSERVED_BUN_LOCK_SHA256 ||
     Object.keys(manifest).some((key) => !allowedManifest.has(key))) {
   throw new Error('installed candidate metadata is inconsistent');
 }
-const probe = {alloy_version: alloy, pi_version: pi, commit: manifest.commit};
+const probe = {
+  alloy_version: alloy, pi_version: pi, commit: manifest.commit,
+  archive_sha256: process.env.OBSERVED_ARCHIVE_SHA256,
+  lock_sha256: process.env.OBSERVED_LOCK_SHA256,
+  bun_lock_sha256: process.env.OBSERVED_BUN_LOCK_SHA256,
+  cache_sha256: process.env.OBSERVED_CACHE_SHA256,
+  bun_sha256: process.env.OBSERVED_BUN_SHA256,
+  network_ipv4: process.env.NETWORK_IPV4, network_ipv6: process.env.NETWORK_IPV6,
+  manifest: {
+    channel: manifest.channel, commit: manifest.commit, ref: manifest.ref,
+    repository: manifest.repository, version: manifest.version,
+  },
+};
 fs.writeFileSync('/output/probe.json', JSON.stringify(probe));
 process.stdout.write(JSON.stringify(probe) + '\n');
 NODE
@@ -208,55 +268,70 @@ def install_candidate(
         raise ValueError("runtime profile does not match candidate install profile")
     if fetched.npm_cache is None or fetched.bun_archive is None:
         raise ValueError("candidate installation requires verified npm and Bun artifacts")
-    if SHA256.fullmatch(fetched.lock_sha256) is None:
-        raise ValueError("candidate lock SHA-256 is invalid")
+    if (
+        SHA256.fullmatch(fetched.lock_sha256) is None
+        or hashlib.sha256(fetched.lock).hexdigest() != fetched.lock_sha256
+    ):
+        raise ValueError("candidate npm lock SHA-256 is invalid")
+    if (
+        SHA256.fullmatch(fetched.bun_lock_sha256) is None
+        or hashlib.sha256(fetched.bun_lock).hexdigest() != fetched.bun_lock_sha256
+    ):
+        raise ValueError("candidate Bun lock SHA-256 is invalid")
     for artifact in (fetched.archive, fetched.npm_cache, fetched.bun_archive):
         artifact.verify()
     image_id = runtime.verify_local_image(profile.agent_image)
     volume = f"alloy-app-{run_id}"
-    _volume(runtime, volume, run_id)
-    mounts = (
-        MountSpec(fetched.archive.path, "/input/candidate.tar", True, "bind"),
-        MountSpec(fetched.npm_cache.path, "/input/npm-cache.tar", True, "bind"),
-        MountSpec(fetched.bun_archive.path, "/input/bun.zip", True, "bind"),
-        MountSpec(volume, "/output", False, "volume"),
-    )
-    spec = ContainerSpec(
-        name=f"alloy-install-{run_id}",
-        run_id=run_id,
-        image=profile.agent_image,
-        image_id=image_id,
-        command=("/bin/bash", "-euc", INSTALL_SCRIPT),
-        mounts=mounts,
-        environment=(("CANDIDATE_COMMIT", fetched.commit),),
-        network_mode="none",
-    )
-    handle = runtime.create(spec)
-    probe = None
+    volume_created = False
     try:
-        status = runtime.wait(handle, timeout=profile.agent_timeout_seconds)
-        if status != 0:
-            raise RuntimeError(f"candidate installation exited with status {status}")
-        probe = _logs(runtime, handle.container_id)
-    finally:
-        runtime.force_remove(handle)
-    expected = {
-        "alloy_version": fetched.alloy_version,
-        "pi_version": fetched.pi_version,
-        "commit": fetched.commit,
-    }
-    if probe != expected:
-        raise RuntimeError("candidate probe metadata differs from trusted metadata")
-    return VerifiedCandidateInstall(
-        image_id=image_id,
-        alloy_version=fetched.alloy_version,
-        pi_version=fetched.pi_version,
-        commit=fetched.commit,
-        app_volume=volume,
-        archive_sha256=fetched.archive.sha256,
-        cache_sha256=fetched.npm_cache.sha256,
-        bun_sha256=fetched.bun_archive.sha256,
-    )
+        _volume(runtime, volume, run_id)
+        volume_created = True
+        _initialize_volume(runtime, volume, "/output", run_id, profile.agent_image, image_id)
+        mounts = (
+            MountSpec(fetched.archive.path, "/input/candidate.tar", True, "bind"),
+            MountSpec(fetched.npm_cache.path, "/input/npm-cache.tar", True, "bind"),
+            MountSpec(fetched.bun_archive.path, "/input/bun.zip", True, "bind"),
+            MountSpec(volume, "/output", False, "volume"),
+        )
+        spec = ContainerSpec(
+            name=f"alloy-install-{run_id}", run_id=run_id, image=profile.agent_image,
+            image_id=image_id, command=("/bin/bash", "-euc", INSTALL_SCRIPT), mounts=mounts,
+            environment=(("CANDIDATE_COMMIT", fetched.commit),), network_mode="none",
+        )
+        handle = runtime.create(spec)
+        try:
+            status = runtime.wait(handle, timeout=profile.agent_timeout_seconds)
+            if status != 0:
+                raise RuntimeError(f"candidate installation exited with status {status}")
+            probe = _logs(runtime, handle.container_id)
+        finally:
+            runtime.force_remove(handle)
+        expected = {
+            "alloy_version": fetched.alloy_version, "pi_version": fetched.pi_version,
+            "commit": fetched.commit, "archive_sha256": fetched.archive.sha256,
+            "lock_sha256": fetched.lock_sha256, "bun_lock_sha256": fetched.bun_lock_sha256,
+            "cache_sha256": fetched.npm_cache.sha256, "bun_sha256": fetched.bun_archive.sha256,
+            "network_ipv4": "blocked", "network_ipv6": "blocked",
+            "manifest": {
+                "channel": "main", "commit": fetched.commit, "ref": fetched.commit,
+                "repository": "ccoussa717/alloy", "version": fetched.alloy_version,
+            },
+        }
+        if probe != expected:
+            raise RuntimeError("candidate probe metadata differs from trusted metadata")
+        return VerifiedCandidateInstall(
+            image_id, fetched.alloy_version, fetched.pi_version, fetched.commit, volume,
+            fetched.archive.sha256, fetched.npm_cache.sha256, fetched.bun_archive.sha256,
+        )
+    except BaseException as original_error:
+        if volume_created:
+            try:
+                _remove_volume(runtime, volume, run_id)
+            except BaseException as cleanup_error:
+                raise ResourceCleanupUncertainError(
+                    volume, original_error, cleanup_error,
+                ) from original_error
+        raise
 
 
 TARGET_SCRIPT = r"""
@@ -284,25 +359,34 @@ def prepare_target(
     source.verify()
     image_id = runtime.verify_local_image(profile.evaluator_image)
     volume = f"alloy-agent-work-{run_id}"
-    _volume(runtime, volume, run_id)
-    spec = ContainerSpec(
-        name=f"alloy-target-{run_id}",
-        run_id=run_id,
-        image=profile.evaluator_image,
-        image_id=image_id,
-        command=("/bin/bash", "-euc", TARGET_SCRIPT),
-        mounts=(
-            MountSpec(source.path, "/input/target.tar", True, "bind"),
-            MountSpec(volume, "/agent-work", False, "volume"),
-        ),
-        environment=(("BASE_COMMIT", profile.base_commit),),
-        network_mode="none",
-    )
-    handle = runtime.create(spec)
+    volume_created = False
     try:
-        status = runtime.wait(handle, timeout=profile.evaluator_timeout_seconds)
-        if status != 0:
-            raise RuntimeError(f"target setup exited with status {status}")
-    finally:
-        runtime.force_remove(handle)
-    return PreparedTarget(image_id, profile.base_commit, source.sha256, volume)
+        _volume(runtime, volume, run_id)
+        volume_created = True
+        _initialize_volume(
+            runtime, volume, "/agent-work", run_id, profile.evaluator_image, image_id,
+        )
+        spec = ContainerSpec(
+            name=f"alloy-target-{run_id}", run_id=run_id, image=profile.evaluator_image,
+            image_id=image_id, command=("/bin/bash", "-euc", TARGET_SCRIPT),
+            mounts=(MountSpec(source.path, "/input/target.tar", True, "bind"),
+                    MountSpec(volume, "/agent-work", False, "volume")),
+            environment=(("BASE_COMMIT", profile.base_commit),), network_mode="none",
+        )
+        handle = runtime.create(spec)
+        try:
+            status = runtime.wait(handle, timeout=profile.evaluator_timeout_seconds)
+            if status != 0:
+                raise RuntimeError(f"target setup exited with status {status}")
+        finally:
+            runtime.force_remove(handle)
+        return PreparedTarget(image_id, profile.base_commit, source.sha256, volume)
+    except BaseException as original_error:
+        if volume_created:
+            try:
+                _remove_volume(runtime, volume, run_id)
+            except BaseException as cleanup_error:
+                raise ResourceCleanupUncertainError(
+                    volume, original_error, cleanup_error,
+                ) from original_error
+        raise
