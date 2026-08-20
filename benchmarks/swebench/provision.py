@@ -17,7 +17,6 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from benchmarks.swebench.authority import coordinator_tree_digest
 from benchmarks.swebench.coordinator import COORDINATOR_PATHS
 from benchmarks.swebench.evaluator import locked_distributions
 from benchmarks.swebench.profile import load_profile
@@ -101,8 +100,53 @@ def _run(
         raise ValueError(f"provisioning command failed: {arguments[0]}") from error
 
 
-def _git(repository: Path, *arguments: str) -> str:
-    return _run(("/usr/bin/git", *arguments), cwd=repository).stdout
+def _git_command(git_home: Path, *arguments: str, allow_file: bool = False) -> tuple[str, ...]:
+    protocol = "https:file" if allow_file else "https"
+    return (
+        "/usr/bin/env",
+        "-i",
+        f"HOME={git_home}",
+        "PATH=/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM=1",
+        "GIT_CONFIG_GLOBAL=/dev/null",
+        "GIT_CONFIG_SYSTEM=/dev/null",
+        "GIT_TERMINAL_PROMPT=0",
+        f"GIT_ALLOW_PROTOCOL={protocol}",
+        "/usr/bin/git",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "protocol.file.allow=always" if allow_file else "protocol.file.allow=never",
+        "-c",
+        "protocol.ext.allow=never",
+        *arguments,
+    )
+
+
+def _git(repository: Path, *arguments: str, git_home: Path) -> str:
+    return _run(_git_command(git_home, *arguments), cwd=repository).stdout
+
+
+def _validate_git_home(path: Path, expected_uid: int) -> Path:
+    if not path.is_absolute():
+        raise ValueError("bootstrap Git HOME must be absolute")
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise ValueError("bootstrap Git HOME is missing or unsafe") from error
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or stat.S_ISLNK(details.st_mode)
+        or details.st_uid != expected_uid
+        or stat.S_IMODE(details.st_mode) != 0o700
+        or any(path.iterdir())
+    ):
+        raise ValueError("bootstrap Git HOME must be an empty owned mode-0700 directory")
+    return path
 
 
 def _validate_directory(fd: int, label: str, uid: int, mode: int | None = None) -> None:
@@ -308,20 +352,26 @@ def _replace_validated(
     os.fsync(parent_fd)
 
 
-def _verify_source(repository: Path, authority: str, require_remote_tip: bool) -> None:
+def _verify_source(
+    repository: Path, authority: str, require_remote_tip: bool, git_home: Path
+) -> None:
     if FULL_SHA.fullmatch(authority) is None:
         raise ValueError("authority commit must be a full lowercase Git SHA")
     repository = repository.resolve()
-    if _git(repository, "rev-parse", "--show-toplevel").strip() != str(repository):
+    if _git(repository, "rev-parse", "--show-toplevel", git_home=git_home).strip() != str(repository):
         raise ValueError("provisioning source is not a canonical checkout root")
-    if _git(repository, "rev-parse", "HEAD").strip() != authority:
+    if _git(repository, "rev-parse", "HEAD", git_home=git_home).strip() != authority:
         raise ValueError("checked-out authority does not match the requested authority SHA")
-    if _git(repository, "status", "--porcelain=v1", "--untracked-files=all"):
+    if _git(
+        repository, "status", "--porcelain=v1", "--untracked-files=all", git_home=git_home
+    ):
         raise ValueError("authority source checkout must be clean")
-    if _git(repository, "remote", "get-url", "github").strip() != CANONICAL_REMOTE:
+    if _git(repository, "remote", "get-url", "github", git_home=git_home).strip() != CANONICAL_REMOTE:
         raise ValueError("authority source must use the canonical GitHub remote")
     if require_remote_tip:
-        main = _git(repository, "ls-remote", "github", "refs/heads/main").splitlines()
+        main = _git(
+            repository, "ls-remote", "github", "refs/heads/main", git_home=git_home
+        ).splitlines()
         if main != [f"{authority}\trefs/heads/main"]:
             raise ValueError("authority SHA must be the just-merged canonical main tip")
 
@@ -332,32 +382,52 @@ def _clone_authority(
     destination: Path,
     *,
     canonical: bool,
+    git_home: Path,
     pass_fds: tuple[int, ...] = (),
 ) -> None:
     clone_source = CANONICAL_REMOTE if canonical else str(source)
     previous_umask = os.umask(0o077)
     try:
         _run(
-            (
-                "/usr/bin/git",
+            _git_command(
+                git_home,
                 "clone",
                 "--quiet",
                 "--no-hardlinks",
                 "--no-checkout",
                 clone_source,
                 str(destination),
+                allow_file=not canonical,
             ),
             pass_fds=pass_fds,
         )
         if canonical:
-            _git(destination, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", authority)
-        _git(destination, "checkout", "--quiet", "--detach", authority)
-        if "github" in _git(destination, "remote").splitlines():
-            _git(destination, "remote", "remove", "github")
-        if "origin" in _git(destination, "remote").splitlines():
-            _git(destination, "remote", "rename", "origin", "github")
-        _git(destination, "remote", "set-url", "github", CANONICAL_REMOTE)
-        if _git(destination, "status", "--porcelain=v1", "--untracked-files=all"):
+            _git(
+                destination,
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "origin",
+                authority,
+                git_home=git_home,
+            )
+        _git(destination, "checkout", "--quiet", "--detach", authority, git_home=git_home)
+        if "github" in _git(destination, "remote", git_home=git_home).splitlines():
+            _git(destination, "remote", "remove", "github", git_home=git_home)
+        if "origin" in _git(destination, "remote", git_home=git_home).splitlines():
+            _git(destination, "remote", "rename", "origin", "github", git_home=git_home)
+        _git(
+            destination,
+            "remote",
+            "set-url",
+            "github",
+            CANONICAL_REMOTE,
+            git_home=git_home,
+        )
+        if _git(
+            destination, "status", "--porcelain=v1", "--untracked-files=all", git_home=git_home
+        ):
             raise ValueError("installed authority checkout is not clean")
     finally:
         os.umask(previous_umask)
@@ -368,6 +438,28 @@ def _sha256(path: Path, label: str) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as error:
         raise RuntimeError(f"required evaluator file is unavailable: {label}") from error
+
+
+def _coordinator_tree_digest(repository: Path, authority: str, git_home: Path) -> str:
+    output = _run(
+        _git_command(git_home, "ls-tree", "-r", "-z", "--full-tree", authority),
+        cwd=repository,
+    ).stdout.encode()
+    entries = {}
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_type, object_id = metadata.decode("ascii").split(" ")
+        entries[raw_path.decode("utf-8", "strict")] = (mode, object_type, object_id)
+    digest = hashlib.sha256()
+    for path in sorted(COORDINATOR_PATHS):
+        try:
+            mode, object_type, object_id = entries[path]
+        except KeyError as error:
+            raise ValueError(f"coordinator digest path is missing: {path}") from error
+        digest.update(f"{mode}\0{object_type}\0{object_id}\0{path}\0".encode())
+    return digest.hexdigest()
 
 
 def _build_evaluator(
@@ -474,6 +566,7 @@ def _build_target_cache(
     *,
     runner=subprocess.run,
     pass_fds: tuple[int, ...] = (),
+    git_home: Path,
 ) -> None:
     dataset = profile_json.get("dataset")
     base_commit = dataset.get("base_commit") if isinstance(dataset, dict) else None
@@ -482,13 +575,13 @@ def _build_target_cache(
     target = authority_root / "benchmarks/swebench/.cache/target.git"
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
     _run(
-        ("/usr/bin/git", "clone", "--quiet", "--no-checkout", TARGET_REMOTE, str(target)),
+        _git_command(git_home, "clone", "--quiet", "--no-checkout", TARGET_REMOTE, str(target)),
         runner=runner,
         pass_fds=pass_fds,
     )
     _run(
-        (
-            "/usr/bin/git",
+        _git_command(
+            git_home,
             "-C",
             str(target),
             "fetch",
@@ -502,12 +595,14 @@ def _build_target_cache(
         pass_fds=pass_fds,
     )
     _run(
-        ("/usr/bin/git", "-C", str(target), "checkout", "--quiet", "--detach", base_commit),
+        _git_command(
+            git_home, "-C", str(target), "checkout", "--quiet", "--detach", base_commit
+        ),
         runner=runner,
         pass_fds=pass_fds,
     )
     observed = _run(
-        ("/usr/bin/git", "-C", str(target), "rev-parse", "HEAD"),
+        _git_command(git_home, "-C", str(target), "rev-parse", "HEAD"),
         runner=runner,
         pass_fds=pass_fds,
     ).stdout.strip()
@@ -520,23 +615,28 @@ def _build_authority_environment(
     profile_json: dict[str, object],
     *,
     pass_fds: tuple[int, ...] = (),
+    git_home: Path,
 ) -> None:
     _build_evaluator(authority_root, profile_json, pass_fds=pass_fds)
-    _build_target_cache(authority_root, profile_json, pass_fds=pass_fds)
+    _build_target_cache(
+        authority_root, profile_json, pass_fds=pass_fds, git_home=git_home
+    )
 
 
 def _load_apparmor(path: Path) -> None:
     _run(("/usr/sbin/apparmor_parser", "-r", str(path)))
 
 
-def _config(authority_root: Path, authority: str, public_key: Path) -> dict[str, object]:
+def _config(
+    authority_root: Path, authority: str, public_key: Path, git_home: Path
+) -> dict[str, object]:
     profile = load_profile(
         authority_root / "benchmarks/swebench/profile.json", authority_root
     )
     return {
         "authority_commit": authority,
-        "coordinator_tree_sha256": coordinator_tree_digest(
-            authority_root, authority, COORDINATOR_PATHS
+        "coordinator_tree_sha256": _coordinator_tree_digest(
+            authority_root, authority, git_home
         ),
         "confinement_policy_sha256": {
             "apparmor": profile.security_policy.apparmor_sha256,
@@ -593,8 +693,10 @@ def _provision(
     require_remote_tip: bool = True,
     apparmor_loader: Callable[[Path], None] = _load_apparmor,
     evaluator_builder: Callable[..., None] | None = None,
+    git_home: Path,
 ) -> dict[str, object]:
-    _verify_source(source, authority, require_remote_tip)
+    git_home = _validate_git_home(git_home, owner_uid)
+    _verify_source(source, authority, require_remote_tip, git_home)
     replacing = replace_authority is not None
     if replacing:
         old_authority, new_authority = replace_authority
@@ -672,13 +774,16 @@ def _provision(
             authority,
             staging,
             canonical=require_remote_tip,
+            git_home=git_home,
             pass_fds=(state_fd,),
         )
         staging.chmod(0o700)
         profile_path = staging / "benchmarks/swebench/profile.json"
         profile_json = json.loads(profile_path.read_text())
         if evaluator_builder is not None:
-            evaluator_builder(staging, profile_json, pass_fds=(state_fd,))
+            evaluator_builder(
+                staging, profile_json, pass_fds=(state_fd,), git_home=git_home
+            )
         public_key_path = Path(f"/proc/self/fd/{state_fd}/{paths.public_key.name}")
         if not replacing:
             _generate_keys(state_fd, owner_uid)
@@ -695,7 +800,7 @@ def _provision(
                         raise ValueError("existing gate key is unsafe")
                 finally:
                     os.close(key_fd)
-        candidate_config = _config(staging, authority, public_key_path)
+        candidate_config = _config(staging, authority, public_key_path, git_home)
         launcher_content = (staging / "benchmarks/swebench/host_launcher.py").read_bytes()
         if replacing:
             os.rename("authority", backup_name, src_dir_fd=state_fd, dst_dir_fd=state_fd)
@@ -821,11 +926,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 64
     try:
+        git_home = Path(os.environ.get("HOME", ""))
         receipt = _provision(
             SOURCE_ROOT,
             authority,
             replace_authority=replace_authority,
             evaluator_builder=_build_authority_environment,
+            git_home=git_home,
         )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from benchmarks.swebench.provision import (
     ProvisionPaths,
     _build_evaluator,
     _ensure_directory,
+    _git_command,
     _open_root,
     _publish_new,
     _replace_validated,
@@ -115,6 +117,8 @@ class TrustedHostFixture(unittest.TestCase):
         (target / "HEAD").write_text("prepared target\n")
         self.paths = ProvisionPaths.under(self.root / "system root")
         self.paths.root.mkdir(mode=0o700)
+        self.git_home = self.root / "git-home"
+        self.git_home.mkdir(mode=0o700)
         self.apparmor_loads = []
         self.receipt = _provision(
             self.source,
@@ -123,6 +127,7 @@ class TrustedHostFixture(unittest.TestCase):
             owner_uid=os.geteuid(),
             require_remote_tip=False,
             apparmor_loader=self.apparmor_loads.append,
+            git_home=self.git_home,
         )
         self.host_paths = HostPaths.from_provision(self.paths)
 
@@ -148,7 +153,7 @@ class TrustedHostFixture(unittest.TestCase):
 
 
 class HostLauncherTests(TrustedHostFixture):
-    def _run_installed_launcher(self, **environment):
+    def _run_installed_launcher(self, source_transform=None, **environment):
         source = (REPO_ROOT / "benchmarks/swebench/host_launcher.py").read_text()
         replacements = {
             'LAUNCHER_PATH = Path("/usr/local/libexec/alloy-swebench-gate")': (
@@ -167,6 +172,8 @@ class HostLauncherTests(TrustedHostFixture):
         }
         for old, new in replacements.items():
             source = source.replace(old, new)
+        if source_transform is not None:
+            source = source_transform(source)
         launcher = self.root / "subprocess-launcher"
         launcher.write_text(source)
         launcher.chmod(0o755)
@@ -184,6 +191,33 @@ class HostLauncherTests(TrustedHostFixture):
             capture_output=True,
             check=False,
         )
+
+    def test_root_task11_gate_reaches_authority_import_only_after_validation(self):
+        if os.environ.get("ALLOY_SWEBENCH_REQUIRE_DOCKER") != "1":
+            self.skipTest("set ALLOY_SWEBENCH_REQUIRE_DOCKER=1 for Task 11 trust transition")
+        if os.geteuid() != 0:
+            self.fail("ALLOY_SWEBENCH_REQUIRE_DOCKER=1 requires root")
+
+        original = self.config()
+        changed = json.loads(json.dumps(original))
+        changed["coordinator_tree_sha256"] = "f" * 64
+        self.write_config(changed)
+        self.import_tripwire.unlink(missing_ok=True)
+
+        def avoid_external_candidate_fetch(source):
+            return source.replace(
+                "        _candidate_is_advertised(host.paths.authority, candidate_commit)\n",
+                "        # Candidate advertisement is outside this local trust-anchor fixture.\n",
+            )
+
+        rejected = self._run_installed_launcher(source_transform=avoid_external_candidate_fetch)
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        self.assertFalse(self.import_tripwire.exists())
+
+        self.write_config(original)
+        delegated = self._run_installed_launcher(source_transform=avoid_external_candidate_fetch)
+        self.assertEqual(delegated.returncode, 2, delegated.stderr)
+        self.assertEqual(self.import_tripwire.read_text(), "imported")
 
     def test_provisioned_host_uses_exact_fixed_tree_policy_and_public_key_digests(self):
         trusted = load_trusted_host(self.host_paths, expected_uid=os.geteuid())
@@ -373,6 +407,27 @@ class HostLauncherTests(TrustedHostFixture):
 
 
 class ProvisionTests(TrustedHostFixture):
+    def test_provision_git_commands_reuse_only_the_validated_empty_home(self):
+        command = _git_command(self.git_home, "status", "--porcelain")
+        self.assertEqual(command[:2], ("/usr/bin/env", "-i"))
+        for value in (
+            f"HOME={self.git_home}",
+            "PATH=/usr/bin:/bin",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            "GIT_CONFIG_SYSTEM=/dev/null",
+            "GIT_TERMINAL_PROMPT=0",
+            "GIT_ALLOW_PROTOCOL=https",
+            "/usr/bin/git",
+            "core.hooksPath=/dev/null",
+            "core.fsmonitor=false",
+            "credential.helper=",
+            "protocol.file.allow=never",
+            "protocol.ext.allow=never",
+        ):
+            self.assertIn(value, command)
+        self.assertEqual(command[-2:], ("status", "--porcelain"))
+
     def test_published_files_have_exact_modes_under_restrictive_umask(self):
         with tempfile.TemporaryDirectory() as directory:
             parent_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
@@ -483,6 +538,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=lambda _path: None,
+                git_home=self.git_home,
             )
 
     def test_failed_initial_apparmor_load_leaves_no_false_provisioning_anchor(self):
@@ -500,6 +556,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=fail_load,
+                git_home=self.git_home,
             )
         self.assertFalse(retry_paths.config.exists())
         self.assertFalse(retry_paths.authority.exists())
@@ -513,6 +570,7 @@ class ProvisionTests(TrustedHostFixture):
             owner_uid=os.geteuid(),
             require_remote_tip=False,
             apparmor_loader=lambda _path: None,
+            git_home=self.git_home,
         )
         self.assertEqual(receipt["authority_commit"], self.authority)
 
@@ -533,6 +591,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=lambda _path: None,
+                git_home=self.git_home,
             )
 
         receipt = _provision(
@@ -543,6 +602,7 @@ class ProvisionTests(TrustedHostFixture):
             owner_uid=os.geteuid(),
             require_remote_tip=False,
             apparmor_loader=lambda _path: None,
+            git_home=self.git_home,
         )
         self.assertEqual(receipt["action"], "replace-authority")
         self.assertEqual(receipt["previous_authority_commit"], self.authority)
@@ -563,6 +623,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=lambda _path: None,
+                git_home=self.git_home,
             )
         (self.source / "dirty").unlink()
 
@@ -574,6 +635,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=lambda _path: None,
+                git_home=self.git_home,
             )
 
         self._git("remote", "set-url", "github", "https://example.com/attacker.git")
@@ -585,6 +647,7 @@ class ProvisionTests(TrustedHostFixture):
                 owner_uid=os.geteuid(),
                 require_remote_tip=False,
                 apparmor_loader=lambda _path: None,
+                git_home=self.git_home,
             )
 
     def test_temp_root_provisioning_never_names_live_system_paths(self):
@@ -667,6 +730,16 @@ class ReleaseWrapperTests(unittest.TestCase):
             check=False,
         )
 
+    def _provision_ceremony(self):
+        result = self._run("provision", SHA)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def _git_function(self, ceremony):
+        start = ceremony.index("git() {")
+        end = ceremony.index("\n}", start) + 2
+        return ceremony[start:end]
+
     def test_test_mode_is_model_free_and_setup_is_non_authority(self):
         result = self._run("test")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -748,6 +821,120 @@ class ReleaseWrapperTests(unittest.TestCase):
         self.assertNotIn(str(self.repo), result.stdout)
         self.assertNotIn("$'", result.stdout)
         self.assertIn("/usr/bin/printf '%s\\t%s'", result.stdout)
+
+    def test_provision_uses_validated_ephemeral_run_bootstrap_with_cleanup(self):
+        ceremony = self._provision_ceremony()
+        self.assertNotIn("/var/lib/alloy-swebench-bootstrap", ceremony)
+        self.assertIn("/usr/bin/test ! -L /run", ceremony)
+        self.assertIn("/usr/bin/stat -c", ceremony)
+        self.assertIn("directory:0:0:", ceremony)
+        self.assertIn("/usr/bin/mktemp -d /run/alloy-swebench-bootstrap.XXXXXXXX", ceremony)
+        self.assertIn("directory:0:0:700", ceremony)
+        self.assertIn("trap cleanup 0", ceremony)
+        self.assertIn('/usr/bin/rm -rf -- "$bootstrap"', ceremony)
+
+    def test_every_bootstrap_git_command_has_an_empty_fixed_environment_and_safe_config(self):
+        ceremony = self._provision_ceremony()
+        git_function = self._git_function(ceremony)
+        for value in (
+            "/usr/bin/env -i",
+            'HOME="$home"',
+            "PATH=/usr/bin:/bin",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            "GIT_CONFIG_SYSTEM=/dev/null",
+            "GIT_TERMINAL_PROMPT=0",
+            "GIT_ALLOW_PROTOCOL=https",
+            "/usr/bin/git",
+            "-c core.hooksPath=/dev/null",
+            "-c core.fsmonitor=false",
+            "-c credential.helper=",
+            "-c protocol.file.allow=never",
+            "-c protocol.ext.allow=never",
+        ):
+            self.assertIn(value, git_function)
+        self.assertNotIn("/usr/bin/git", ceremony.replace(git_function, ""))
+        self.assertIn(
+            'test "$(git -C "$checkout" remote get-url --all github)" = "$canonical"',
+            ceremony,
+        )
+        self.assertIn(
+            'test "$(git -C "$checkout" rev-parse --verify FETCH_HEAD^{commit})" = "$authority"',
+            ceremony,
+        )
+        self.assertIn('case "$tree" in *"160000 commit "*', ceremony)
+        self.assertIn('test ! -e "$checkout/.gitmodules"', ceremony)
+
+    def test_bootstrap_git_ignores_config_injection_hooks_fsmonitor_helpers_and_protocols(self):
+        ceremony = self._provision_ceremony()
+        git_function = self._git_function(ceremony)
+        with tempfile.TemporaryDirectory(prefix="alloy git contamination ") as directory:
+            root = Path(directory)
+            malicious_home = root / "malicious-home"
+            empty_home = root / "empty-home"
+            repository = root / "repository"
+            sentinels = {
+                name: root / f"{name}-executed"
+                for name in ("hook", "fsmonitor", "helper", "ext")
+            }
+            malicious_home.mkdir()
+            empty_home.mkdir(mode=0o700)
+            for name, sentinel in sentinels.items():
+                executable = root / name
+                executable.write_text(f"#!/bin/sh\n/usr/bin/touch {shlex.quote(str(sentinel))}\n")
+                executable.chmod(0o755)
+            hooks = root / "hooks"
+            hooks.mkdir()
+            shutil.copyfile(root / "hook", hooks / "pre-commit")
+            (hooks / "pre-commit").chmod(0o755)
+            global_config = malicious_home / ".gitconfig"
+            global_config.write_text(
+                "[core]\n"
+                f"\thooksPath = {hooks}\n"
+                f"\tfsmonitor = {root / 'fsmonitor'}\n"
+                "[credential]\n"
+                f"\thelper = !{root / 'helper'}\n"
+                f"[url \"ext::{root / 'ext'}\"]\n"
+                "\tinsteadOf = https://example.invalid/\n"
+                "[protocol \"file\"]\n\tallow = always\n"
+                "[protocol \"ext\"]\n\tallow = always\n"
+            )
+            probe = (
+                "set -eu\n"
+                f"home={shlex.quote(str(empty_home))}\n"
+                f"{git_function}\n"
+                f"git init --quiet {shlex.quote(str(repository))}\n"
+                f"git -C {shlex.quote(str(repository))} -c user.name=Tests "
+                "-c user.email=tests@example.com commit --allow-empty --quiet -m fixture\n"
+                f"git -C {shlex.quote(str(repository))} status --porcelain\n"
+                f"test \"$(git -C {shlex.quote(str(repository))} config --get core.hooksPath)\" = /dev/null\n"
+                f"test \"$(git -C {shlex.quote(str(repository))} config --get core.fsmonitor)\" = false\n"
+                f"test -z \"$(git -C {shlex.quote(str(repository))} config --get-all credential.helper)\"\n"
+                f"test \"$(git -C {shlex.quote(str(repository))} config --get protocol.file.allow)\" = never\n"
+                f"test \"$(git -C {shlex.quote(str(repository))} config --get protocol.ext.allow)\" = never\n"
+                f"test -z \"$(git -C {shlex.quote(str(repository))} config --get-regexp '^url\\.' || :)\"\n"
+                f"if git ls-remote file://{shlex.quote(str(repository))}; then exit 91; fi\n"
+                f"if git ls-remote 'ext::{root / 'ext'}'; then exit 92; fi\n"
+            )
+            environment = {
+                **os.environ,
+                "HOME": str(malicious_home),
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_SYSTEM": str(global_config),
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "url.ext::malicious.insteadOf",
+                "GIT_CONFIG_VALUE_0": "https://example.invalid/",
+            }
+            result = subprocess.run(
+                ["/bin/sh", "-eu"],
+                input=probe,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(all(not path.exists() for path in sentinels.values()))
 
     def test_provision_requires_one_explicit_full_lowercase_authority_sha(self):
         for arguments in (("provision",), ("provision", "A" * 40), ("provision", SHA, SHA)):

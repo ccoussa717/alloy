@@ -57,23 +57,69 @@ case "$SUBCOMMAND" in
     ;;
   provision)
     printf '%s\n' \
-      "/usr/bin/sudo -H /bin/sh -eu -c '" \
+      "/usr/bin/sudo -H /bin/sh -eu -s -- '$AUTHORITY_SHA' <<'ALLOY_SWEBENCH_BOOTSTRAP'" \
       'umask 077' \
       'authority="$1"' \
-      'bootstrap="/var/lib/alloy-swebench-bootstrap-$authority"' \
+      'canonical=https://github.com/ccoussa717/alloy.git' \
+      '/usr/bin/test ! -L /run' \
+      "run_metadata=\$(/usr/bin/stat -c '%F:%u:%g:%a' -- /run)" \
+      'case "$run_metadata" in' \
+      '  directory:0:0:*) ;;' \
+      '  *) exit 1 ;;' \
+      'esac' \
+      'run_mode=${run_metadata##*:}' \
+      '/usr/bin/test $((0$run_mode & 0022)) -eq 0' \
+      'bootstrap=$(/usr/bin/mktemp -d /run/alloy-swebench-bootstrap.XXXXXXXX)' \
+      'cleanup() {' \
+      '  status=$?' \
+      '  trap - 0 HUP INT TERM' \
+      '  /usr/bin/rm -rf -- "$bootstrap"' \
+      '  exit "$status"' \
+      '}' \
+      'trap cleanup 0' \
+      "trap 'exit 129' HUP" \
+      "trap 'exit 130' INT" \
+      "trap 'exit 143' TERM" \
+      "bootstrap_metadata=\$(/usr/bin/stat -c '%F:%u:%g:%a' -- \"\$bootstrap\")" \
+      '/usr/bin/test "$bootstrap_metadata" = directory:0:0:700' \
+      'home="$bootstrap/home"' \
       'checkout="$bootstrap/authority"' \
-      '/usr/bin/mkdir -m 0700 "$bootstrap"' \
-      '/usr/bin/git init --quiet "$checkout"' \
-      'advertised=$(/usr/bin/git ls-remote https://github.com/ccoussa717/alloy.git refs/heads/main)' \
+      '/usr/bin/mkdir -m 0700 -- "$home"' \
+      'git() {' \
+      '  /usr/bin/env -i \' \
+      '    HOME="$home" \' \
+      '    PATH=/usr/bin:/bin \' \
+      '    GIT_CONFIG_NOSYSTEM=1 \' \
+      '    GIT_CONFIG_GLOBAL=/dev/null \' \
+      '    GIT_CONFIG_SYSTEM=/dev/null \' \
+      '    GIT_TERMINAL_PROMPT=0 \' \
+      '    GIT_ALLOW_PROTOCOL=https \' \
+      '    /usr/bin/git \' \
+      '    -c core.hooksPath=/dev/null \' \
+      '    -c core.fsmonitor=false \' \
+      '    -c credential.helper= \' \
+      '    -c protocol.file.allow=never \' \
+      '    -c protocol.ext.allow=never \' \
+      '    "$@"' \
+      '}' \
+      'git init --quiet "$checkout"' \
+      'git -C "$checkout" remote add github "$canonical"' \
+      'test "$(git -C "$checkout" remote get-url --all github)" = "$canonical"' \
+      'test "$(git -C "$checkout" remote get-url --push --all github)" = "$canonical"' \
+      'advertised=$(git -C "$checkout" ls-remote github refs/heads/main)' \
       'expected=$(/usr/bin/printf '\''%s\t%s'\'' "$authority" refs/heads/main)' \
       'test "$advertised" = "$expected"' \
-      '/usr/bin/git -C "$checkout" fetch --quiet --no-tags --depth=1 https://github.com/ccoussa717/alloy.git "$authority"' \
-      '/usr/bin/git -C "$checkout" checkout --quiet --detach FETCH_HEAD' \
-      'test "$(/usr/bin/git -C "$checkout" rev-parse HEAD)" = "$authority"' \
-      'test -z "$(/usr/bin/git -C "$checkout" status --porcelain=v1 --untracked-files=all)"' \
-      '/usr/bin/git -C "$checkout" remote add github https://github.com/ccoussa717/alloy.git' \
-      'exec /usr/bin/python3 -I -E -s "$checkout/benchmarks/swebench/provision.py" "$authority"' \
-      "' sh '$AUTHORITY_SHA'"
+      'git -C "$checkout" fetch --quiet --no-tags --depth=1 github "$authority"' \
+      'test "$(git -C "$checkout" rev-parse --verify FETCH_HEAD^{commit})" = "$authority"' \
+      'git -C "$checkout" checkout --quiet --detach FETCH_HEAD' \
+      'test "$(git -C "$checkout" rev-parse --verify HEAD)" = "$authority"' \
+      'test -z "$(git -C "$checkout" status --porcelain=v1 --untracked-files=all)"' \
+      'test "$(git -C "$checkout" remote get-url --all github)" = "$canonical"' \
+      'tree=$(git -C "$checkout" ls-tree -r --full-tree HEAD)' \
+      'case "$tree" in *"160000 commit "*) exit 1 ;; esac' \
+      'test ! -e "$checkout/.gitmodules"' \
+      '/usr/bin/env -i HOME="$home" PATH=/usr/bin:/bin /usr/bin/python3 -I -E -s "$checkout/benchmarks/swebench/provision.py" "$authority"' \
+      'ALLOY_SWEBENCH_BOOTSTRAP'
     exit 0
     ;;
 esac
