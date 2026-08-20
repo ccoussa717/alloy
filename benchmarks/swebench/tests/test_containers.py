@@ -398,6 +398,22 @@ class DockerRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(handle, ContainerHandle("alloy-agent-run-123", "container-id", "run-123"))
 
+    def test_explicit_dns_servers_are_validated_emitted_and_inspected(self):
+        spec = dataclasses.replace(self.spec, dns_servers=("192.0.2.1",))
+        inspected = self.inspection()
+        inspected["HostConfig"]["Dns"] = ["192.0.2.1"]
+        runtime = self.runtime(ScriptedRunner(completed(json.dumps([inspected]))))
+
+        arguments = runtime._create_arguments(spec)
+        runtime.inspect_security(
+            ContainerHandle(spec.name, "container-id", spec.run_id), spec
+        )
+
+        self.assertIn("--dns", arguments)
+        self.assertEqual(arguments[arguments.index("--dns") + 1], "192.0.2.1")
+        with self.assertRaisesRegex(ValueError, "DNS"):
+            runtime._validate_spec(dataclasses.replace(spec, dns_servers=("127.0.0.11",)))
+
     def test_create_rejects_daemon_identity_drift_after_preflight(self):
         changed = {**self.docker_info(), "ID": "different-daemon"}
         runner = ScriptedRunner(

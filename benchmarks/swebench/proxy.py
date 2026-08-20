@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import fcntl
 import hashlib
 import ipaddress
@@ -13,6 +14,7 @@ import socketserver
 import stat
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
@@ -44,8 +46,8 @@ FIXED_ENV = {
 }
 SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 TOKEN_PREFIX = "alloy-swe-"
+PROXY_CONTAINER_PREFIX = "alloy-proxy-"
 HOP_HEADERS = {
-    "connection",
     "expect",
     "keep-alive",
     "proxy-connection",
@@ -188,12 +190,18 @@ class ProxyPolicy:
                 raise ValueError("request headers must be strings")
             lowered = name.lower()
             grouped.setdefault(lowered, []).append(value)
+            if lowered == "connection":
+                if value.lower().strip() != "close":
+                    raise ValueError("only Connection: close is accepted")
+                continue
             if lowered in HOP_HEADERS:
                 raise ValueError("hop-by-hop and streaming request headers are forbidden")
             if "\r" in value or "\n" in value:
                 raise ValueError("folded request headers are forbidden")
         if grouped.get("host") != [self.expected_host]:
             raise ValueError("request Host is not the proxy endpoint")
+        if len(grouped.get("connection", [])) > 1:
+            raise ValueError("duplicate Connection headers are forbidden")
         if "transfer-encoding" in grouped:
             raise ValueError("transfer encoding is forbidden")
 
@@ -282,6 +290,7 @@ class HostRelay:
 NftRunner = Callable[..., subprocess.CompletedProcess[str]]
 RelayFactory = Callable[[tuple[str, int], tuple[str, int]], HostRelay]
 LockFactory = Callable[[], _ProcessLock]
+ReadyProbe = Callable[[str, int], None]
 
 
 class ProxyNetwork:
@@ -295,6 +304,7 @@ class ProxyNetwork:
         nft_runner: NftRunner = subprocess.run,
         relay_factory: RelayFactory = HostRelay,
         lock_factory: LockFactory = _ProcessLock,
+        ready_probe: ReadyProbe | None = None,
         install_signal_handlers: bool = True,
     ) -> None:
         self.runtime = runtime
@@ -304,6 +314,7 @@ class ProxyNetwork:
         self.nft_runner = nft_runner
         self.relay_factory = relay_factory
         self.lock_factory = lock_factory
+        self.ready_probe = ready_probe or self._probe_ready
         self.install_signal_handlers = install_signal_handlers
         self._run_id: str | None = None
         self._lock: _ProcessLock | None = None
@@ -365,10 +376,68 @@ class ProxyNetwork:
                 identifiers.add(identifier)
         return tuple(sorted(identifiers))
 
+    def _proxy_container_ids(self) -> tuple[str, ...]:
+        labeled = self._docker(
+            "ps", "--all", "--filter", f"label={LABEL}", "--format", "{{.ID}}"
+        )
+        namespaced = self._docker(
+            "ps", "--all", "--format", "{{.ID}} {{.Names}}"
+        )
+        identifiers = {line for line in labeled.stdout.splitlines() if line}
+        for line in namespaced.stdout.splitlines():
+            identifier, separator, name = line.partition(" ")
+            if separator and name.startswith(PROXY_CONTAINER_PREFIX):
+                identifiers.add(identifier)
+        return tuple(sorted(identifiers))
+
+    def _inspect_container(self, identifier: str) -> dict[str, object]:
+        result = self._docker("inspect", identifier)
+        value = self._json(result, "container inspection")
+        if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+            raise ProxyStateError("Docker returned invalid container inspection JSON")
+        return value[0]
+
+    def _reconcile_containers(self) -> None:
+        from benchmarks.swebench.containers import ContainerHandle
+
+        stale: list[ContainerHandle] = []
+        active: list[str] = []
+        for identifier in self._proxy_container_ids():
+            metadata = self._inspect_container(identifier)
+            name_value = metadata.get("Name")
+            name = name_value.removeprefix("/") if isinstance(name_value, str) else ""
+            labels = self._mapping(self._mapping(metadata.get("Config")).get("Labels"))
+            run_id = labels.get(LABEL)
+            if not name.startswith(PROXY_CONTAINER_PREFIX):
+                continue
+            if (
+                not isinstance(run_id, str)
+                or len(run_id) > 128
+                or SAFE_RUN_ID.fullmatch(run_id) is None
+            ):
+                raise ProxyStateError("foreign proxy container name collision exists")
+            container_id = metadata.get("Id")
+            if not isinstance(container_id, str) or not container_id:
+                raise ProxyStateError("foreign proxy container has invalid identity")
+            state = self._mapping(metadata.get("State"))
+            status = state.get("Status")
+            if state.get("Running") is True or status not in {"created", "exited", "dead"}:
+                active.append(name)
+            else:
+                stale.append(ContainerHandle(name, container_id, run_id))
+        if active:
+            raise ProxyStateError("active gate-owned proxy container state exists")
+        for handle in stale:
+            self.runtime.force_remove(handle)
+
     def _inspect_network(self, identifier: str, *, absent_ok: bool = False) -> dict[str, object] | None:
         result = self._docker("network", "inspect", identifier, check=not absent_ok)
         if result.returncode != 0:
-            if absent_ok and "no such network" in result.stderr.lower():
+            stderr = result.stderr.lower()
+            if absent_ok and (
+                "no such network" in stderr
+                or f"network {identifier.lower()} not found" in stderr
+            ):
                 return None
             raise ProxyStateError("could not prove Docker network state")
         value = self._json(result, "network inspection")
@@ -460,6 +529,7 @@ class ProxyNetwork:
             raise ProxyStateError("could not prove nftables table removal")
 
     def _reconcile(self) -> None:
+        self._reconcile_containers()
         active_runs: set[str] = set()
         stale: list[tuple[str, str]] = []
         for identifier in self._owned_network_ids():
@@ -584,6 +654,7 @@ class ProxyNetwork:
                 MountSpec(proxy_path, "/gate/proxy.py", True, "bind"),
                 MountSpec(server_path, "/gate/proxy_server.py", True, "bind"),
             ),
+            dns_servers=("192.0.2.1",),
         )
         return self.runtime.create(spec)
 
@@ -595,8 +666,19 @@ class ProxyNetwork:
         egress_network: str,
         egress_ip: str,
     ) -> None:
+        self._docker("network", "disconnect", "none", handle.container_id)
         self._docker("network", "connect", "--ip", egress_ip, egress_network, handle.container_id)
         self._docker("network", "connect", "--ip", agent_ip, agent_network, handle.container_id)
+
+    def _stop_proxy(self, handle: "ContainerHandle") -> None:
+        self._docker(
+            "exec", handle.container_id, "python3", "-c",
+            "import os, signal; os.kill(1, signal.SIGTERM)",
+            check=False,
+        )
+        if self.runtime.wait(handle, timeout=10) not in {0, 143}:
+            raise ProxyStateError("proxy container did not terminate cleanly")
+        self.runtime.force_remove(handle)
 
     def _arm_cleanup(self) -> None:
         if not self._atexit_registered:
@@ -605,6 +687,30 @@ class ProxyNetwork:
         if self.install_signal_handlers and threading.current_thread() is threading.main_thread():
             self._previous_sigterm = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, self._sigterm)
+
+    @staticmethod
+    def _probe_ready(host: str, port: int) -> None:
+        deadline = time.monotonic() + 10
+        last_error: BaseException | None = None
+        request = (
+            f"GET /api/tags HTTP/1.1\r\nHost: {host}:{port}\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=1) as connection:
+                    connection.sendall(request)
+                    response = connection.recv(4096)
+                if b" 200 " in response:
+                    return
+                status = response.partition(b"\r\n")[0][:80].decode("ascii", "replace")
+                last_error = ProxyStateError(
+                    f"proxy readiness returned a non-success response: {status}"
+                )
+            except OSError as error:
+                last_error = error
+            time.sleep(0.05)
+        raise ProxyStateError("proxy did not become ready before exposure") from last_error
 
     def _atexit_close(self) -> None:
         try:
@@ -658,6 +764,7 @@ class ProxyNetwork:
                 egress_network,
                 egress_ip,
             )
+            self.ready_probe(agent_ip, PROXY_PORT)
             return ProxyEndpoint(
                 f"http://{agent_ip}:{PROXY_PORT}",
                 agent_ip,
@@ -672,13 +779,27 @@ class ProxyNetwork:
                 raise ProxyCleanupError((original_error, cleanup_error)) from original_error
             raise
 
+    @contextlib.contextmanager
+    def running(self, run_id: str):
+        endpoint = self.start(run_id)
+        try:
+            yield endpoint
+        except BaseException as original_error:
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                raise ProxyCleanupError((original_error, cleanup_error)) from original_error
+            raise
+        else:
+            self.close()
+
     def close(self) -> None:
         if self._closed:
             return
         errors: list[BaseException] = []
         if self._container is not None:
             try:
-                self.runtime.force_remove(self._container)
+                self._stop_proxy(self._container)
             except BaseException as error:
                 errors.append(error)
             else:

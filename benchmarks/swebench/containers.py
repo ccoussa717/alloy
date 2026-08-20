@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -54,6 +55,7 @@ class ContainerSpec:
     ipc_mode: str = "private"
     uts_mode: str = ""
     devices: tuple[str, ...] = ()
+    dns_servers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -429,6 +431,15 @@ class DockerRuntime:
             raise ValueError("untrusted containers must use the none network")
         if spec.devices:
             raise ValueError("devices are forbidden")
+        if len(spec.dns_servers) > 3 or len(set(spec.dns_servers)) != len(spec.dns_servers):
+            raise ValueError("DNS servers must be a unique bounded set of IP literals")
+        for value in spec.dns_servers:
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError as error:
+                raise ValueError("DNS servers must be IP literals") from error
+            if address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified:
+                raise ValueError("DNS servers may not use local or special-purpose addresses")
         if IMAGE_ID.fullmatch(spec.image_id) is None:
             raise ValueError("expected image ID must be a sha256 digest")
         for mount in spec.mounts:
@@ -479,6 +490,8 @@ class DockerRuntime:
             arguments.extend(("--cap-add", capability))
         for key, value in spec.environment:
             arguments.extend(("--env", f"{key}={value}"))
+        for value in spec.dns_servers:
+            arguments.extend(("--dns", value))
         for mount in spec.mounts:
             mount_type = mount.kind
             readonly = ",readonly" if mount.read_only else ""
@@ -623,6 +636,10 @@ class DockerRuntime:
             raise RuntimeError("container network namespace drifted")
         if host.get("Devices") not in ([], None):
             raise RuntimeError("container devices drifted")
+        dns = host.get("Dns")
+        actual_dns = () if dns in (None, []) else tuple(dns) if isinstance(dns, list) else None
+        if actual_dns != spec.dns_servers:
+            raise RuntimeError("container DNS configuration drifted")
         if inspected.get("Image") != spec.image_id:
             raise RuntimeError("container image ID drifted")
         networks = network.get("Networks")

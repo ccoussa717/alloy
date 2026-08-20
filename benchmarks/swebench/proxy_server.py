@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 RESPONSE_LIMIT = 64 * 1024 * 1024
 RESPONSE_TIMEOUT_SECONDS = 300
+RESPONSE_HEADER_LIMIT = 32 * 1024
 HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -152,8 +153,27 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             ) as response:
                 if not 200 <= response.status < 300:
                     raise RuntimeError("upstream returned a disallowed status")
+                raw_items = getattr(response.headers, "raw_items", None)
+                response_headers = (
+                    list(raw_items()) if callable(raw_items) else list(response.headers.items())
+                )
+                if sum(
+                    len(name) + len(value) + 4 for name, value in response_headers
+                ) > self.server.response_header_limit:
+                    raise RuntimeError("upstream response headers exceeded byte limit")
+                grouped: dict[str, list[str]] = {}
+                for name, value in response_headers:
+                    grouped.setdefault(name.lower(), []).append(value)
+                lengths = grouped.get("content-length", [])
+                if (
+                    len(lengths) > 1
+                    or (lengths and not lengths[0].isdigit())
+                    or (lengths and "transfer-encoding" in grouped)
+                ):
+                    raise RuntimeError("upstream response framing is ambiguous")
+                expected_length = int(lengths[0]) if lengths else None
                 self.send_response(response.status)
-                for name, value in response.headers.items():
+                for name, value in response_headers:
                     lowered = name.lower()
                     if lowered in RESPONSE_HEADERS:
                         self.send_header(name, value)
@@ -164,20 +184,42 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 transferred = 0
                 while True:
-                    if time.monotonic() - started > self.server.response_timeout:
+                    remaining_time = self.server.response_timeout - (time.monotonic() - started)
+                    if remaining_time <= 0:
                         raise TimeoutError("upstream response exceeded time limit")
-                    chunk = response.read(64 * 1024)
+                    self._set_upstream_timeout(response, remaining_time)
+                    remaining_bytes = self.server.response_limit - transferred
+                    chunk = response.read1(min(64 * 1024, remaining_bytes + 1))
                     if not chunk:
                         break
-                    transferred += len(chunk)
-                    if transferred > self.server.response_limit:
+                    accepted = chunk[:remaining_bytes]
+                    if accepted:
+                        self.wfile.write(accepted)
+                        self.wfile.flush()
+                        transferred += len(accepted)
+                    if len(chunk) > len(accepted):
                         raise RuntimeError("upstream response exceeded byte limit")
-                    self.wfile.write(chunk)
-        except (OSError, TimeoutError, RuntimeError, urllib.error.URLError):
+                if expected_length is not None and transferred != expected_length:
+                    raise RuntimeError("upstream response ended before content length")
+        except (
+            OSError,
+            TimeoutError,
+            RuntimeError,
+            http.client.HTTPException,
+            urllib.error.URLError,
+        ):
             if not headers_sent:
                 self._reject(502, "upstream request failed", request_id)
             else:
                 self.close_connection = True
+
+    @staticmethod
+    def _set_upstream_timeout(response, timeout: float) -> None:
+        stream = getattr(response, "fp", None)
+        raw = getattr(stream, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.settimeout(max(timeout, 0.001))
 
     def _reject(self, status: int, message: str, request_id: str | None = None) -> None:
         payload = json.dumps(
@@ -204,6 +246,7 @@ def create_server(
     *,
     response_limit: int = RESPONSE_LIMIT,
     response_timeout: int = RESPONSE_TIMEOUT_SECONDS,
+    response_header_limit: int = RESPONSE_HEADER_LIMIT,
 ) -> BoundedThreadingHTTPServer:
     parsed = urlsplit(origin)
     if (
@@ -223,6 +266,7 @@ def create_server(
     server.origin = origin
     server.response_limit = response_limit
     server.response_timeout = response_timeout
+    server.response_header_limit = response_header_limit
     server.opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}), NoRedirectHandler()
     )
