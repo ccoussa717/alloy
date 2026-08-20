@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -6,9 +7,12 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 from benchmarks.swebench.coordinator import COORDINATOR_PATHS
+import benchmarks.swebench.host_launcher as host_launcher_module
 from benchmarks.swebench.host_launcher import (
     HostPaths,
     _reject_authority_overrides,
@@ -29,6 +33,41 @@ from benchmarks.swebench.provision import (
 SHA = "a" * 40
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WRAPPER = REPO_ROOT / "scripts" / "run-swebench-release-smoke.sh"
+
+
+class HostLauncherArgumentTests(unittest.TestCase):
+    def test_authorize_retry_rejects_missing_or_blank_reason_before_trust_and_git(self):
+        cases = (
+            ["authorize-retry", SHA],
+            ["authorize-retry", SHA, ""],
+            ["authorize-retry", SHA, " "],
+            ["authorize-retry", SHA, "\t\n"],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), mock.patch.object(
+                host_launcher_module.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                host_launcher_module, "_reject_authority_overrides"
+            ), mock.patch.object(
+                host_launcher_module, "_fixed_environment"
+            ), mock.patch.object(
+                host_launcher_module, "load_trusted_host"
+            ) as trust, mock.patch.object(
+                host_launcher_module, "_candidate_is_advertised"
+            ) as candidate, mock.patch.object(
+                host_launcher_module, "_run_git"
+            ) as git, mock.patch.object(
+                host_launcher_module, "_authority_main"
+            ) as authority:
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    result = host_launcher_module.main(arguments)
+                self.assertEqual(result, 64, stderr.getvalue())
+                self.assertIn("invalid launcher arguments", stderr.getvalue())
+                trust.assert_not_called()
+                candidate.assert_not_called()
+                git.assert_not_called()
+                authority.assert_not_called()
 
 
 class HostLauncherSubprocessTests(unittest.TestCase):

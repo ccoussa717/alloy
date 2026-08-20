@@ -682,6 +682,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         print("error: invalid launcher arguments", file=sys.stderr)
         return 64
+    if mode == "authorize-retry" and not arguments[2].strip():
+        print("error: invalid launcher arguments", file=sys.stderr)
+        return 64
     if mode not in {"dry-run", "release", "authorize-retry"}:
         print("error: invalid launcher mode", file=sys.stderr)
         return 64
