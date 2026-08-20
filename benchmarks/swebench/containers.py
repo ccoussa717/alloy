@@ -12,6 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Sequence
 
+from benchmarks.swebench.cleanup import CleanupUncertaintyError
 from benchmarks.swebench.profile import BenchmarkProfile, ImagePin
 
 
@@ -95,7 +96,7 @@ class DaemonIdentityDriftError(RuntimeError):
     pass
 
 
-class CleanupUncertainError(RuntimeError):
+class CleanupUncertainError(CleanupUncertaintyError):
     def __init__(
         self,
         handle: ContainerHandle,
@@ -103,8 +104,6 @@ class CleanupUncertainError(RuntimeError):
         cleanup_error: BaseException,
     ) -> None:
         self.handle = handle
-        self.original_error = original_error
-        self.cleanup_error = cleanup_error
         self.evidence = {
             "cleanup_verified": False,
             "container_id": handle.container_id,
@@ -114,21 +113,23 @@ class CleanupUncertainError(RuntimeError):
         super().__init__(
             "cleanup uncertain for "
             f"container {handle.name} ({handle.container_id}, run {handle.run_id}); "
-            f"original failure: {original_error}; cleanup failure: {cleanup_error}"
+            f"original failure: {original_error}; cleanup failure: {cleanup_error}",
+            original_error=original_error,
+            cleanup_errors=(cleanup_error,),
         )
 
 
-class VolumeCleanupUncertainError(RuntimeError):
+class VolumeCleanupUncertainError(CleanupUncertaintyError):
     def __init__(
         self, name: str, run_id: str, original_error: BaseException, cleanup_error: BaseException,
     ) -> None:
         self.name = name
         self.run_id = run_id
-        self.original_error = original_error
-        self.cleanup_error = cleanup_error
         super().__init__(
             f"cleanup uncertain for volume {name} (run {run_id}); original failure: "
-            f"{original_error}; cleanup failure: {cleanup_error}"
+            f"{original_error}; cleanup failure: {cleanup_error}",
+            original_error=original_error,
+            cleanup_errors=(cleanup_error,),
         )
 
 

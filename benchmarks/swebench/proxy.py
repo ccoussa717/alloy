@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from benchmarks.swebench.cleanup import CleanupUncertaintyError
+
 if TYPE_CHECKING:
     from benchmarks.swebench.containers import ContainerHandle, DockerRuntime
 
@@ -81,10 +83,19 @@ class ProxyStateError(RuntimeError):
     pass
 
 
-class ProxyCleanupError(RuntimeError):
-    def __init__(self, errors: Sequence[BaseException]) -> None:
+class ProxyCleanupError(CleanupUncertaintyError):
+    def __init__(
+        self,
+        errors: Sequence[BaseException],
+        *,
+        original_error: BaseException | None = None,
+    ) -> None:
         self.errors = tuple(errors)
-        super().__init__("proxy cleanup could not prove complete: " + "; ".join(map(str, errors)))
+        super().__init__(
+            "proxy cleanup could not prove complete: " + "; ".join(map(str, errors)),
+            original_error=original_error,
+            cleanup_errors=self.errors,
+        )
 
 
 class _ProcessLock:
@@ -783,7 +794,9 @@ class ProxyNetwork:
             try:
                 self.close()
             except BaseException as cleanup_error:
-                raise ProxyCleanupError((original_error, cleanup_error)) from original_error
+                raise ProxyCleanupError(
+                    (cleanup_error,), original_error=original_error
+                ) from original_error
             raise
 
     @contextlib.contextmanager
@@ -795,7 +808,9 @@ class ProxyNetwork:
             try:
                 self.close()
             except BaseException as cleanup_error:
-                raise ProxyCleanupError((original_error, cleanup_error)) from original_error
+                raise ProxyCleanupError(
+                    (cleanup_error,), original_error=original_error
+                ) from original_error
             raise
         else:
             self.close()

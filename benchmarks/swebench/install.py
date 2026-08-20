@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from benchmarks.swebench.cleanup import CleanupUncertaintyError
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerSpec,
@@ -86,14 +87,14 @@ class PreparedTarget:
     agent_volume: str
 
 
-class ResourceCleanupUncertainError(RuntimeError):
+class ResourceCleanupUncertainError(CleanupUncertaintyError):
     def __init__(self, resource: str, original_error: BaseException, cleanup_error: BaseException) -> None:
         self.resource = resource
-        self.original_error = original_error
-        self.cleanup_error = cleanup_error
         super().__init__(
             f"cleanup uncertain for {resource}; original failure: {original_error}; "
-            f"cleanup failure: {cleanup_error}"
+            f"cleanup failure: {cleanup_error}",
+            original_error=original_error,
+            cleanup_errors=(cleanup_error,),
         )
 
 

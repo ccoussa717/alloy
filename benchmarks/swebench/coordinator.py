@@ -35,6 +35,10 @@ from benchmarks.swebench.checkout import (
     reconstruct_trusted_checkout,
     validate_exported_tar,
 )
+from benchmarks.swebench.cleanup import (
+    classify_cleanup_uncertainty,
+    flatten_cleanup_failures,
+)
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerHandle,
@@ -49,7 +53,6 @@ from benchmarks.swebench.dataset import (
     write_private_dataset_json,
 )
 from benchmarks.swebench.evaluator import (
-    EvaluationCleanupError,
     EvaluationResult,
     EvaluatorEnvironment,
 )
@@ -116,6 +119,7 @@ COORDINATOR_PATHS = (
     "benchmarks/swebench/attempts.py",
     "benchmarks/swebench/authority.py",
     "benchmarks/swebench/checkout.py",
+    "benchmarks/swebench/cleanup.py",
     "benchmarks/swebench/containers.py",
     "benchmarks/swebench/coordinator.py",
     "benchmarks/swebench/dataset.py",
@@ -652,7 +656,11 @@ class TrustedRunServices:
     def sign_results(self, state: _RunState) -> str:
         if self.writer is None:
             raise RuntimeError("trusted result writer is unavailable")
-        if not self.cleanup_completed or state.manifest.get("cleanup_errors"):
+        if (
+            not self.cleanup_completed
+            or state.manifest.get("cleanup_proven") is not True
+            or state.manifest.get("cleanup_errors")
+        ):
             raise RuntimeError("terminal evidence cannot be signed before clean teardown")
         agent_safe = self.agent_absent or not self.agent_create_attempted
         evaluator_safe = self.evaluator_absent or not self.evaluator_launch_attempted
@@ -926,14 +934,21 @@ class TrustedCoordinator:
             operation()
 
         def record_cleanup(phase_name: str, caught: BaseException) -> None:
-            cleanup_errors.append((phase_name, caught))
+            cleanup_errors.extend(
+                (phase_name, failure)
+                for failure in flatten_cleanup_failures(caught)
+            )
 
         def primary_cause(
             caught: BaseException, cleanup_phase: str
         ) -> BaseException:
-            if isinstance(caught, (CleanupUncertainError, EvaluationCleanupError)):
-                record_cleanup(cleanup_phase, caught.cleanup_error)
-                return caught.original_error
+            classified = classify_cleanup_uncertainty(caught)
+            if classified is not None:
+                original_error, failures = classified
+                cleanup_errors.extend(
+                    (cleanup_phase, failure) for failure in failures
+                )
+                return original_error
             return caught
 
         try:
@@ -997,8 +1012,12 @@ class TrustedCoordinator:
                     )
         except BaseException as caught:
             if primary_error is None:
-                primary_error = caught
+                primary_error = primary_cause(
+                    caught, f"{current_phase}_cleanup"
+                )
                 primary_phase = current_phase
+            elif caught is not primary_error:
+                record_cleanup(f"{current_phase}_cleanup", caught)
 
         if primary_error is not None:
             if isinstance(primary_error, CoordinatorFailure):
@@ -1025,6 +1044,7 @@ class TrustedCoordinator:
             status = "runtime_failure"
         state.manifest["terminal_status"] = status
         state.manifest["verdict"] = state.verdict
+        state.manifest["cleanup_proven"] = not cleanup_errors
         if primary_error is not None:
             state.manifest["primary_error"] = str(primary_error)
         state.manifest["cleanup_errors"] = [
@@ -1045,6 +1065,7 @@ class TrustedCoordinator:
                 record_cleanup("sign_results", caught)
                 state.manifest["terminal_status"] = status
                 state.manifest["primary_error"] = str(primary_error)
+                state.manifest["cleanup_proven"] = False
                 state.manifest["cleanup_errors"] = [
                     {"phase": phase_name, "error": str(error)}
                     for phase_name, error in cleanup_errors

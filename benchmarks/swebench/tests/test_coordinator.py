@@ -12,14 +12,23 @@ from benchmarks.swebench.coordinator import (
     TrustedCoordinator,
     _RunState,
 )
+from benchmarks.swebench.cleanup import CleanupUncertaintyError
 from benchmarks.swebench.attempts import GateSigner
 from benchmarks.swebench.artifacts import ResultWriter
 from benchmarks.swebench.authority import HostConfig, VerifiedCandidate
-from benchmarks.swebench.containers import CleanupUncertainError, ContainerHandle
-from benchmarks.swebench.evaluator import EvaluationResult
-from benchmarks.swebench.install import PreparedTarget, VerifiedCandidateInstall
+from benchmarks.swebench.containers import (
+    CleanupUncertainError,
+    ContainerHandle,
+    VolumeCleanupUncertainError,
+)
+from benchmarks.swebench.evaluator import EvaluationCleanupError, EvaluationResult
+from benchmarks.swebench.install import (
+    PreparedTarget,
+    ResourceCleanupUncertainError,
+    VerifiedCandidateInstall,
+)
 from benchmarks.swebench.profile import load_profile
-from benchmarks.swebench.proxy import ProxyEndpoint
+from benchmarks.swebench.proxy import ProxyCleanupError, ProxyEndpoint
 
 
 SHA = "a" * 40
@@ -158,6 +167,8 @@ class RecordingServices:
             raise AssertionError("results signed before evaluator teardown")
         if not all(item["used"] for item in self.cleanups) or "cleanup" not in self.calls:
             raise AssertionError("results signed before full cleanup")
+        if state.manifest.get("cleanup_proven") is not True:
+            raise AssertionError("results signed without proven cleanup")
         self._phase("sign_results", state)
         self.signed_manifest = dict(state.manifest)
         return "signed-evidence"
@@ -173,6 +184,215 @@ class RecordingServices:
 
 
 class CoordinatorTests(unittest.TestCase):
+    def assert_dual_failure_is_unsigned(
+        self,
+        phase,
+        uncertainty,
+        primary_message,
+        cleanup_messages,
+    ):
+        services = RecordingServices(failure=(phase, uncertainty))
+
+        evidence = TrustedCoordinator(services).release(SHA)
+
+        self.assertEqual(evidence.error, primary_message)
+        self.assertFalse(evidence.manifest["cleanup_proven"])
+        self.assertEqual(
+            [item["error"] for item in evidence.manifest["cleanup_errors"]],
+            cleanup_messages,
+        )
+        self.assertIsNone(evidence.signature)
+        self.assertIsNone(services.signed_manifest)
+        self.assertIsNotNone(services.unsigned_manifest)
+
+    def test_candidate_install_dual_failure_is_recognized_before_assignment(self):
+        self.assert_dual_failure_is_unsigned(
+            "candidate_install",
+            ResourceCleanupUncertainError(
+                "app-volume",
+                RuntimeError("candidate install failed"),
+                RuntimeError("candidate volume removal failed"),
+            ),
+            "candidate install failed",
+            ["candidate volume removal failed"],
+        )
+
+    def test_target_setup_volume_dual_failure_is_recognized_before_assignment(self):
+        self.assert_dual_failure_is_unsigned(
+            "target_setup",
+            VolumeCleanupUncertainError(
+                "target-volume",
+                "run",
+                RuntimeError("target setup failed"),
+                RuntimeError("target volume removal failed"),
+            ),
+            "target setup failed",
+            ["target volume removal failed"],
+        )
+
+    def test_proxy_dual_failure_preserves_primary_and_every_cleanup_failure(self):
+        self.assert_dual_failure_is_unsigned(
+            "proxy_start",
+            ProxyCleanupError(
+                (
+                    RuntimeError("proxy container cleanup failed"),
+                    RuntimeError("proxy network cleanup failed"),
+                ),
+                original_error=RuntimeError("proxy startup failed"),
+            ),
+            "proxy startup failed",
+            ["proxy container cleanup failed", "proxy network cleanup failed"],
+        )
+
+    def test_evaluator_dual_failure_is_unsigned_after_assignment(self):
+        self.assert_dual_failure_is_unsigned(
+            "evaluation",
+            EvaluationCleanupError(
+                RuntimeError("evaluation failed"),
+                RuntimeError("evaluator teardown failed"),
+            ),
+            "evaluation failed",
+            ["evaluator teardown failed"],
+        )
+
+    def test_container_dual_failure_is_unsigned_after_assignment(self):
+        self.assert_dual_failure_is_unsigned(
+            "agent_start",
+            CleanupUncertainError(
+                ContainerHandle("agent", "agent-id", "run"),
+                RuntimeError("container create failed"),
+                RuntimeError("container removal failed"),
+            ),
+            "container create failed",
+            ["container removal failed"],
+        )
+
+    def test_nested_cleanup_uncertainty_recursively_collects_all_failures(self):
+        nested = ResourceCleanupUncertainError(
+            "app-volume",
+            CleanupUncertainError(
+                ContainerHandle("installer", "installer-id", "run"),
+                RuntimeError("install probe failed"),
+                RuntimeError("installer container removal failed"),
+            ),
+            ProxyCleanupError(
+                (
+                    RuntimeError("volume removal failed"),
+                    RuntimeError("network removal failed"),
+                )
+            ),
+        )
+
+        self.assert_dual_failure_is_unsigned(
+            "candidate_install",
+            nested,
+            "install probe failed",
+            [
+                "installer container removal failed",
+                "volume removal failed",
+                "network removal failed",
+            ],
+        )
+
+    def test_unknown_cleanup_uncertainty_fails_closed_and_is_unsigned(self):
+        class FutureCleanupUncertainty(RuntimeError):
+            def __init__(self):
+                self.original_error = RuntimeError("future primary failed")
+                self.cleanup_errors = (
+                    RuntimeError("future cleanup one failed"),
+                    RuntimeError("future cleanup two failed"),
+                )
+                super().__init__("future cleanup uncertainty")
+
+        self.assert_dual_failure_is_unsigned(
+            "target_setup",
+            FutureCleanupUncertainty(),
+            "future primary failed",
+            ["future cleanup one failed", "future cleanup two failed"],
+        )
+
+    def test_structural_teardown_uncertainty_does_not_depend_on_class_name(self):
+        class TeardownUncertainError(RuntimeError):
+            def __init__(self):
+                self.original_error = RuntimeError("teardown primary failed")
+                self.cleanup_errors = (
+                    RuntimeError("teardown cleanup failed"),
+                )
+                super().__init__("teardown uncertainty")
+
+        self.assert_dual_failure_is_unsigned(
+            "target_setup",
+            TeardownUncertainError(),
+            "teardown primary failed",
+            ["teardown cleanup failed"],
+        )
+
+    def test_proxy_start_shape_recursively_preserves_close_failures(self):
+        proxy_start_error = ProxyCleanupError(
+            (
+                ProxyCleanupError(
+                    (
+                        RuntimeError("proxy container removal failed"),
+                        RuntimeError("proxy network removal failed"),
+                    )
+                ),
+            ),
+            original_error=RuntimeError("proxy startup failed"),
+        )
+
+        self.assert_dual_failure_is_unsigned(
+            "proxy_start",
+            proxy_start_error,
+            "proxy startup failed",
+            ["proxy container removal failed", "proxy network removal failed"],
+        )
+
+    def test_nested_uncertainty_from_cleanup_callback_collects_every_failure(self):
+        cleanup_uncertainty = ProxyCleanupError(
+            (
+                ResourceCleanupUncertainError(
+                    "proxy-volume",
+                    RuntimeError("proxy volume inspect failed"),
+                    RuntimeError("proxy volume removal failed"),
+                ),
+                RuntimeError("proxy network removal failed"),
+            )
+        )
+        services = RecordingServices(
+            cleanup_failure=("proxy_start", cleanup_uncertainty)
+        )
+
+        evidence = TrustedCoordinator(services).release(SHA)
+
+        self.assertFalse(evidence.manifest["cleanup_proven"])
+        self.assertEqual(
+            [item["error"] for item in evidence.manifest["cleanup_errors"]],
+            [
+                "proxy volume inspect failed",
+                "proxy volume removal failed",
+                "proxy network removal failed",
+            ],
+        )
+        self.assertIsNone(evidence.signature)
+        self.assertIsNone(services.signed_manifest)
+
+    def test_all_cleanup_uncertainty_types_share_the_recursive_contract(self):
+        primary = RuntimeError("primary")
+        cleanup = RuntimeError("cleanup")
+        errors = (
+            CleanupUncertainError(
+                ContainerHandle("agent", "id", "run"), primary, cleanup
+            ),
+            EvaluationCleanupError(primary, cleanup),
+            ResourceCleanupUncertainError("volume", primary, cleanup),
+            VolumeCleanupUncertainError("volume", "run", primary, cleanup),
+            ProxyCleanupError((cleanup,), original_error=primary),
+        )
+
+        self.assertTrue(
+            all(isinstance(error, CleanupUncertaintyError) for error in errors)
+        )
+
     def test_release_has_one_fixed_order_and_boundary_only_claim_consumption(self):
         services = RecordingServices()
         evidence = TrustedCoordinator(services).release(SHA)
@@ -356,8 +576,10 @@ class CoordinatorTests(unittest.TestCase):
             "evaluator_summary_sha256",
             "teardown",
             "terminal_status",
+            "cleanup_proven",
         ):
             self.assertIn(field, manifest)
+        self.assertTrue(manifest["cleanup_proven"])
         self.assertEqual(evidence.signature, "signed-evidence")
 
 
@@ -536,7 +758,11 @@ class TrustedRunServicesTests(unittest.TestCase):
         services._scratch_dir = scratch
         services.agent_absent = True
         services.evaluator_absent = True
-        state.manifest = {"terminal_status": "evaluated", "cleanup_errors": []}
+        state.manifest = {
+            "terminal_status": "evaluated",
+            "cleanup_errors": [],
+            "cleanup_proven": True,
+        }
 
         services.cleanup(state)
         self.assertFalse(scratch.exists())
@@ -565,6 +791,7 @@ class TrustedRunServicesTests(unittest.TestCase):
             "terminal_status": "dataset_failure",
             "primary_error": "dataset drift",
             "cleanup_errors": [],
+            "cleanup_proven": True,
         }
 
         services.cleanup(state)
@@ -591,7 +818,11 @@ class TrustedRunServicesTests(unittest.TestCase):
                 delegate.close()
 
         services.writer = FailingManifestWriter()
-        state.manifest = {"terminal_status": "evaluated", "cleanup_errors": []}
+        state.manifest = {
+            "terminal_status": "evaluated",
+            "cleanup_errors": [],
+            "cleanup_proven": True,
+        }
         services.agent_absent = True
         services.evaluator_absent = True
         services.cleanup(state)
@@ -602,6 +833,21 @@ class TrustedRunServicesTests(unittest.TestCase):
         run_dir = self.root / "results" / "partial-sign-run"
         self.assertTrue((run_dir / "manifest.json").is_file())
         self.assertFalse((run_dir / "manifest.signature.json").exists())
+
+    def test_concrete_signing_refuses_when_cleanup_is_not_proven(self):
+        services, state, _proxy = self.services(AgentBoundaryRuntime())
+        services.writer = ResultWriter(self.root / "results", "unproven-cleanup-run")
+        services.agent_absent = True
+        services.evaluator_absent = True
+        state.manifest = {
+            "terminal_status": "evaluated",
+            "cleanup_errors": [],
+            "cleanup_proven": False,
+        }
+        services.cleanup(state)
+
+        with self.assertRaisesRegex(RuntimeError, "clean teardown"):
+            services.sign_results(state)
 
     def test_concrete_unsigned_failure_path_cannot_create_signed_manifest(self):
         services, state, _proxy = self.services(AgentBoundaryRuntime())

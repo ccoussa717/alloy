@@ -12,6 +12,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from benchmarks.swebench.cleanup import CleanupUncertaintyError
 from benchmarks.swebench.containers import ContainerHandle, DockerRuntime
 from benchmarks.swebench.profile import BenchmarkProfile
 
@@ -80,14 +81,14 @@ class EvaluationExecution:
     container_evidence: dict[str, object]
 
 
-class EvaluationCleanupError(RuntimeError):
+class EvaluationCleanupError(CleanupUncertaintyError):
     def __init__(
         self, original_error: BaseException, cleanup_error: BaseException
     ) -> None:
-        self.original_error = original_error
-        self.cleanup_error = cleanup_error
         super().__init__(
-            f"evaluator failed: {original_error}; evaluator teardown failed: {cleanup_error}"
+            f"evaluator failed: {original_error}; evaluator teardown failed: {cleanup_error}",
+            original_error=original_error,
+            cleanup_errors=(cleanup_error,),
         )
 
 

@@ -18,6 +18,7 @@ from benchmarks.swebench.profile import load_profile
 from benchmarks.swebench.proxy import (
     HEADER_LIMIT,
     BODY_LIMIT,
+    ProxyCleanupError,
     ProxyNetwork,
     ProxyPolicy,
     ProxyStateError,
@@ -397,6 +398,15 @@ class FakeLock:
 
 
 class ProxyNetworkTests(unittest.TestCase):
+    def test_cleanup_error_has_no_invented_primary_and_keeps_every_failure(self):
+        first = RuntimeError("container removal failed")
+        second = RuntimeError("network removal failed")
+
+        error = ProxyCleanupError((first, second))
+
+        self.assertIsNone(error.original_error)
+        self.assertEqual(error.cleanup_errors, (first, second))
+
     def setUp(self):
         self.runtime = FakeRuntime()
         self.nft_calls = []
