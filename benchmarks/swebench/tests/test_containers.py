@@ -398,6 +398,65 @@ class DockerRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(handle, ContainerHandle("alloy-agent-run-123", "container-id", "run-123"))
 
+    def test_before_create_runs_once_adjacent_to_actual_docker_create(self):
+        events = []
+        scripted = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.inspection()])),
+            completed(json.dumps(self.docker_info())),
+            completed(),
+        )
+
+        def runner(arguments, **kwargs):
+            if len(arguments) > 3 and arguments[3] == "create":
+                self.assertEqual(events, ["before-create"])
+                events.append("docker-create")
+            return scripted(arguments, **kwargs)
+
+        runtime = self.preflighted_runtime(runner)
+        runtime.create(self.spec, before_create=lambda: events.append("before-create"))
+
+        self.assertEqual(events, ["before-create", "docker-create"])
+
+    def test_before_create_failure_issues_no_create_and_create_failure_counts_attempt(self):
+        scripted = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+        )
+        runtime = self.preflighted_runtime(scripted)
+        calls_before_create = len(scripted.calls)
+        with self.assertRaisesRegex(RuntimeError, "claim consumption failed"):
+            runtime.create(
+                self.spec,
+                before_create=lambda: (_ for _ in ()).throw(
+                    RuntimeError("claim consumption failed")
+                ),
+            )
+        self.assertFalse(
+            any(len(call[0]) > 3 and call[0][3] == "create" for call in scripted.calls)
+        )
+        self.assertEqual(len(scripted.calls) - calls_before_create, 2)
+
+        attempted = []
+        scripted = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            subprocess.CalledProcessError(125, ["docker", "create"]),
+            completed(json.dumps(self.docker_info())),
+            absent(),
+        )
+        runtime = self.preflighted_runtime(scripted)
+        with self.assertRaises(subprocess.CalledProcessError):
+            runtime.create(self.spec, before_create=lambda: attempted.append(True))
+        self.assertEqual(attempted, [True])
+        self.assertEqual(scripted.calls[-1][0][-2:], ["inspect", self.spec.name])
+
     def test_explicit_dns_servers_are_validated_emitted_and_inspected(self):
         spec = dataclasses.replace(self.spec, dns_servers=("192.0.2.1",))
         inspected = self.inspection()
@@ -405,14 +464,27 @@ class DockerRuntimeTests(unittest.TestCase):
         runtime = self.runtime(ScriptedRunner(completed(json.dumps([inspected]))))
 
         arguments = runtime._create_arguments(spec)
-        runtime.inspect_security(
+        evidence = runtime.inspect_security(
             ContainerHandle(spec.name, "container-id", spec.run_id), spec
         )
 
         self.assertIn("--dns", arguments)
         self.assertEqual(arguments[arguments.index("--dns") + 1], "192.0.2.1")
+        self.assertEqual(evidence["container_id"], "container-id")
+        self.assertEqual(evidence["inspection"], inspected)
+        self.assertIsNone(evidence["daemon_identity"])
         with self.assertRaisesRegex(ValueError, "DNS"):
             runtime._validate_spec(dataclasses.replace(spec, dns_servers=("127.0.0.11",)))
+
+    def test_none_network_membership_is_accepted_before_network_transition(self):
+        inspected = self.inspection()
+        inspected["NetworkSettings"]["Networks"] = {"none": {}}
+        runtime = self.runtime(ScriptedRunner(completed(json.dumps([inspected]))))
+
+        runtime.inspect_security(
+            ContainerHandle(self.spec.name, "container-id", self.spec.run_id),
+            self.spec,
+        )
 
     def test_create_rejects_daemon_identity_drift_after_preflight(self):
         changed = {**self.docker_info(), "ID": "different-daemon"}

@@ -483,7 +483,7 @@ EXPECTED_RELEASE_PHASES = (
     "authority", "candidate", "integrity_preflight", "candidate_install",
     "target_setup", "attempt_claim", "proxy_start", "agent_start",
     "agent_teardown", "patch_capture", "evaluation", "evaluation_teardown",
-    "sign_results", "cleanup",
+    "cleanup", "sign_results",
 )
 ```
 
@@ -497,7 +497,7 @@ Expected: import failure for `benchmarks.swebench.coordinator`.
 
 - [ ] **Step 3: Implement fixed orchestration and cleanup stacks**
 
-Register each cleanup before creating its resource. Remove `_allow_unsafe_execution_for_tests` from production signatures. The signed manifest includes authority/candidate commits, coordinator tree digest, host identity, attempt ordinal, dataset/image/policy/lock/model digests, container IDs and inspections, candidate versions, patch SHA-256, evaluator summary SHA-256, teardown evidence, and terminal status.
+Register each cleanup before creating its resource. Complete and verify every scratch/container/network/volume cleanup before `sign_results`; only a fully cleaned run may persist signed success. Cleanup failure writes separate unsigned blocking evidence with the primary and all cleanup errors, and must never leave a stale signed success. Consume the verified claim through a one-shot `DockerRuntime.create(before_create=...)` callback immediately before the Docker create subprocess, after all pre-create checks. Record observed proxy/agent/evaluator IDs, daemon identity, exact inspections, and verified teardown proof. Remove `_allow_unsafe_execution_for_tests` from production signatures. The signed manifest includes authority/candidate commits, coordinator tree digest, host identity, attempt ordinal, dataset/image/policy/lock/model digests, observed container IDs and inspections, candidate versions, patch SHA-256, evaluator summary SHA-256, teardown evidence, and terminal status.
 
 - [ ] **Step 4: Run coordinator and full Python tests**
 

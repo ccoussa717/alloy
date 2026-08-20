@@ -267,6 +267,14 @@ directory is never mounted into an agent or proxy container. Run-path pointers,
 manifests, predictions, evaluator output, and the terminal summary are created
 after validating regular-file and canonical-path invariants.
 
+Terminal evidence follows cleanup-before-sign ordering. The coordinator first
+proves agent and evaluator absence, then completes every registered scratch,
+container, network, relay, firewall, and volume cleanup. Only after all cleanup
+succeeds may it persist and sign a successful terminal manifest. A cleanup
+failure can never leave a signed success: it writes a separate unsigned
+`failure.json` blocking record containing the primary error and every cleanup
+error. Signing failure uses the same unsigned failure path.
+
 Agent, proxy, and evaluator logs remain untrusted content. They may be retained
 for diagnosis but cannot substitute for the schema-v2 official summary.
 
@@ -291,12 +299,19 @@ The one-attempt/no-retry rule remains in force. Any additional real attempt
 requires a new explicit maintainer decision and is reported separately.
 
 A dry-run may install and probe candidate code in disposable containers but
-never launches Alloy and does not consume an attempt. Immediately before a real
-agent launch, the coordinator atomically creates an attempt claim with
+never launches Alloy and does not consume an attempt. Before a real agent
+launch, the coordinator atomically creates and verifies an attempt claim with
 `O_CREAT|O_EXCL` under a mode-0700 trusted state directory outside the
 repository. The claim key includes candidate commit, instance ID, dataset
 revision, full-row digest, model digest, and authority/profile digest. A crash
 leaves the claim in place and blocks another attempt.
+
+Claim consumption occurs later inside `DockerRuntime.create`, after policy,
+volume, daemon-identity, and create-argument validation. A one-shot callback is
+invoked immediately before the Docker create subprocess with no intervening
+fallible coordinator work. Callback failure issues no create request; any
+Docker create failure after successful callback consumption counts as an
+attempted launch and requires verified name/handle teardown evidence.
 
 Official release evidence is accepted only from the designated release host and
 includes a signed claim and result manifest using a gate-specific signing key

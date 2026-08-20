@@ -267,6 +267,24 @@ def directory_and_data(member: tarfile.TarInfo) -> tuple[tarfile.TarInfo, bytes]
 
 
 class TrustedCheckoutTests(unittest.TestCase):
+    def test_validated_tree_context_cleans_staging_on_later_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            initialize_repository(base)
+            export = root / "export.tar"
+            archive_worktree(base, export)
+            staged = None
+
+            with self.assertRaisesRegex(RuntimeError, "missing trusted base"):
+                with validate_exported_tar(export, ExportBounds()) as exported:
+                    staged = staging_root(exported)
+                    self.assertTrue(staged.exists())
+                    raise RuntimeError("missing trusted base")
+
+            self.assertIsNotNone(staged)
+            self.assertFalse(staged.exists())
+
     def test_capture_rejects_an_agent_owned_repository_before_reading_git_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory)

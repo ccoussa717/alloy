@@ -74,6 +74,7 @@ class ProxyEndpoint:
     port: int
     network: str
     container: "ContainerHandle"
+    inspection: dict[str, object]
 
 
 class ProxyStateError(RuntimeError):
@@ -633,7 +634,7 @@ class ProxyNetwork:
         agent_ip: str,
         relay_ip: str,
         relay_port: int,
-    ) -> "ContainerHandle":
+    ) -> tuple["ContainerHandle", object]:
         from benchmarks.swebench.containers import ContainerSpec, MountSpec
 
         proxy_path = self.authority_root / "benchmarks/swebench/proxy.py"
@@ -656,7 +657,7 @@ class ProxyNetwork:
             ),
             dns_servers=("192.0.2.1",),
         )
-        return self.runtime.create(spec)
+        return self.runtime.create(spec), spec
 
     def _connect_proxy(
         self,
@@ -754,7 +755,7 @@ class ProxyNetwork:
             )
             self._nft_table = nft_table
             self._apply_firewall(nft_table, ruleset)
-            self._container = self._start_proxy(
+            self._container, proxy_spec = self._start_proxy(
                 run_id, token, agent_ip, relay_ip, relay_port
             )
             self._connect_proxy(
@@ -765,12 +766,18 @@ class ProxyNetwork:
                 egress_ip,
             )
             self.ready_probe(agent_ip, PROXY_PORT)
+            inspection = self.runtime.inspect_security(
+                self._container,
+                proxy_spec,
+                expected_networks=(agent_network, egress_network),
+            )
             return ProxyEndpoint(
                 f"http://{agent_ip}:{PROXY_PORT}",
                 agent_ip,
                 PROXY_PORT,
                 agent_network,
                 self._container,
+                inspection,
             )
         except BaseException as original_error:
             try:

@@ -5,11 +5,13 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from benchmarks.swebench.evaluator import (
+    EvaluationCleanupError,
     EvaluationExecution,
     EvaluatorEnvironment,
     install_locked_requirements,
@@ -113,6 +115,107 @@ class EvaluatorLockTests(unittest.TestCase):
 
 
 class EvaluatorConfinementTests(unittest.TestCase):
+    def test_evaluator_observation_waits_for_owned_container_and_records_exact_evidence(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        process = mock.Mock()
+        process.poll.return_value = None
+        expected = {"container_id": "observed", "inspection": {}}
+        environment.runtime.inspect_owned_container = mock.Mock(
+            side_effect=[None, expected]
+        )
+        environment._validate_evaluator_evidence = mock.Mock()
+
+        with mock.patch("benchmarks.swebench.evaluator.time.sleep"):
+            evidence = environment._await_evaluator_evidence(
+                "run-1", process, time.monotonic() + 1
+            )
+
+        self.assertIs(evidence, expected)
+        self.assertEqual(environment._last_evaluator_handle.container_id, "observed")
+        environment._validate_evaluator_evidence.assert_called_once_with(
+            expected, "run-1"
+        )
+
+    def test_evaluator_observation_rechecks_after_process_exit(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        process = mock.Mock(args=["evaluator"])
+        process.poll.return_value = 0
+        expected = {"container_id": "observed-after-exit", "inspection": {}}
+        environment.runtime.inspect_owned_container = mock.Mock(
+            side_effect=[None, expected]
+        )
+        environment._validate_evaluator_evidence = mock.Mock()
+
+        evidence = environment._await_evaluator_evidence(
+            "run-1", process, time.monotonic() + 1
+        )
+
+        self.assertIs(evidence, expected)
+        self.assertEqual(
+            environment.runtime.inspect_owned_container.call_count, 2
+        )
+
+    def test_evaluator_observation_preserves_early_process_failure_output(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        process = mock.Mock(args=["evaluator"])
+        process.poll.return_value = 17
+        process.communicate.return_value = ("harness output", "harness error")
+        environment.runtime.inspect_owned_container = mock.Mock(return_value=None)
+
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            environment._await_evaluator_evidence(
+                "run-1", process, time.monotonic() + 1
+            )
+
+        self.assertEqual(raised.exception.returncode, 17)
+        self.assertEqual(raised.exception.output, "harness output")
+        self.assertEqual(raised.exception.stderr, "harness error")
+
+    def test_observed_evaluator_evidence_is_exact_and_drift_is_rejected(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        environment._image_id = "sha256:" + "a" * 64
+        run_id = "run-1"
+        evidence = {
+            "container_id": "evaluator-id",
+            "daemon_identity": {"daemon_id": "daemon-id"},
+            "inspection": {
+                "Image": environment._image_id,
+                "Config": {
+                    "User": "65532:65532",
+                    "Labels": {"alloy.swebench.gate": run_id},
+                },
+                "HostConfig": {
+                    "CapDrop": ["ALL"],
+                    "Privileged": False,
+                    "ReadonlyRootfs": True,
+                    "Init": True,
+                    "NetworkMode": "none",
+                    "PidsLimit": PROFILE.limits.pids,
+                    "Memory": PROFILE.limits.memory_bytes,
+                    "NanoCpus": PROFILE.limits.cpus * 1_000_000_000,
+                    "SecurityOpt": [
+                        "no-new-privileges",
+                        f"seccomp={REPO_ROOT / PROFILE.security_policy.seccomp_path}",
+                        f"apparmor={PROFILE.security_policy.apparmor_name}",
+                    ],
+                },
+                "NetworkSettings": {"Networks": {}},
+                "Mounts": [
+                    {
+                        "Type": "volume",
+                        "Name": f"alloy-eval-workspace-{run_id}",
+                        "Destination": "/testbed",
+                        "RW": True,
+                    }
+                ],
+            },
+        }
+
+        environment._validate_evaluator_evidence(evidence, run_id)
+        evidence["inspection"]["HostConfig"]["NetworkMode"] = "bridge"
+        with self.assertRaisesRegex(RuntimeError, "inspection drifted"):
+            environment._validate_evaluator_evidence(evidence, run_id)
+
     def test_patch_is_confinement_only_and_has_no_sys_admin_or_fuzz(self):
         patch = PATCH_PATH.read_text()
         self.assertIn('cap_drop=["ALL"]', patch)
@@ -182,9 +285,19 @@ class EvaluatorConfinementTests(unittest.TestCase):
                 mock.patch.object(
                     environment,
                     "_run_evaluator",
-                    return_value=EvaluationExecution("stdout", "stderr", scratch, "run-1"),
+                    return_value=EvaluationExecution(
+                        "stdout",
+                        "stderr",
+                        scratch,
+                        "run-1",
+                        {"container_id": "evaluator-id", "inspection": {"Image": "image-id"}},
+                    ),
                 ) as run,
-                mock.patch.object(environment, "_verify_and_teardown_container") as teardown,
+                mock.patch.object(
+                    environment,
+                    "_verify_and_teardown_container",
+                    return_value={"container_id": "evaluator-id", "absent": True},
+                ) as teardown,
             ):
                 result = environment.run(predictions, dataset, "run-1")
         command = run.call_args.args[0]
@@ -194,6 +307,34 @@ class EvaluatorConfinementTests(unittest.TestCase):
         self.assertIn("--no_pull", command)
         teardown.assert_called_once_with("run-1")
         self.assertEqual(result.summary["schema_version"], 2)
+        self.assertEqual(result.container_evidence["container_id"], "evaluator-id")
+        self.assertTrue(result.teardown_evidence["absent"])
+
+    def test_primary_evaluator_error_and_teardown_error_are_both_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.jsonl"
+            dataset = root / "dataset.json"
+            predictions.write_text("{}\n")
+            dataset.write_text("[]\n")
+            environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+            primary = subprocess.TimeoutExpired(["evaluator"], 2400)
+            cleanup = RuntimeError("evaluator teardown uncertain")
+            with (
+                mock.patch.object(environment, "verify"),
+                mock.patch.object(environment, "_run_evaluator", side_effect=primary),
+                mock.patch.object(
+                    environment,
+                    "_verify_and_teardown_container",
+                    side_effect=cleanup,
+                ),
+                self.assertRaises(EvaluationCleanupError) as raised,
+            ):
+                environment.run(predictions, dataset, "run-1")
+
+        self.assertIs(raised.exception.original_error, primary)
+        self.assertIs(raised.exception.cleanup_error, cleanup)
+        self.assertIs(raised.exception.__cause__, primary)
 
     def test_summary_is_not_located_read_or_parsed_before_verified_teardown(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -211,13 +352,23 @@ class EvaluatorConfinementTests(unittest.TestCase):
             executions = []
             commands = []
 
+            class FakeProcess:
+                pid = 12345
+                returncode = 0
+
+                def communicate(self, timeout=None):
+                    return "stdout", "stderr"
+
+                def poll(self):
+                    return self.returncode
+
             def run_evaluator_process(command, **kwargs):
                 commands.append(command)
                 scratch = kwargs["cwd"]
                 (scratch / "model.run-order.json").write_text(
                     json.dumps({"schema_version": 2, "resolved_ids": [PROFILE.instance_id]})
                 )
-                return subprocess.CompletedProcess(command, 0, "stdout", "stderr")
+                return FakeProcess()
 
             def record_glob(path, pattern):
                 if pattern == "*.run-order.json":
@@ -240,18 +391,29 @@ class EvaluatorConfinementTests(unittest.TestCase):
                 executions.append(execution)
                 return execution
 
-            def record_verified_teardown(_handle):
-                events.extend(["inspect-container", "force-remove", "absence-verified"])
+            def record_inspection(_run_id, _process, _deadline):
+                events.append("inspect-container")
+                return {"container_id": "evaluator-id", "inspection": {}}
+
+            def record_verified_teardown(_run_id):
+                events.extend(["force-remove", "absence-verified"])
+                return {"container_id": "evaluator-id", "absent": True}
 
             with (
                 mock.patch.object(environment, "verify"),
                 mock.patch(
-                    "benchmarks.swebench.evaluator.subprocess.run", side_effect=run_evaluator_process
+                    "benchmarks.swebench.evaluator.subprocess.Popen",
+                    side_effect=run_evaluator_process,
+                ),
+                mock.patch.object(
+                    environment,
+                    "_await_evaluator_evidence",
+                    side_effect=record_inspection,
                 ),
                 mock.patch.object(environment, "_run_evaluator", side_effect=record_execution),
                 mock.patch.object(
-                    environment.runtime,
-                    "force_remove",
+                    environment,
+                    "_verify_and_teardown_container",
                     side_effect=record_verified_teardown,
                 ),
                 mock.patch.object(Path, "glob", record_glob),

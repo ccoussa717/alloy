@@ -36,6 +36,7 @@ from benchmarks.swebench.checkout import (
     validate_exported_tar,
 )
 from benchmarks.swebench.containers import (
+    CleanupUncertainError,
     ContainerHandle,
     ContainerSpec,
     DockerRuntime,
@@ -47,7 +48,11 @@ from benchmarks.swebench.dataset import (
     prompt_instance,
     write_private_dataset_json,
 )
-from benchmarks.swebench.evaluator import EvaluatorEnvironment
+from benchmarks.swebench.evaluator import (
+    EvaluationCleanupError,
+    EvaluationResult,
+    EvaluatorEnvironment,
+)
 from benchmarks.swebench.fetch import ArtifactFetcher
 from benchmarks.swebench.install import (
     FetchedCandidate,
@@ -73,8 +78,8 @@ EXPECTED_RELEASE_PHASES = (
     "patch_capture",
     "evaluation",
     "evaluation_teardown",
-    "sign_results",
     "cleanup",
+    "sign_results",
 )
 
 _EXIT_CODES = {
@@ -146,6 +151,7 @@ class RunEvidence:
     signature: str | None
     error: str | None = None
     run_dir: str | None = None
+    cleanup_errors: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -173,7 +179,7 @@ class CoordinatorServices(Protocol):
     def target_setup(self, state: _RunState) -> None: ...
     def attempt_claim(self, state: _RunState) -> None: ...
     def proxy_start(self, state: _RunState) -> None: ...
-    def consume_claim(self, state: _RunState) -> None: ...
+    def prepare_agent_launch(self, state: _RunState) -> None: ...
     def agent_start(self, state: _RunState) -> None: ...
     def agent_teardown(self, state: _RunState) -> None: ...
     def patch_capture(self, state: _RunState) -> None: ...
@@ -181,6 +187,7 @@ class CoordinatorServices(Protocol):
     def evaluation_teardown(self, state: _RunState) -> None: ...
     def sign_results(self, state: _RunState) -> str: ...
     def cleanup(self, state: _RunState) -> None: ...
+    def write_unsigned_failure(self, state: _RunState) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -223,7 +230,12 @@ class TrustedRunServices:
         self.export_path: Path | None = None
         self.trusted_checkout: Path | None = None
         self.agent_absent = False
+        self.agent_create_attempted = False
+        self.agent_teardown_verified = False
         self.evaluator_absent = False
+        self.evaluator_launch_attempted = False
+        self.evaluation_result: EvaluationResult | None = None
+        self.cleanup_completed = False
         self._run_id: str | None = None
         self._pending_signature: str | None = None
 
@@ -235,7 +247,6 @@ class TrustedRunServices:
 
     def arm_cleanup(self, phase: str, state: _RunState):
         cleanups = {
-            "authority": lambda: self._persist_results(state),
             "candidate_install": lambda: self._cleanup_resource(
                 "candidate_install", state, self._cleanup_install
             ),
@@ -246,7 +257,7 @@ class TrustedRunServices:
                 "proxy", state, self.config.proxy.close
             ),
             "agent_start": lambda: self._cleanup_resource(
-                "agent_resources", state, self._cleanup_agent
+                "agent_resources", state, lambda: self._cleanup_agent(state)
             ),
             "patch_capture": lambda: self._cleanup_resource(
                 "patch_resources", state, self._cleanup_patch_capture
@@ -438,36 +449,61 @@ class TrustedRunServices:
         state.manifest.setdefault("container_ids", {})["proxy"] = (
             self.endpoint.container.container_id
         )
-        state.manifest.setdefault("container_inspections", {})["proxy"] = {
-            "network": self.endpoint.network,
-            "security_verified": True,
-        }
-
-    def consume_claim(self, state: _RunState) -> None:
-        if self.claim is None:
-            raise RuntimeError("verified attempt claim is missing at agent launch")
-        self.agent_spec = self._build_agent_spec()
-        consume_claim(
-            self.config.state_dir,
-            self.claim,
-            self.config.public_key,
-            self._attempt_key(),
+        state.manifest.setdefault("container_inspections", {})["proxy"] = (
+            self.endpoint.inspection
         )
+
+    def prepare_agent_launch(self, state: _RunState) -> None:
+        if self.claim is None:
+            raise RuntimeError("verified attempt claim is missing before agent launch")
+        self.agent_spec = self._build_agent_spec()
 
     def agent_start(self, state: _RunState) -> None:
         if self.agent_spec is None or self.endpoint is None:
             raise RuntimeError("agent launch specification is unavailable")
         runtime = self.config.runtime
         profile = self.config.profile
-        self.agent = runtime.create(self.agent_spec)
+        pending = ContainerHandle(
+            self.agent_spec.name, self.agent_spec.name, self.agent_spec.run_id
+        )
+
+        def consume_at_create_boundary() -> None:
+            if self.claim is None:
+                raise RuntimeError("verified attempt claim is missing at agent launch")
+            consume_claim(
+                self.config.state_dir,
+                self.claim,
+                self.config.public_key,
+                self._attempt_key(),
+            )
+            self.agent_create_attempted = True
+
+        try:
+            self.agent = runtime.create(
+                self.agent_spec, before_create=consume_at_create_boundary
+            )
+        except CleanupUncertainError as error:
+            self.agent = error.handle
+            state.manifest.setdefault("container_inspections", {})["agent"] = {
+                "cleanup_uncertain": True,
+                "container_id": error.handle.container_id,
+            }
+            raise
+        except BaseException:
+            if self.agent_create_attempted:
+                self.agent = pending
+            raise
         state.manifest.setdefault("container_ids", {})["agent"] = self.agent.container_id
-        state.manifest.setdefault("container_inspections", {})["agent"] = {
-            "spec": self._container_spec(self.agent_spec),
-            "security_verified": True,
-        }
         self.config.proxy._docker("network", "disconnect", "none", self.agent.container_id)
         self.config.proxy._docker(
             "network", "connect", self.endpoint.network, self.agent.container_id
+        )
+        state.manifest.setdefault("container_inspections", {})["agent"] = (
+            runtime.inspect_security(
+                self.agent,
+                self.agent_spec,
+                expected_networks=(self.endpoint.network,),
+            )
         )
         try:
             status = runtime.wait(self.agent, timeout=profile.agent_timeout_seconds)
@@ -477,10 +513,16 @@ class TrustedRunServices:
             raise RuntimeError(f"agent exited with status {status}")
 
     def agent_teardown(self, state: _RunState) -> None:
-        if self.agent is not None:
-            self.config.runtime.force_remove(self.agent)
-            self.config.runtime.assert_absent(self.agent)
-            self.agent = None
+        if not self.agent_create_attempted:
+            state.manifest.setdefault("teardown", {})["agent_launch_attempted"] = False
+            return
+        if self.agent is None:
+            raise RuntimeError("agent create was attempted without a cleanup handle")
+        handle = self.agent
+        self.config.runtime.force_remove(handle)
+        self.config.runtime.assert_absent(handle)
+        self.agent = None
+        self.agent_teardown_verified = True
         self.agent_absent = True
         state.manifest.setdefault("container_inspections", {}).setdefault("agent", {})[
             "absent"
@@ -535,12 +577,12 @@ class TrustedRunServices:
             profile.limits.max_file_bytes,
             profile.limits.max_export_bytes,
         )
-        exported = validate_exported_tar(self.export_path, bounds)
-        base = self.config.fetcher.target_repository
-        if base is None:
-            raise RuntimeError("trusted target Git repository is unavailable")
-        self.trusted_checkout = self._scratch() / "trusted-checkout"
-        reconstruct_trusted_checkout(base, exported, self.trusted_checkout)
+        with validate_exported_tar(self.export_path, bounds) as exported:
+            base = self.config.fetcher.target_repository
+            if base is None:
+                raise RuntimeError("trusted target Git repository is unavailable")
+            self.trusted_checkout = self._scratch() / "trusted-checkout"
+            reconstruct_trusted_checkout(base, exported, self.trusted_checkout)
         self.patch = capture_patch(self.trusted_checkout)
         digest = hashlib.sha256(self.patch).hexdigest()
         state.manifest["patch_sha256"] = digest
@@ -564,9 +606,23 @@ class TrustedRunServices:
         dataset = scratch / "dataset.json"
         write_private_dataset_json(dataset, self.instance)
         try:
+            self.evaluator_launch_attempted = True
             result = self.config.evaluator.run(predictions, dataset, self.run_id)
         except subprocess.TimeoutExpired as error:
             raise TimeoutError("official evaluator exceeded the pinned timeout") from error
+        self.evaluation_result = result
+        container_id = result.container_evidence.get("container_id")
+        if not isinstance(container_id, str) or not container_id:
+            raise RuntimeError("evaluator returned no observed container identity")
+        if result.teardown_evidence.get("absent") is not True:
+            raise RuntimeError("evaluator returned no verified teardown proof")
+        state.manifest.setdefault("container_ids", {})["evaluator"] = container_id
+        state.manifest.setdefault("container_inspections", {})["evaluator"] = (
+            result.container_evidence
+        )
+        state.manifest.setdefault("teardown", {})["evaluator"] = (
+            result.teardown_evidence
+        )
         verdict = self._official_verdict(result.summary)
         summary_bytes = canonical_json_bytes(result.summary)
         state.verdict = verdict
@@ -581,42 +637,27 @@ class TrustedRunServices:
         self.writer.write_text("predictions.jsonl", predictions.read_text())
 
     def evaluation_teardown(self, state: _RunState) -> None:
-        self.config.evaluator._verify_and_teardown_container(self.run_id)
+        if self.evaluation_result is None:
+            proof = self.config.evaluator._last_teardown_evidence
+            if proof is None:
+                proof = self.config.evaluator._verify_and_teardown_container(self.run_id)
+            if proof.get("absent") is not True:
+                raise RuntimeError("evaluator teardown could not prove absence")
+            state.manifest.setdefault("teardown", {})["evaluator"] = proof
+        elif self.evaluation_result.teardown_evidence.get("absent") is not True:
+            raise RuntimeError("evaluator teardown could not prove absence")
         self.evaluator_absent = True
         state.manifest.setdefault("teardown", {})["evaluator_absent"] = True
 
     def sign_results(self, state: _RunState) -> str:
         if self.writer is None:
             raise RuntimeError("trusted result writer is unavailable")
-        content = canonical_json_bytes(state.manifest)
-        signature = base64.b64encode(self.config.signer.sign(content)).decode("ascii")
-        self._pending_signature = signature
-        return signature
-
-    def cleanup(self, state: _RunState) -> None:
-        self._close_writer()
-        scratch = getattr(self, "_scratch_dir", None)
-        if scratch is not None:
-            shutil.rmtree(scratch)
-            self._scratch_dir = None
-
-    def _close_writer(self) -> None:
-        if self.writer is not None:
-            self.writer.close()
-            self.writer = None
-
-    @property
-    def final_signature(self) -> str | None:
-        return self._pending_signature
-
-    @staticmethod
-    def _cleanup_resource(name: str, state: _RunState, cleanup) -> None:
-        cleanup()
-        state.manifest.setdefault("teardown", {})[name] = True
-
-    def _persist_results(self, state: _RunState) -> None:
-        if self.writer is None or self._pending_signature is None:
-            return
+        if not self.cleanup_completed or state.manifest.get("cleanup_errors"):
+            raise RuntimeError("terminal evidence cannot be signed before clean teardown")
+        agent_safe = self.agent_absent or not self.agent_create_attempted
+        evaluator_safe = self.evaluator_absent or not self.evaluator_launch_attempted
+        if state.mode == "release" and not (agent_safe and evaluator_safe):
+            raise RuntimeError("release evidence requires proven agent and evaluator absence")
         content = canonical_json_bytes(state.manifest)
         signature = base64.b64encode(self.config.signer.sign(content)).decode("ascii")
         self.writer.write_json("manifest.json", state.manifest)
@@ -626,6 +667,59 @@ class TrustedRunServices:
         )
         self._pending_signature = signature
         self._close_writer()
+        return signature
+
+    def write_unsigned_failure(self, state: _RunState) -> None:
+        if self.writer is None:
+            run_name = (
+                f"failed-{state.candidate_commit[:12]}-{secrets.token_hex(6)}"
+            )
+            self.writer = ResultWriter(self.config.results_root, run_name)
+            state.run_dir = str(self.writer.run_dir)
+        try:
+            self.writer.write_json(
+                "failure.json",
+                {"evidence": state.manifest, "signed": False},
+            )
+        except BaseException:
+            self._close_writer()
+            run_name = (
+                f"failed-{state.candidate_commit[:12]}-{secrets.token_hex(6)}"
+            )
+            self.writer = ResultWriter(self.config.results_root, run_name)
+            state.run_dir = str(self.writer.run_dir)
+            self.writer.write_json(
+                "failure.json",
+                {"evidence": state.manifest, "signed": False},
+            )
+        self._close_writer()
+
+    def cleanup(self, state: _RunState) -> None:
+        scratch = getattr(self, "_scratch_dir", None)
+        if scratch is not None:
+            shutil.rmtree(scratch)
+            self._scratch_dir = None
+        self.cleanup_completed = True
+
+    def _close_writer(self) -> None:
+        if self.writer is not None:
+            writer = self.writer
+            self.writer = None
+            try:
+                writer.close()
+            except BaseException:
+                # Each artifact and directory entry is already fsynced. A close error
+                # cannot turn a fully persisted manifest/signature pair into failure.
+                pass
+
+    @property
+    def final_signature(self) -> str | None:
+        return self._pending_signature
+
+    @staticmethod
+    def _cleanup_resource(name: str, state: _RunState, cleanup) -> None:
+        cleanup()
+        state.manifest.setdefault("teardown", {})[name] = True
 
     def _cleanup_install(self) -> None:
         if self.install is not None:
@@ -640,10 +734,21 @@ class TrustedRunServices:
             self.config.runtime.remove_volume(self.agent_state_volume, self.run_id)
             self.agent_state_volume = None
 
-    def _cleanup_agent(self) -> None:
-        if self.agent is not None:
-            self.config.runtime.force_remove(self.agent)
-            self.agent = None
+    def _cleanup_agent(self, state: _RunState) -> None:
+        if not self.agent_create_attempted or self.agent_teardown_verified:
+            return
+        if self.agent is None:
+            raise RuntimeError("agent create was attempted without a cleanup handle")
+        handle = self.agent
+        self.config.runtime.force_remove(handle)
+        self.config.runtime.assert_absent(handle)
+        self.agent = None
+        self.agent_teardown_verified = True
+        self.agent_absent = True
+        state.manifest.setdefault("container_inspections", {}).setdefault("agent", {})[
+            "absent"
+        ] = True
+        state.manifest.setdefault("teardown", {})["agent_absent"] = True
 
     def _cleanup_patch_capture(self) -> None:
         if self.export_volume is not None:
@@ -806,23 +911,33 @@ class TrustedCoordinator:
             )
         cleanups = []
         current_phase = "authority"
-        status = "dry_run" if mode == "dry_run" else "runtime_failure"
-        error: str | None = None
+        success_status = "dry_run" if mode == "dry_run" else "evaluated"
+        status = success_status
+        primary_error: BaseException | None = None
+        primary_phase: str | None = None
+        cleanup_errors: list[tuple[str, BaseException]] = []
         signature: str | None = None
 
         def phase(name: str, operation, *, resource: bool = False) -> None:
             nonlocal current_phase
             current_phase = name
             if resource:
-                cleanups.append(self.services.arm_cleanup(name, state))
+                cleanups.append((name, self.services.arm_cleanup(name, state)))
             operation()
 
+        def record_cleanup(phase_name: str, caught: BaseException) -> None:
+            cleanup_errors.append((phase_name, caught))
+
+        def primary_cause(
+            caught: BaseException, cleanup_phase: str
+        ) -> BaseException:
+            if isinstance(caught, (CleanupUncertainError, EvaluationCleanupError)):
+                record_cleanup(cleanup_phase, caught.cleanup_error)
+                return caught.original_error
+            return caught
+
         try:
-            phase(
-                "authority",
-                lambda: self.services.authority(candidate_commit, state),
-                resource=True,
-            )
+            phase("authority", lambda: self.services.authority(candidate_commit, state))
             phase("candidate", lambda: self.services.candidate(candidate_commit, state))
             phase("integrity_preflight", lambda: self.services.integrity_preflight(state))
             phase(
@@ -835,92 +950,107 @@ class TrustedCoordinator:
                 phase("attempt_claim", lambda: self.services.attempt_claim(state))
                 phase("proxy_start", lambda: self.services.proxy_start(state), resource=True)
                 current_phase = "agent_start"
-                cleanups.append(self.services.arm_cleanup("agent_start", state))
-                self.services.consume_claim(state)
+                cleanups.append(
+                    ("agent_start", self.services.arm_cleanup("agent_start", state))
+                )
+                self.services.prepare_agent_launch(state)
                 try:
                     self.services.agent_start(state)
-                except BaseException:
-                    try:
-                        self.services.agent_teardown(state)
-                    finally:
-                        current_phase = "agent_start"
-                    raise
-                else:
+                except BaseException as caught:
+                    primary_error = primary_cause(caught, "agent_start_cleanup")
+                    primary_phase = "agent_start"
+                try:
                     phase("agent_teardown", lambda: self.services.agent_teardown(state))
+                except BaseException as caught:
+                    record_cleanup("agent_teardown", caught)
+                if primary_error is not None:
+                    raise primary_error
+                if cleanup_errors:
+                    primary_phase = "agent_teardown"
+                    raise CoordinatorFailure(
+                        "agent_failure", "agent teardown could not prove absence"
+                    )
                 phase(
                     "patch_capture",
                     lambda: self.services.patch_capture(state),
                     resource=True,
                 )
+                evaluation_error: BaseException | None = None
                 try:
                     phase("evaluation", lambda: self.services.evaluation(state), resource=True)
-                finally:
+                except BaseException as caught:
+                    evaluation_error = primary_cause(caught, "evaluation_teardown")
+                    primary_phase = "evaluation"
+                try:
                     phase(
                         "evaluation_teardown",
                         lambda: self.services.evaluation_teardown(state),
                     )
+                except BaseException as caught:
+                    record_cleanup("evaluation_teardown", caught)
+                if evaluation_error is not None:
+                    primary_error = evaluation_error
+                    raise evaluation_error
                 if state.verdict not in {"resolved", "unresolved"}:
                     raise CoordinatorFailure(
                         "evaluator_failure", "official evaluator produced no valid verdict"
                     )
-                status = "evaluated"
         except BaseException as caught:
-            if isinstance(caught, CoordinatorFailure):
-                status = caught.status
-            elif isinstance(caught, TimeoutError) and current_phase == "agent_start":
+            if primary_error is None:
+                primary_error = caught
+                primary_phase = current_phase
+
+        if primary_error is not None:
+            if isinstance(primary_error, CoordinatorFailure):
+                status = primary_error.status
+            elif isinstance(primary_error, (TimeoutError, subprocess.TimeoutExpired)) and primary_phase == "agent_start":
                 status = "agent_timeout"
-            elif isinstance(caught, TimeoutError) and current_phase in {
-                "evaluation",
-                "evaluation_teardown",
-            }:
+            elif isinstance(primary_error, (TimeoutError, subprocess.TimeoutExpired)) and primary_phase == "evaluation":
                 status = "evaluator_timeout"
             else:
-                status = _FAILURE_STATUS.get(current_phase, "runtime_failure")
-            error = str(caught)
+                status = _FAILURE_STATUS.get(primary_phase or "", "runtime_failure")
 
-        state.manifest["terminal_status"] = status
-        state.manifest["verdict"] = state.verdict
-        if error is not None:
-            state.manifest["error"] = error
-        try:
-            current_phase = "sign_results"
-            signature = self.services.sign_results(state)
-        except BaseException as caught:
-            status = "runtime_failure"
-            error = str(caught)
-            state.manifest["terminal_status"] = status
-            state.manifest["error"] = error
-
-        cleanup_errors = []
-        for cleanup in reversed(cleanups):
+        for cleanup_phase, cleanup in reversed(cleanups):
             try:
                 cleanup()
             except BaseException as caught:
-                cleanup_errors.append(caught)
-                status = "runtime_failure"
-                error = "; ".join(str(item) for item in cleanup_errors)
-                state.manifest["terminal_status"] = status
-                state.manifest["error"] = error
-                signature = None
-        if cleanup_errors:
-            status = "runtime_failure"
-            error = "; ".join(str(caught) for caught in cleanup_errors)
-            state.manifest["terminal_status"] = status
-            state.manifest["error"] = error
-            signature = None
+                record_cleanup(cleanup_phase, caught)
         try:
             current_phase = "cleanup"
             self.services.cleanup(state)
         except BaseException as caught:
-            cleanup_errors.append(caught)
-        if cleanup_errors:
+            record_cleanup("cleanup", caught)
+
+        if cleanup_errors and primary_error is None:
             status = "runtime_failure"
-            error = "; ".join(str(caught) for caught in cleanup_errors)
-            state.manifest["terminal_status"] = status
-            state.manifest["error"] = error
-            signature = None
+        state.manifest["terminal_status"] = status
+        state.manifest["verdict"] = state.verdict
+        if primary_error is not None:
+            state.manifest["primary_error"] = str(primary_error)
+        state.manifest["cleanup_errors"] = [
+            {"phase": phase_name, "error": str(caught)}
+            for phase_name, caught in cleanup_errors
+        ]
+
+        if cleanup_errors:
+            self.services.write_unsigned_failure(state)
         else:
-            signature = getattr(self.services, "final_signature", signature)
+            try:
+                current_phase = "sign_results"
+                signature = self.services.sign_results(state)
+            except BaseException as caught:
+                primary_error = primary_error or caught
+                if primary_error is caught:
+                    status = "runtime_failure"
+                record_cleanup("sign_results", caught)
+                state.manifest["terminal_status"] = status
+                state.manifest["primary_error"] = str(primary_error)
+                state.manifest["cleanup_errors"] = [
+                    {"phase": phase_name, "error": str(error)}
+                    for phase_name, error in cleanup_errors
+                ]
+                signature = None
+                self.services.write_unsigned_failure(state)
 
         manifest = copy.deepcopy(state.manifest)
         return RunEvidence(
@@ -928,6 +1058,9 @@ class TrustedCoordinator:
             state.verdict,
             manifest,
             signature,
-            error,
+            str(primary_error) if primary_error is not None else None,
             state.run_dir,
+            tuple(
+                f"{phase_name}: {caught}" for phase_name, caught in cleanup_errors
+            ),
         )

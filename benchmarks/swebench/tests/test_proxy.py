@@ -362,6 +362,14 @@ class FakeRuntime:
         }
         return self.handle
 
+    def inspect_security(self, handle, spec, *, expected_networks=()):
+        self.calls.append(("inspect-security", handle, spec, expected_networks))
+        return {
+            "container_id": handle.container_id,
+            "daemon_identity": {"daemon_id": "daemon-id"},
+            "inspection": {"NetworkSettings": {"Networks": list(expected_networks)}},
+        }
+
     def force_remove(self, handle):
         self.calls.append(("remove", handle))
         self.containers.pop(handle.container_id, None)

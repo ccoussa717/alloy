@@ -105,6 +105,12 @@ class CleanupUncertainError(RuntimeError):
         self.handle = handle
         self.original_error = original_error
         self.cleanup_error = cleanup_error
+        self.evidence = {
+            "cleanup_verified": False,
+            "container_id": handle.container_id,
+            "name": handle.name,
+            "run_id": handle.run_id,
+        }
         super().__init__(
             "cleanup uncertain for "
             f"container {handle.name} ({handle.container_id}, run {handle.run_id}); "
@@ -152,9 +158,13 @@ class DockerRuntime:
         *,
         check: bool = True,
         timeout: int | None = None,
+        before_run: Callable[[], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        prepared_arguments = list(arguments)
+        if before_run is not None:
+            before_run()
         return self.runner(
-            list(arguments),
+            prepared_arguments,
             capture_output=True,
             text=True,
             check=check,
@@ -522,14 +532,43 @@ class DockerRuntime:
             ):
                 raise RuntimeError("named volume must be a plain local volume")
 
-    def create(self, spec: ContainerSpec) -> ContainerHandle:
+    def create(
+        self,
+        spec: ContainerSpec,
+        *,
+        before_create: Callable[[], None] | None = None,
+    ) -> ContainerHandle:
         if self._completed_preflight != self._profile_fingerprint():
             raise RuntimeError("official preflight was not completed for this runtime and profile")
         self._verify_policy_bytes()
         self._validate_spec(spec)
         self._verify_volume_ownership(spec)
         self._assert_daemon_identity()
-        result = self._run(self._create_arguments(spec))
+        arguments = self._create_arguments(spec)
+        callback_completed = before_create is None
+
+        def run_before_create() -> None:
+            nonlocal callback_completed
+            assert before_create is not None
+            before_create()
+            callback_completed = True
+
+        try:
+            result = self._run(
+                arguments,
+                before_run=run_before_create if before_create is not None else None,
+            )
+        except BaseException as original_error:
+            if not callback_completed:
+                raise
+            pending = ContainerHandle(spec.name, spec.name, spec.run_id)
+            try:
+                self.force_remove(pending)
+            except BaseException as cleanup_error:
+                raise CleanupUncertainError(
+                    pending, original_error, cleanup_error
+                ) from original_error
+            raise
         container_id = result.stdout.strip()
         if not container_id:
             raise RuntimeError("Docker create returned no container ID")
@@ -558,6 +597,33 @@ class DockerRuntime:
             raise RuntimeError("could not prove container absence from Docker inspection")
         return self._json_object(result, "container inspection"), 0
 
+    def inspect_owned_container(
+        self, handle: ContainerHandle, *, absent_ok: bool = False
+    ) -> dict[str, object] | None:
+        self._assert_daemon_identity(handle)
+        inspected, returncode = self._inspect(handle.name, check=not absent_ok)
+        if returncode != 0:
+            return None
+        assert inspected is not None
+        config = self._mapping(inspected.get("Config"))
+        labels = self._mapping(config.get("Labels"))
+        container_id = inspected.get("Id")
+        name = inspected.get("Name")
+        if (
+            labels.get(LABEL) != handle.run_id
+            or not isinstance(container_id, str)
+            or not container_id
+            or not isinstance(name, str)
+            or name.removeprefix("/") != handle.name
+        ):
+            raise RuntimeError("observed container ownership or identity drifted")
+        self._assert_daemon_identity(handle)
+        return {
+            "container_id": container_id,
+            "daemon_identity": asdict(self._daemon_identity),
+            "inspection": json.loads(json.dumps(inspected)),
+        }
+
     @staticmethod
     def _mapping(value: object) -> dict[str, object]:
         return value if isinstance(value, dict) else {}
@@ -569,7 +635,8 @@ class DockerRuntime:
         *,
         expected_user: str = CONTAINER_USER,
         expected_cap_add: tuple[str, ...] = (),
-    ) -> None:
+        expected_networks: tuple[str, ...] = (),
+    ) -> dict[str, object]:
         self._verify_policy_bytes()
         inspected, _ = self._inspect(handle.container_id)
         assert inspected is not None
@@ -643,9 +710,22 @@ class DockerRuntime:
         if inspected.get("Image") != spec.image_id:
             raise RuntimeError("container image ID drifted")
         networks = network.get("Networks")
-        if not isinstance(networks, dict) or set(networks) - {"none"}:
+        observed_networks = set(networks) if isinstance(networks, dict) else None
+        expected_network_set = set(expected_networks)
+        if observed_networks is None or (
+            observed_networks not in (set(), {"none"})
+            if not expected_network_set
+            else observed_networks != expected_network_set
+        ):
             raise RuntimeError("container network membership drifted")
         self._inspect_mounts(inspected.get("Mounts"), spec.mounts)
+        return {
+            "container_id": handle.container_id,
+            "daemon_identity": (
+                asdict(self._daemon_identity) if self._daemon_identity is not None else None
+            ),
+            "inspection": json.loads(json.dumps(inspected)),
+        }
 
     @staticmethod
     def _inspect_mounts(value: object, expected: tuple[MountSpec, ...]) -> None:
