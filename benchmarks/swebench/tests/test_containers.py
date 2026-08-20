@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import json
 import os
 import socket
@@ -7,6 +8,7 @@ import subprocess
 import tempfile
 import types
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -50,6 +52,10 @@ def completed(stdout="", returncode=0, stderr=""):
 
 def absent():
     return completed(returncode=1, stderr="Error: No such object: missing\n")
+
+
+def volume_absent():
+    return completed(returncode=1, stderr="Error: No such volume: missing\n")
 
 
 class DockerRuntimeTests(unittest.TestCase):
@@ -147,6 +153,183 @@ class DockerRuntimeTests(unittest.TestCase):
             "Options": None,
             "Scope": "local",
         }
+
+    def initializer_inspection(self, volume="alloy-checkout-run-123", target="/workspace"):
+        inspected = self.inspection()
+        inspected["Config"]["User"] = "0:0"
+        inspected["Config"]["Labels"] = {"alloy.swebench.gate": "run-123"}
+        inspected["HostConfig"]["CapAdd"] = ["CHOWN"]
+        inspected["Mounts"] = [{
+            "Type": "volume", "Name": volume, "Destination": target, "RW": True,
+        }]
+        return inspected
+
+    def test_create_volume_binds_identity_and_verifies_plain_owned_volume(self):
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())), volume_absent(),
+            completed(json.dumps(self.docker_info())), completed("alloy-checkout-run-123\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+        )
+        runtime = self.preflighted_runtime(runner)
+
+        runtime.create_volume("alloy-checkout-run-123", "run-123")
+
+        self.assertEqual(
+            runner.calls[6][0],
+            [
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                "volume", "create", "--label", "alloy.swebench.gate=run-123",
+                "alloy-checkout-run-123",
+            ],
+        )
+        self.assertEqual(runner.results, [])
+
+    def test_volume_methods_reject_daemon_identity_drift_before_volume_access(self):
+        changed = {**self.docker_info(), "ID": "replacement-daemon"}
+        calls = (
+            ("create_volume", ("alloy-checkout-run-123", "run-123")),
+            ("initialize_volume", (
+                "alloy-checkout-run-123", "/workspace", "run-123", self.image, self.image_id,
+            )),
+            ("remove_volume", ("alloy-checkout-run-123", "run-123")),
+        )
+        for method, arguments in calls:
+            runner = ScriptedRunner(
+                *self.successful_preflight(), completed(json.dumps(changed)),
+            )
+            runtime = self.preflighted_runtime(runner)
+            with self.subTest(method=method), self.assertRaisesRegex(
+                containers.DaemonIdentityDriftError, "daemon identity drift",
+            ):
+                getattr(runtime, method)(*arguments)
+            self.assertEqual(len(runner.calls), 4)
+
+    def test_create_volume_rejects_each_plain_owned_volume_metadata_drift(self):
+        cases = (
+            ({**self.owned_volume(), "Labels": {}}, "ownership label"),
+            ({**self.owned_volume(), "Driver": "nfs"}, "plain local volume"),
+            ({**self.owned_volume(), "Scope": "global"}, "plain local volume"),
+            ({**self.owned_volume(), "Options": {"device": "/host"}}, "plain local volume"),
+        )
+        for metadata, message in cases:
+            runner = ScriptedRunner(
+                *self.successful_preflight(),
+                completed(json.dumps(self.docker_info())), volume_absent(),
+                completed(json.dumps(self.docker_info())),
+                completed("alloy-checkout-run-123\n"),
+                completed(json.dumps(self.docker_info())), completed(json.dumps([metadata])),
+                completed(json.dumps(self.docker_info())),
+                completed(json.dumps([self.owned_volume()])),
+                completed(json.dumps(self.docker_info())), completed(),
+                completed(json.dumps(self.docker_info())), volume_absent(),
+            )
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                self.preflighted_runtime(runner).create_volume(
+                    "alloy-checkout-run-123", "run-123",
+                )
+            self.assertEqual(runner.results, [])
+
+    def test_create_volume_preserves_verification_and_cleanup_failures(self):
+        cleanup = subprocess.CalledProcessError(1, ["docker", "info"], stderr="unavailable")
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())), volume_absent(),
+            completed(json.dumps(self.docker_info())),
+            completed("alloy-checkout-run-123\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([{**self.owned_volume(), "Driver": "nfs"}])),
+            cleanup,
+        )
+        with self.assertRaises(containers.VolumeCleanupUncertainError) as raised:
+            self.preflighted_runtime(runner).create_volume(
+                "alloy-checkout-run-123", "run-123",
+            )
+        self.assertRegex(str(raised.exception.original_error), "plain local volume")
+        self.assertIsInstance(
+            raised.exception.cleanup_error, containers.DaemonIdentityDriftError,
+        )
+        self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+
+    def test_initialize_volume_uses_confined_root_helper_and_tears_it_down(self):
+        inspected = self.initializer_inspection()
+        inspected["HostConfig"]["SecurityOpt"] = [
+            "seccomp=" + (REPO_ROOT / self.profile.security_policy.seccomp_path).read_text()
+            if value.startswith("seccomp=") else value
+            for value in inspected["HostConfig"]["SecurityOpt"]
+        ]
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed("helper-id\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([inspected])),
+            completed(json.dumps(self.docker_info())), completed(), completed("0\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([inspected])),
+            completed(json.dumps(self.docker_info())), completed(),
+            completed(json.dumps(self.docker_info())), absent(),
+        )
+        runtime = self.preflighted_runtime(runner)
+
+        runtime.initialize_volume(
+            "alloy-checkout-run-123", "/workspace", "run-123", self.image, self.image_id,
+        )
+
+        create = runner.calls[6][0]
+        self.assertIn("0:0", create)
+        self.assertIn("CHOWN", create)
+        self.assertIn("chown 65532:65532 /workspace", create)
+        self.assertNotIn("SYS_ADMIN", create)
+        self.assertEqual(runner.results, [])
+
+    def test_initialize_volume_preserves_wait_and_teardown_failures(self):
+        inspected = self.initializer_inspection()
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())), completed("helper-id\n"),
+            completed(json.dumps(self.docker_info())), completed(json.dumps([inspected])),
+            completed(json.dumps(self.docker_info())), completed(), completed("17\n"),
+            subprocess.CalledProcessError(1, ["docker", "info"], stderr="unavailable"),
+        )
+        with self.assertRaises(containers.CleanupUncertainError) as raised:
+            self.preflighted_runtime(runner).initialize_volume(
+                "alloy-checkout-run-123", "/workspace", "run-123", self.image, self.image_id,
+            )
+        self.assertRegex(str(raised.exception.original_error), "initializer failed")
+        self.assertIsInstance(
+            raised.exception.cleanup_error, containers.DaemonIdentityDriftError,
+        )
+        self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+
+    def test_remove_volume_refuses_foreign_metadata_and_verifies_teardown(self):
+        foreign = {**self.owned_volume(), "Labels": {"alloy.swebench.gate": "foreign"}}
+        runner = ScriptedRunner(
+            *self.successful_preflight(), completed(json.dumps(self.docker_info())),
+            completed(json.dumps([foreign])),
+        )
+        with self.assertRaisesRegex(RuntimeError, "ownership label"):
+            self.preflighted_runtime(runner).remove_volume(
+                "alloy-checkout-run-123", "run-123",
+            )
+
+        runner = ScriptedRunner(
+            *self.successful_preflight(), completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())), completed(),
+            completed(json.dumps(self.docker_info())), volume_absent(),
+        )
+        self.preflighted_runtime(runner).remove_volume(
+            "alloy-checkout-run-123", "run-123",
+        )
+        self.assertEqual(runner.calls[6][0][-3:], ["volume", "rm", "alloy-checkout-run-123"])
+        self.assertEqual(runner.results, [])
 
     def test_create_uses_exact_confinement_argv_and_inspects_before_start(self):
         runner = ScriptedRunner(
@@ -925,6 +1108,67 @@ class DockerRuntimeTests(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, policy)
+
+
+class ProductionDockerVolumeTests(unittest.TestCase):
+    def test_production_volume_lifecycle_initializes_nonroot_write_and_tears_down(self):
+        if os.environ.get("ALLOY_SWEBENCH_REQUIRE_DOCKER") != "1":
+            self.skipTest("set ALLOY_SWEBENCH_REQUIRE_DOCKER=1 for required Docker isolation")
+        result = subprocess.run(
+            [
+                containers.DOCKER_BIN, "--host", containers.DOCKER_ENDPOINT,
+                "image", "inspect", "node:22-bookworm", "--format",
+                "{{json .RepoDigests}} {{.Id}}",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        encoded_digests, image_id = result.stdout.strip().split(" ", 1)
+        reference = json.loads(encoded_digests)[0]
+        digest = reference.rsplit("@", 1)[1]
+        image = ImagePin(reference, digest, "linux/amd64")
+        policy = dataclasses.replace(
+            load_profile(PROFILE_PATH, REPO_ROOT).security_policy,
+            apparmor_name="docker-default",
+        )
+        profile = dataclasses.replace(
+            load_profile(PROFILE_PATH, REPO_ROOT), security_policy=policy,
+        )
+        runtime = DockerRuntime(profile, REPO_ROOT)
+        runtime._completed_preflight = runtime._profile_fingerprint()
+        runtime._daemon_identity = runtime._current_daemon_identity()
+        run_id = "volume-live-" + uuid.uuid4().hex
+        volume = "alloy-volume-live-" + uuid.uuid4().hex
+        handle = None
+        volume_created = False
+        try:
+            self.assertEqual(runtime.verify_local_image(image), image_id)
+            runtime.create_volume(volume, run_id)
+            volume_created = True
+            runtime.initialize_volume(volume, "/output", run_id, image, image_id)
+            spec = ContainerSpec(
+                name="alloy-volume-write-" + uuid.uuid4().hex,
+                run_id=run_id,
+                image=image,
+                image_id=image_id,
+                command=(
+                    "/bin/sh", "-euc",
+                    "test \"$(id -u):$(id -g)\" = 65532:65532; "
+                    "test \"$(stat -c %u:%g /output)\" = 65532:65532; "
+                    "printf volume-only > /output/evidence",
+                ),
+                mounts=(MountSpec(volume, "/output", False, "volume"),),
+            )
+            handle = runtime.create(spec)
+            self.assertEqual(runtime.wait(handle, timeout=60), 0)
+            runtime.force_remove(handle)
+            handle = None
+            runtime.remove_volume(volume, run_id)
+            volume_created = False
+        finally:
+            if handle is not None:
+                runtime.force_remove(handle)
+            if volume_created:
+                runtime.remove_volume(volume, run_id)
 
 
 if __name__ == "__main__":

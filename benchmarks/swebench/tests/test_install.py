@@ -4,19 +4,16 @@ import dataclasses
 import hashlib
 import io
 import json
-import os
-import shlex
 import subprocess
 import tarfile
 import tempfile
 import unittest
-import uuid
 from pathlib import Path
 from unittest import mock
 
 from benchmarks.swebench.authority import VerifiedCandidate
 from benchmarks.swebench.containers import ContainerHandle
-from benchmarks.swebench.fetch import ArtifactFetcher
+from benchmarks.swebench.fetch import ArtifactFetcher, _verified_archive_files
 from benchmarks.swebench.install import (
     FetchedCandidate,
     ResourceCleanupUncertainError,
@@ -24,6 +21,7 @@ from benchmarks.swebench.install import (
     install_candidate,
     prepare_target,
 )
+from benchmarks.swebench.containers import CleanupUncertainError
 from benchmarks.swebench.profile import load_profile
 
 
@@ -34,12 +32,16 @@ IMAGE_ID = "sha256:" + "b" * 64
 
 
 class RecordingRuntime:
-    def __init__(self, probe=None, *, wait_status=0, volume_cleanup_error=None):
+    def __init__(
+        self, probe=None, *, wait_status=0, volume_cleanup_error=None,
+        container_cleanup_error=None,
+    ):
         self.profile = PROFILE
         self.authority_root = REPO_ROOT
         self.probe = probe
         self.wait_status = wait_status
         self.volume_cleanup_error = volume_cleanup_error
+        self.container_cleanup_error = container_cleanup_error
         self.specs = []
         self.volumes = []
         self.initialized_volumes = []
@@ -68,9 +70,13 @@ class RecordingRuntime:
         return self.wait_status
 
     def read_json(self, volume, path, *, limit):
+        if isinstance(self.probe, BaseException):
+            raise self.probe
         return self.probe
 
     def force_remove(self, handle):
+        if self.container_cleanup_error is not None:
+            raise self.container_cleanup_error
         self.removed.append(handle)
 
 
@@ -220,6 +226,74 @@ class ArtifactFetcherTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeError, "per-file"):
                 bounded.fetch_candidate(VerifiedCandidate(commit, commit, "1.1.26", ()))
+
+    def test_candidate_and_target_archive_budget_counts_directories_and_root(self):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            for name in ("root", "root/directory"):
+                member = tarfile.TarInfo(name)
+                member.type = tarfile.DIRTYPE
+                archive.addfile(member)
+            member = tarfile.TarInfo("root/directory/file")
+            member.size = 1
+            archive.addfile(member, io.BytesIO(b"x"))
+        limits = dataclasses.replace(PROFILE.limits, max_files=2)
+        profile = dataclasses.replace(PROFILE, limits=limits)
+
+        with self.assertRaisesRegex(RuntimeError, "file-count"):
+            _verified_archive_files(stream.getvalue(), "0" * 40, profile)
+
+    def test_bun_cache_rejects_member_count_and_decompression_bombs(self):
+        npm_lock = b'{"packages":{}}\n'
+        url = "https://registry.npmjs.org/bomb/-/bomb-1.0.0.tgz"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def candidate(package_bytes):
+                integrity = "sha512-" + base64.b64encode(
+                    hashlib.sha512(package_bytes).digest()
+                ).decode()
+                bun_lock = json.dumps({
+                    "packages": {"bomb": ["bomb@1.0.0", "", {}, integrity]},
+                }).encode()
+                return FetchedCandidate(
+                    SHA, "1.1.26", "0.82.1", artifact(root / "candidate.tar", b"x"),
+                    hashlib.sha256(npm_lock).hexdigest(), hashlib.sha256(bun_lock).hexdigest(),
+                    lock=npm_lock, bun_lock=bun_lock,
+                )
+
+            count_archive = io.BytesIO()
+            with tarfile.open(fileobj=count_archive, mode="w:gz") as archive:
+                for name in ("package", "package/nested"):
+                    member = tarfile.TarInfo(name)
+                    member.type = tarfile.DIRTYPE
+                    archive.addfile(member)
+                member = tarfile.TarInfo("package/nested/file")
+                member.size = 1
+                archive.addfile(member, io.BytesIO(b"x"))
+            count_profile = dataclasses.replace(
+                PROFILE, limits=dataclasses.replace(PROFILE.limits, max_files=2),
+            )
+            count_fetcher = ArtifactFetcher(
+                root, root / ".count", downloader=lambda requested: count_archive.getvalue(),
+                profile=count_profile,
+            )
+            with self.assertRaisesRegex(RuntimeError, "file-count"):
+                count_fetcher.fetch_npm_cache(candidate(count_archive.getvalue()))
+
+            bomb_archive = self._package_tar(b"x" * 600)
+            bomb_profile = dataclasses.replace(
+                PROFILE,
+                limits=dataclasses.replace(
+                    PROFILE.limits, max_file_bytes=700, max_export_bytes=512,
+                ),
+            )
+            bomb_fetcher = ArtifactFetcher(
+                root, root / ".bomb", downloader=lambda requested: bomb_archive,
+                profile=bomb_profile,
+            )
+            with self.assertRaisesRegex(RuntimeError, "total-byte"):
+                bomb_fetcher.fetch_npm_cache(candidate(bomb_archive))
 
     def test_target_archive_matches_pinned_tree_and_rejects_dot_git(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -472,6 +546,25 @@ class CandidateInstallTests(unittest.TestCase):
         self.assertIs(raised.exception.cleanup_error, cleanup)
         self.assertEqual(len(runtime.removed), 1)
 
+    def test_install_preserves_wait_or_probe_failure_when_container_teardown_fails(self):
+        teardown = RuntimeError("container teardown unavailable")
+        cases = (
+            (RecordingRuntime(self.probe, wait_status=17, container_cleanup_error=teardown),
+             "status 17"),
+            (RecordingRuntime(RuntimeError("probe unreadable"),
+                              container_cleanup_error=teardown), "probe unreadable"),
+        )
+        for index, (runtime, message) in enumerate(cases):
+            with self.subTest(message=message):
+                with self.assertRaises(CleanupUncertainError) as raised:
+                    install_candidate(runtime, self.fetched, PROFILE, run_id=f"run-dual-{index}")
+                self.assertRegex(str(raised.exception.original_error), message)
+                self.assertIs(raised.exception.cleanup_error, teardown)
+                self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+                self.assertEqual(runtime.removed_volumes, [
+                    (f"alloy-app-run-dual-{index}", f"run-dual-{index}"),
+                ])
+
     def test_fake_installer_sentinel_and_network_probes_are_confined_to_volume(self):
         host_sentinel = Path(self.temporary.name) / "host-sentinel"
         runtime = RecordingRuntime(self.probe)
@@ -510,95 +603,20 @@ class CandidateInstallTests(unittest.TestCase):
             "alloy-agent-work-run-target-failed", "run-target-failed",
         )])
 
-
-class HostileDockerInstallTests(unittest.TestCase):
-    def test_hostile_installer_writes_only_volume_as_nonroot_and_has_no_ip_egress(self):
-        if os.environ.get("ALLOY_SWEBENCH_REQUIRE_DOCKER") != "1":
-            self.skipTest("set ALLOY_SWEBENCH_REQUIRE_DOCKER=1 for required Docker isolation")
-        docker = "/usr/bin/docker"
-        endpoint = "unix:///var/run/docker.sock"
-        image = "node:22-bookworm"
-        inspected = subprocess.run(
-            [docker, "--host", endpoint, "image", "inspect", image, "--format", "{{.Id}}"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertRegex(inspected, r"^sha256:[0-9a-f]{64}$")
-        run_id = "hostile-" + uuid.uuid4().hex
-        volume = "alloy-hostile-" + uuid.uuid4().hex
-        host_root = Path(tempfile.mkdtemp(prefix="alloy-hostile-host-"))
-        host_sentinel = host_root / "sentinel"
-        fake_installer = host_root / "install.sh"
-        policy = REPO_ROOT / PROFILE.security_policy.seccomp_path
-        security = [
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges",
-            "--security-opt", f"seccomp={policy}",
-            "--read-only", "--network", "none",
-        ]
-        subprocess.run(
-            [docker, "--host", endpoint, "volume", "create", "--label", f"alloy.swebench.gate={run_id}", volume],
-            check=True, capture_output=True, text=True,
+    def test_target_preserves_wait_failure_when_container_teardown_fails(self):
+        teardown = RuntimeError("target teardown unavailable")
+        runtime = RecordingRuntime(
+            self.probe, wait_status=23, container_cleanup_error=teardown,
         )
-        try:
-            subprocess.run(
-                [
-                    docker, "--host", endpoint, "run", "--rm", *security,
-                    "--user", "0:0", "--cap-add", "CHOWN",
-                    "--mount", f"type=volume,src={volume},dst=/output",
-                    inspected, "/bin/sh", "-euc", "chown 65532:65532 /output",
-                ],
-                check=True, capture_output=True, text=True, timeout=60,
-            )
-            script = r"""
-const fs = require('node:fs');
-const net = require('node:net');
-fs.writeFileSync('/output/sentinel', 'volume-only\n');
-function blocked(host, family) {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect({host, port: 9, family});
-    const timer = setTimeout(() => { socket.destroy(); resolve('blocked'); }, 1000);
-    socket.on('connect', () => { clearTimeout(timer); reject(new Error(`egress reached ${host}`)); });
-    socket.on('error', () => { clearTimeout(timer); resolve('blocked'); });
-  });
-}
-Promise.all([blocked('1.1.1.1', 4), blocked('2606:4700:4700::1111', 6)])
-  .then(([ipv4, ipv6]) => fs.writeFileSync('/output/network.json', JSON.stringify({ipv4, ipv6, uid: process.getuid()})))
-  .catch((error) => { console.error(error); process.exit(1); });
-"""
-            fake_installer.write_text(
-                "#!/bin/sh\nset -eu\nexec /usr/local/bin/node -e " + shlex.quote(script) + "\n"
-            )
-            fake_installer.chmod(0o555)
-            subprocess.run(
-                [
-                    docker, "--host", endpoint, "run", "--rm", *security,
-                    "--user", "65532:65532",
-                    "--mount", f"type=bind,src={fake_installer},dst=/input/install.sh,readonly",
-                    "--mount", f"type=volume,src={volume},dst=/output",
-                    inspected, "/bin/sh", "/input/install.sh",
-                ],
-                check=True, capture_output=True, text=True, timeout=60,
-            )
-            result = subprocess.run(
-                [
-                    docker, "--host", endpoint, "run", "--rm", *security,
-                    "--user", "0:0",
-                    "--mount", f"type=volume,src={volume},dst=/output,readonly",
-                    inspected, "/bin/sh", "-euc", "cat /output/sentinel; cat /output/network.json",
-                ],
-                check=True, capture_output=True, text=True, timeout=60,
-            )
-            lines = result.stdout.splitlines()
-            self.assertEqual(lines[0], "volume-only")
-            self.assertEqual(json.loads(lines[1]), {"ipv4": "blocked", "ipv6": "blocked", "uid": 65532})
-            self.assertFalse(host_sentinel.exists())
-        finally:
-            subprocess.run(
-                [docker, "--host", endpoint, "volume", "rm", volume],
-                check=True, capture_output=True, text=True,
-            )
-            fake_installer.unlink(missing_ok=True)
-            host_root.rmdir()
+        source = artifact(Path(self.temporary.name) / "target-dual.tar", b"target")
+        with self.assertRaises(CleanupUncertainError) as raised:
+            prepare_target(runtime, source, PROFILE, run_id="run-target-dual")
+        self.assertRegex(str(raised.exception.original_error), "status 23")
+        self.assertIs(raised.exception.cleanup_error, teardown)
+        self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+        self.assertEqual(runtime.removed_volumes, [
+            ("alloy-agent-work-run-target-dual", "run-target-dual"),
+        ])
 
 
 if __name__ == "__main__":

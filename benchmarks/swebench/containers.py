@@ -539,7 +539,8 @@ class DockerRuntime:
     def _inspect(self, identifier: str, *, check: bool = True) -> tuple[dict[str, object] | None, int]:
         result = self._run(self._docker_arguments("inspect", identifier), check=check)
         if result.returncode != 0:
-            if "No such object" in result.stderr or "No such container" in result.stderr:
+            stderr = result.stderr.lower()
+            if "no such object" in stderr or "no such container" in stderr:
                 return None, result.returncode
             raise RuntimeError("could not prove container absence from Docker inspection")
         return self._json_object(result, "container inspection"), 0
@@ -556,6 +557,7 @@ class DockerRuntime:
         expected_user: str = CONTAINER_USER,
         expected_cap_add: tuple[str, ...] = (),
     ) -> None:
+        self._verify_policy_bytes()
         inspected, _ = self._inspect(handle.container_id)
         assert inspected is not None
         config = self._mapping(inspected.get("Config"))
@@ -572,7 +574,9 @@ class DockerRuntime:
         if not isinstance(cap_drop, list) or {str(value).upper() for value in cap_drop} != {"ALL"}:
             raise RuntimeError("container capability drop drifted")
         cap_add = host.get("CapAdd")
-        actual_cap_add = () if cap_add in (None, []) else tuple(sorted(str(value).upper() for value in cap_add))
+        actual_cap_add = () if cap_add in (None, []) else tuple(sorted(
+            str(value).upper().removeprefix("CAP_") for value in cap_add
+        ))
         if actual_cap_add != tuple(sorted(expected_cap_add)):
             raise RuntimeError("container capability add drifted")
         expected_options = {
@@ -582,10 +586,20 @@ class DockerRuntime:
         options = host.get("SecurityOpt")
         if not isinstance(options, list) or any(not isinstance(value, str) for value in options):
             raise RuntimeError("container security options drifted")
-        normalized = [
-            "no-new-privileges:true" if value == "no-new-privileges" else value
-            for value in options
-        ]
+        normalized = []
+        for value in options:
+            if value == "no-new-privileges":
+                value = "no-new-privileges:true"
+            elif value.startswith("seccomp={"):
+                try:
+                    observed_seccomp = json.loads(value.removeprefix("seccomp="))
+                    expected_seccomp = json.loads(self.seccomp_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    pass
+                else:
+                    if observed_seccomp == expected_seccomp:
+                        value = f"seccomp={self.seccomp_path}"
+            normalized.append(value)
         expected_options.add("no-new-privileges:true")
         if len(normalized) != 3 or len(set(normalized)) != 3 or set(normalized) != expected_options:
             raise RuntimeError("container security options drifted")
@@ -658,21 +672,25 @@ class DockerRuntime:
         result = self._run(self._docker_arguments("volume", "inspect", name), check=False)
         if result.returncode == 0:
             raise RuntimeError("refusing to reuse an existing Docker volume")
-        if "No such volume" not in result.stderr:
+        if "no such volume" not in result.stderr.lower():
             raise RuntimeError("could not prove Docker volume absence")
         self._assert_daemon_identity()
         created = False
         try:
-            self._run(self._docker_arguments(
+            result = self._run(self._docker_arguments(
                 "volume", "create", "--label", f"{LABEL}={run_id}", name
             ))
             created = True
+            if result.stdout.strip() != name:
+                raise RuntimeError("Docker created an unexpected volume")
+            self._assert_daemon_identity()
             spec = ContainerSpec(
                 name="volume-verification", run_id=run_id, image=self.profile.agent_image,
                 image_id="sha256:" + "0" * 64, command=("true",),
                 mounts=(MountSpec(name, "/volume", False, "volume"),),
             )
             self._verify_volume_ownership(spec)
+            self._assert_daemon_identity()
         except BaseException as original_error:
             if created:
                 try:
@@ -708,6 +726,7 @@ class DockerRuntime:
         )
         self._verify_policy_bytes()
         self._validate_spec(spec)
+        self._assert_daemon_identity()
         self._verify_volume_ownership(spec)
         self._assert_daemon_identity()
         result = self._run(self._create_arguments(spec, user="0:0", cap_add=("CHOWN",)))
@@ -740,7 +759,7 @@ class DockerRuntime:
         self._assert_daemon_identity()
         result = self._run(self._docker_arguments("volume", "inspect", name), check=False)
         if result.returncode != 0:
-            if "No such volume" in result.stderr:
+            if "no such volume" in result.stderr.lower():
                 return
             raise RuntimeError("could not prove Docker volume state")
         inspected = self._json_object(result, "volume inspection")
@@ -757,7 +776,7 @@ class DockerRuntime:
         self._run(self._docker_arguments("volume", "rm", name))
         self._assert_daemon_identity()
         absent = self._run(self._docker_arguments("volume", "inspect", name), check=False)
-        if absent.returncode == 0 or "No such volume" not in absent.stderr:
+        if absent.returncode == 0 or "no such volume" not in absent.stderr.lower():
             raise RuntimeError("could not prove Docker volume removal")
 
     def force_remove(self, handle: ContainerHandle) -> None:

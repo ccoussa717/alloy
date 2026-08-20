@@ -7,7 +7,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchmarks.swebench.containers import ContainerSpec, DockerRuntime, MountSpec
+from benchmarks.swebench.containers import (
+    CleanupUncertainError,
+    ContainerSpec,
+    DockerRuntime,
+    MountSpec,
+)
 from benchmarks.swebench.profile import BenchmarkProfile
 
 
@@ -143,6 +148,21 @@ def _logs(runtime: DockerRuntime, container_id: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise RuntimeError("candidate probe output must be a JSON object")
     return value
+
+
+def _run_with_teardown(runtime: DockerRuntime, handle, operation):
+    try:
+        result = operation()
+    except BaseException as original_error:
+        try:
+            runtime.force_remove(handle)
+        except BaseException as cleanup_error:
+            raise CleanupUncertainError(
+                handle, original_error, cleanup_error,
+            ) from original_error
+        raise
+    runtime.force_remove(handle)
+    return result
 
 
 INSTALL_SCRIPT = r"""
@@ -299,13 +319,14 @@ def install_candidate(
             environment=(("CANDIDATE_COMMIT", fetched.commit),), network_mode="none",
         )
         handle = runtime.create(spec)
-        try:
+
+        def install_probe():
             status = runtime.wait(handle, timeout=profile.agent_timeout_seconds)
             if status != 0:
                 raise RuntimeError(f"candidate installation exited with status {status}")
-            probe = _logs(runtime, handle.container_id)
-        finally:
-            runtime.force_remove(handle)
+            return _logs(runtime, handle.container_id)
+
+        probe = _run_with_teardown(runtime, handle, install_probe)
         expected = {
             "alloy_version": fetched.alloy_version, "pi_version": fetched.pi_version,
             "commit": fetched.commit, "archive_sha256": fetched.archive.sha256,
@@ -374,12 +395,13 @@ def prepare_target(
             environment=(("BASE_COMMIT", profile.base_commit),), network_mode="none",
         )
         handle = runtime.create(spec)
-        try:
+
+        def target_setup():
             status = runtime.wait(handle, timeout=profile.evaluator_timeout_seconds)
             if status != 0:
                 raise RuntimeError(f"target setup exited with status {status}")
-        finally:
-            runtime.force_remove(handle)
+
+        _run_with_teardown(runtime, handle, target_setup)
         return PreparedTarget(image_id, profile.base_commit, source.sha256, volume)
     except BaseException as original_error:
         if volume_created:

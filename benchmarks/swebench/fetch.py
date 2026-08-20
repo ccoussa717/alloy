@@ -41,6 +41,26 @@ REDIRECT_ORIGINS = frozenset({
 Downloader = Callable[[str], bytes]
 
 
+class _ArchiveBudget:
+    def __init__(self, profile: BenchmarkProfile, label: str) -> None:
+        self.max_files = profile.limits.max_files
+        self.max_file_bytes = profile.limits.max_file_bytes
+        self.max_total_bytes = profile.limits.max_export_bytes
+        self.label = label
+        self.count = 0
+        self.total_bytes = 0
+
+    def observe(self, size: int) -> None:
+        self.count += 1
+        if self.count > self.max_files:
+            raise RuntimeError(f"{self.label} exceeds the profile file-count bound")
+        if size < 0 or size > self.max_file_bytes:
+            raise RuntimeError(f"{self.label} member exceeds the profile per-file bound")
+        if size > self.max_total_bytes - self.total_bytes:
+            raise RuntimeError(f"{self.label} exceeds the profile total-byte bound")
+        self.total_bytes += size
+
+
 def _url_origin(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
     if (
@@ -138,11 +158,16 @@ def _verified_archive_files(
     objects: dict[str, tuple[int, bytes]] = {}
     seen: set[str] = set()
     root: str | None = None
-    file_count = 0
-    total_bytes = 0
+    budget = _ArchiveBudget(profile, "archive")
     try:
         with tarfile.open(fileobj=io.BytesIO(content), mode="r|*") as archive:
             for member in archive:
+                payload_size = (
+                    member.size if member.isreg()
+                    else len(member.linkname.encode("utf-8")) if member.issym()
+                    else 0
+                )
+                budget.observe(payload_size)
                 if not member.name:
                     raise RuntimeError("archive contains an empty path")
                 member_root = member.name.split("/", 1)[0]
@@ -167,12 +192,7 @@ def _verified_archive_files(
                     raise RuntimeError("target archive contains a forbidden .git entry")
                 if member.isdir():
                     continue
-                file_count += 1
-                if file_count > profile.limits.max_files:
-                    raise RuntimeError("archive exceeds the profile file-count bound")
                 if member.isreg():
-                    if member.size > profile.limits.max_file_bytes:
-                        raise RuntimeError("archive member exceeds the profile per-file bound")
                     source = archive.extractfile(member)
                     if source is None:
                         raise RuntimeError("archive file is unreadable")
@@ -182,14 +202,9 @@ def _verified_archive_files(
                     mode = 0o100755 if member.mode & 0o111 else 0o100644
                 elif member.issym():
                     data = member.linkname.encode("utf-8")
-                    if len(data) > profile.limits.max_file_bytes:
-                        raise RuntimeError("archive member exceeds the profile per-file bound")
                     mode = 0o120000
                 else:
                     raise RuntimeError("archive contains a special file")
-                total_bytes += len(data)
-                if total_bytes > profile.limits.max_export_bytes:
-                    raise RuntimeError("archive exceeds the profile total-byte bound")
                 files[relative] = data
                 objects[relative] = (mode, _git_hash("blob", data))
     except (tarfile.TarError, UnicodeError, OSError) as error:
@@ -402,58 +417,65 @@ class ArtifactFetcher:
                 }
                 bun_packages.append((name, version, url, content))
 
-        output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode="w") as archive:
-            for name, content in sorted(artifacts.items()):
-                member = tarfile.TarInfo(f"npm/artifacts/{name}.tgz")
-                member.mode = 0o444
-                member.size = len(content)
-                archive.addfile(member, io.BytesIO(content))
-            encoded = json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
-            member = tarfile.TarInfo("npm/index.json")
-            member.mode = 0o444
-            member.size = len(encoded)
-            archive.addfile(member, io.BytesIO(encoded))
-            for name, version, _, content in bun_packages:
-                cache_root = f"bun/{name}@{version}@@@1"
-                with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as package_archive:
-                    package_seen: set[str] = set()
-                    for package_member in package_archive:
-                        if not package_member.isfile() or not package_member.name.startswith("package/"):
-                            continue
-                        if package_member.name in package_seen:
-                            raise RuntimeError("Bun package contains a duplicate path")
-                        package_seen.add(package_member.name)
-                        if package_member.size > self._profile().limits.max_file_bytes:
-                            raise RuntimeError("Bun cache member exceeds the profile per-file bound")
-                        source = package_archive.extractfile(package_member)
-                        assert source is not None
-                        data = source.read(self._profile().limits.max_file_bytes + 1)
-                        if len(data) != package_member.size:
-                            raise RuntimeError("Bun cache member size is inconsistent")
-                        relative = package_member.name[len("package/"):]
-                        relative_path = Path(relative)
-                        if not relative or relative_path.is_absolute() or ".." in relative_path.parts:
-                            raise RuntimeError("Bun package contains an unsafe path")
-                        member = tarfile.TarInfo(f"{cache_root}/{relative}")
-                        member.mode = package_member.mode & 0o777
-                        member.size = len(data)
-                        archive.addfile(member, io.BytesIO(data))
-            cache_metadata = {
-                "schema_version": 1,
-                "npm_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
-                "bun_lock_sha256": lock.bun_lock_sha256 if isinstance(lock, FetchedCandidate) else None,
-                "artifacts": artifact_metadata,
-            }
-            encoded = json.dumps(cache_metadata, sort_keys=True, separators=(",", ":")).encode()
-            member = tarfile.TarInfo("cache-metadata.json")
-            member.mode = 0o444
-            member.size = len(encoded)
-            archive.addfile(member, io.BytesIO(encoded))
+        package_budget = _ArchiveBudget(self._profile(), "Bun package archive")
+        output_budget = _ArchiveBudget(self._profile(), "package cache")
+
+        def add_output(archive: tarfile.TarFile, name: str, content: bytes, mode: int) -> None:
+            output_budget.observe(len(content))
+            member = tarfile.TarInfo(name)
+            member.mode = mode
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+
+        with tempfile.TemporaryFile() as output:
+            with tarfile.open(fileobj=output, mode="w") as archive:
+                for name, content in sorted(artifacts.items()):
+                    add_output(archive, f"npm/artifacts/{name}.tgz", content, 0o444)
+                encoded = json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
+                add_output(archive, "npm/index.json", encoded, 0o444)
+                for name, version, _, content in bun_packages:
+                    cache_root = f"bun/{name}@{version}@@@1"
+                    with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as package_archive:
+                        package_seen: set[str] = set()
+                        for package_member in package_archive:
+                            payload_size = (
+                                package_member.size if package_member.isreg()
+                                else len(package_member.linkname.encode("utf-8"))
+                                if package_member.issym() else 0
+                            )
+                            package_budget.observe(payload_size)
+                            if package_member.name in package_seen:
+                                raise RuntimeError("Bun package contains a duplicate path")
+                            package_seen.add(package_member.name)
+                            if not package_member.isfile() or not package_member.name.startswith("package/"):
+                                continue
+                            source = package_archive.extractfile(package_member)
+                            assert source is not None
+                            data = source.read(package_member.size + 1)
+                            if len(data) != package_member.size:
+                                raise RuntimeError("Bun cache member size is inconsistent")
+                            relative = package_member.name[len("package/"):]
+                            relative_path = Path(relative)
+                            if not relative or relative_path.is_absolute() or ".." in relative_path.parts:
+                                raise RuntimeError("Bun package contains an unsafe path")
+                            add_output(
+                                archive, f"{cache_root}/{relative}", data,
+                                package_member.mode & 0o777,
+                            )
+                cache_metadata = {
+                    "schema_version": 1,
+                    "npm_lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+                    "bun_lock_sha256": lock.bun_lock_sha256 if isinstance(lock, FetchedCandidate) else None,
+                    "artifacts": artifact_metadata,
+                }
+                encoded = json.dumps(cache_metadata, sort_keys=True, separators=(",", ":")).encode()
+                add_output(archive, "cache-metadata.json", encoded, 0o444)
+            size = output.tell()
+            if size > self._profile().limits.max_export_bytes:
+                raise RuntimeError("package cache exceeds the profile total-byte bound")
+            output.seek(0)
+            cache_content = output.read(size + 1)
         digest = hashlib.sha256(lock_bytes).hexdigest()
-        cache_content = output.getvalue()
-        if len(cache_content) > self._profile().limits.max_export_bytes:
-            raise RuntimeError("package cache exceeds the profile total-byte bound")
         return self._publish(f"npm-cache-{digest}.tar", cache_content)
 
     def fetch_bun(self) -> VerifiedArtifact:
