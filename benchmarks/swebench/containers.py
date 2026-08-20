@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -18,10 +19,10 @@ IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
 @dataclass(frozen=True)
 class MountSpec:
-    source: Path
+    source: Path | str
     target: str
     read_only: bool
-    trusted: bool = False
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,12 @@ class PreflightReport:
     cgroup_version: str
     apparmor: bool
     seccomp: bool
+    os_type: str
+    architecture: str
+    apparmor_name: str
+    seccomp_sha256: str
+    apparmor_sha256: str
+    profile_fingerprint: str
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -75,6 +82,7 @@ class DockerRuntime:
         self.apparmor_path = (
             self.authority_root / profile.security_policy.apparmor_path
         ).resolve()
+        self._completed_preflight: str | None = None
 
     def _run(
         self,
@@ -117,22 +125,86 @@ class DockerRuntime:
         if self._digest(self.apparmor_path, "AppArmor") != policy.apparmor_sha256:
             raise RuntimeError("AppArmor policy digest does not match the pinned profile")
 
+    def _profile_fingerprint(self) -> str:
+        encoded = json.dumps(
+            asdict(self.profile), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _apparmor_profile_mode(status: dict[str, object], name: str) -> str | None:
+        profiles = status.get("profiles")
+        if isinstance(profiles, dict):
+            value = profiles.get(name)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                mode = value.get("mode", value.get("status"))
+                return mode if isinstance(mode, str) else None
+            return None
+        if isinstance(profiles, list):
+            matches = [
+                value
+                for value in profiles
+                if isinstance(value, dict) and value.get("name") == name
+            ]
+            if len(matches) != 1:
+                return None
+            mode = matches[0].get("mode", matches[0].get("status"))
+            return mode if isinstance(mode, str) else None
+        return None
+
     def preflight(self) -> PreflightReport:
+        self._completed_preflight = None
+        if os.geteuid() != 0:
+            raise RuntimeError("official container preflight must run as root")
         self._verify_policy_bytes()
         result = self._run(["docker", "info", "--format", "{{json .}}"])
         info = self._json_object(result, "host information")
         cgroup_version = str(info.get("CgroupVersion", ""))
+        os_type = str(info.get("OSType", ""))
+        architecture = str(info.get("Architecture", ""))
         options = info.get("SecurityOptions")
         security_options = options if isinstance(options, list) else []
-        apparmor = any("apparmor" in str(option).lower() for option in security_options)
-        seccomp = any("seccomp" in str(option).lower() for option in security_options)
+        feature_names = {
+            str(option).lower().split(",", 1)[0] for option in security_options
+        }
+        apparmor = "name=apparmor" in feature_names
+        seccomp = "name=seccomp" in feature_names
         if cgroup_version != "2":
             raise RuntimeError("Docker host must use cgroup v2")
         if not apparmor:
             raise RuntimeError("Docker host must provide AppArmor")
         if not seccomp:
             raise RuntimeError("Docker host must provide seccomp")
-        return PreflightReport(cgroup_version, apparmor, seccomp)
+        if os_type != "linux":
+            raise RuntimeError("official runs require a Linux Docker daemon")
+        if architecture not in {"amd64", "x86_64"}:
+            raise RuntimeError("official runs require an amd64 Docker daemon")
+        self._run(["apparmor_parser", "-r", str(self.apparmor_path)])
+        status = self._json_object(
+            self._run(["aa-status", "--json"]), "AppArmor status"
+        )
+        policy = self.profile.security_policy
+        mode = self._apparmor_profile_mode(status, policy.apparmor_name)
+        if mode is None:
+            raise RuntimeError("pinned AppArmor profile is not loaded")
+        if mode.lower() != "enforce":
+            raise RuntimeError("pinned AppArmor profile must be in enforce mode")
+        fingerprint = self._profile_fingerprint()
+        report = PreflightReport(
+            cgroup_version,
+            apparmor,
+            seccomp,
+            os_type,
+            architecture,
+            policy.apparmor_name,
+            policy.seccomp_sha256,
+            policy.apparmor_sha256,
+            fingerprint,
+        )
+        self._completed_preflight = fingerprint
+        return report
 
     @staticmethod
     def _validate_image(image: ImagePin) -> None:
@@ -162,22 +234,43 @@ class DockerRuntime:
             raise RuntimeError("Docker returned an invalid image ID")
         return image_id
 
-    @staticmethod
-    def _validate_mount(mount: MountSpec) -> None:
+    def _validate_mount(self, mount: MountSpec) -> None:
         source = str(mount.source)
-        resolved_source = str(mount.source.resolve())
-        if (
-            "docker.sock" in source
-            or "docker.sock" in resolved_source
-            or "docker.sock" in mount.target
-        ):
-            raise ValueError("Docker socket mounts are forbidden")
-        if mount.trusted and not mount.read_only:
-            raise ValueError("trusted mount must be read-only")
-        if not mount.source.is_absolute() or not mount.target.startswith("/"):
-            raise ValueError("mount paths must be absolute")
         if "," in source or "," in mount.target:
             raise ValueError("mount paths may not contain commas")
+        if not mount.target.startswith("/"):
+            raise ValueError("mount targets must be absolute")
+        if mount.kind == "volume":
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", source) is None:
+                raise ValueError("Docker named volume must use a simple name")
+            return
+        if mount.kind != "bind":
+            raise ValueError("mount kind must be bind or volume")
+        source_path = mount.source if isinstance(mount.source, Path) else Path(mount.source)
+        if not source_path.is_absolute():
+            raise ValueError("bind mount source must be absolute")
+        known_socket_roots = (
+            Path("/run"),
+            Path("/var/run"),
+            Path("/var/lib/docker"),
+        )
+        if (
+            "docker.sock" in source_path.parts
+            or "docker.sock" in mount.target
+            or any(source_path == root or source_path.is_relative_to(root) for root in known_socket_roots)
+            or ".docker/run" in source_path.as_posix()
+        ):
+            raise ValueError("Docker socket source or ancestor mounts are forbidden")
+        if not mount.read_only:
+            raise ValueError("bind mounts must be read-only")
+        try:
+            resolved = source_path.resolve(strict=True)
+        except OSError as error:
+            raise ValueError("bind mount must be a regular authority file") from error
+        if source_path != resolved:
+            raise ValueError("bind mount source may not contain a symlink")
+        if not resolved.is_relative_to(self.authority_root) or not resolved.is_file():
+            raise ValueError("bind mount must be a regular authority file")
 
     def _validate_spec(self, spec: ContainerSpec) -> None:
         self._validate_image(spec.image)
@@ -239,14 +332,40 @@ class DockerRuntime:
             arguments.extend(("--env", f"{key}={value}"))
         for mount in spec.mounts:
             mode = "ro" if mount.read_only else "rw"
+            mount_type = mount.kind
             arguments.extend(
-                ("--mount", f"type=bind,src={mount.source},dst={mount.target},{mode}")
+                (
+                    "--mount",
+                    f"type={mount_type},src={mount.source},dst={mount.target},{mode}",
+                )
             )
         return [*arguments, spec.image.reference, *spec.command]
 
+    def _verify_volume_ownership(self, spec: ContainerSpec) -> None:
+        for mount in spec.mounts:
+            if mount.kind != "volume":
+                continue
+            name = str(mount.source)
+            inspected = self._json_object(
+                self._run(["docker", "volume", "inspect", name]),
+                "volume inspection",
+            )
+            labels = self._mapping(inspected.get("Labels"))
+            if inspected.get("Name") != name or labels.get(LABEL) != spec.run_id:
+                raise RuntimeError("named volume ownership label does not match the run")
+            if (
+                inspected.get("Driver") != "local"
+                or inspected.get("Options") not in (None, {})
+                or inspected.get("Scope") != "local"
+            ):
+                raise RuntimeError("named volume must be a plain local volume")
+
     def create(self, spec: ContainerSpec) -> ContainerHandle:
+        if self._completed_preflight != self._profile_fingerprint():
+            raise RuntimeError("official preflight was not completed for this runtime and profile")
         self._verify_policy_bytes()
         self._validate_spec(spec)
+        self._verify_volume_ownership(spec)
         result = self._run(self._create_arguments(spec))
         container_id = result.stdout.strip()
         if not container_id:
@@ -293,11 +412,14 @@ class DockerRuntime:
             f"apparmor={self.profile.security_policy.apparmor_name}",
         }
         options = host.get("SecurityOpt")
-        option_set = {str(value) for value in options} if isinstance(options, list) else set()
-        no_new_privileges = bool(
-            {"no-new-privileges", "no-new-privileges:true"} & option_set
-        )
-        if not no_new_privileges or not expected_options.issubset(option_set):
+        if not isinstance(options, list) or any(not isinstance(value, str) for value in options):
+            raise RuntimeError("container security options drifted")
+        normalized = [
+            "no-new-privileges:true" if value == "no-new-privileges" else value
+            for value in options
+        ]
+        expected_options.add("no-new-privileges:true")
+        if len(normalized) != 3 or len(set(normalized)) != 3 or set(normalized) != expected_options:
             raise RuntimeError("container security options drifted")
         if host.get("ReadonlyRootfs") is not True:
             raise RuntimeError("container read-only root filesystem drifted")
@@ -331,11 +453,19 @@ class DockerRuntime:
         if not isinstance(value, list) or len(value) != len(expected):
             raise RuntimeError("container mounts drifted")
         actual = {
-            (mount.get("Source"), mount.get("Destination"), mount.get("RW"))
+            (
+                mount.get("Type"),
+                mount.get("Name") if mount.get("Type") == "volume" else mount.get("Source"),
+                mount.get("Destination"),
+                mount.get("RW"),
+            )
             for mount in value
             if isinstance(mount, dict)
         }
-        wanted = {(str(mount.source), mount.target, not mount.read_only) for mount in expected}
+        wanted = {
+            (mount.kind, str(mount.source), mount.target, not mount.read_only)
+            for mount in expected
+        }
         if actual != wanted:
             raise RuntimeError("container mounts drifted")
 
