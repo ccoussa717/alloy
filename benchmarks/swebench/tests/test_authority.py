@@ -7,6 +7,8 @@ from pathlib import Path
 from benchmarks.swebench.authority import (
     ReleaseTransformPolicy,
     coordinator_tree_digest,
+    load_host_config,
+    load_policy_from_commit,
     main,
     verify_candidate,
 )
@@ -14,6 +16,7 @@ from benchmarks.swebench.authority import (
 
 OLD_VERSION = "1.1.25"
 NEW_VERSION = "1.1.26"
+HOST_CONFIG_PATH = Path(__file__).parents[1] / "host-config.example.json"
 
 
 class AuthorityTests(unittest.TestCase):
@@ -93,6 +96,28 @@ class AuthorityTests(unittest.TestCase):
         )
         self._write("README.md", "# Alloy\n\nVersion-neutral release documentation.\n")
         self._write("benchmarks/swebench/coordinator.py", "TRUSTED = True\n")
+        self._write(
+            "benchmarks/swebench/release-transform.json",
+            json.dumps(self._policy_value(), indent=2) + "\n",
+        )
+
+    def _policy_value(self):
+        return {
+            "old_version": OLD_VERSION,
+            "new_version": NEW_VERSION,
+            "release_date": "2026-08-19",
+            "json_pointers": {
+                "package.json": ["/version"],
+                "tui/package.json": ["/version"],
+                "npm-shrinkwrap.json": ["/version", "/packages//version"],
+            },
+            "literals": {
+                "extensions/ui.ts": 1,
+                "lib/child-runner.mjs": 1,
+                "lib/mcp-client.mjs": 1,
+            },
+            "changelog_path": "CHANGELOG.md",
+        }
 
     def _commit(self, message):
         self._git("add", ".")
@@ -119,6 +144,24 @@ class AuthorityTests(unittest.TestCase):
         if mutate is not None:
             mutate()
         return self._commit("candidate")
+
+    def _repository_state(self):
+        tracked = self._git("ls-files", "-z").stdout.split("\0")
+        untracked = self._git("ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0")
+
+        def files(paths):
+            return {
+                path: ((self.repository / path).stat().st_mode, (self.repository / path).read_bytes())
+                for path in paths
+                if path
+            }
+
+        return {
+            "head": self._git("rev-parse", "HEAD").stdout,
+            "index": (self.repository / ".git" / "index").read_bytes(),
+            "tracked": files(tracked),
+            "untracked": files(untracked),
+        }
 
     def assert_rejected(self, mutate, message):
         candidate = self._candidate(mutate)
@@ -215,24 +258,72 @@ class AuthorityTests(unittest.TestCase):
         self.assertRegex(first, r"^[0-9a-f]{64}$")
         self.assertNotEqual(first, coordinator_tree_digest(self.repository, candidate, paths))
 
+    def test_loads_release_policy_from_exact_authority_commit(self):
+        policy_path = self.repository / "benchmarks/swebench/release-transform.json"
+        policy_path.write_text(json.dumps({**self._policy_value(), "new_version": "9.9.9"}))
+
+        loaded = load_policy_from_commit(self.repository, self.authority)
+
+        self.assertEqual(loaded.old_version, OLD_VERSION)
+        self.assertEqual(loaded.new_version, NEW_VERSION)
+
+    def test_host_config_example_uses_non_usable_null_trust_anchors(self):
+        example = json.loads(HOST_CONFIG_PATH.read_text())
+
+        self.assertIsNone(example["authority_commit"])
+        self.assertIsNone(example["coordinator_tree_sha256"])
+        self.assertIsNone(example["gate_public_key_sha256"])
+        with self.assertRaisesRegex(ValueError, "not provisioned"):
+            load_host_config(HOST_CONFIG_PATH)
+
+    def test_host_config_rejects_zero_trust_anchors(self):
+        valid = {
+            "authority_commit": "a" * 40,
+            "coordinator_tree_sha256": "b" * 64,
+            "confinement_policy_sha256": {
+                "apparmor": "c" * 64,
+                "seccomp": "d" * 64,
+            },
+            "gate_public_key_sha256": "e" * 64,
+        }
+        for key, length in (
+            ("authority_commit", 40),
+            ("coordinator_tree_sha256", 64),
+            ("gate_public_key_sha256", 64),
+        ):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "host-config.json"
+                path.write_text(json.dumps({**valid, key: "0" * length}))
+                with self.assertRaisesRegex(ValueError, key):
+                    load_host_config(path)
+
+    def test_host_config_accepts_only_provisioned_trust_anchors(self):
+        value = {
+            "authority_commit": "a" * 40,
+            "coordinator_tree_sha256": "b" * 64,
+            "confinement_policy_sha256": {
+                "apparmor": "c" * 64,
+                "seccomp": "d" * 64,
+            },
+            "gate_public_key_sha256": "e" * 64,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "host-config.json"
+            path.write_text(json.dumps(value))
+
+            config = load_host_config(path)
+
+        self.assertEqual(config.authority_commit, "a" * 40)
+        self.assertEqual(config.coordinator_tree_sha256, "b" * 64)
+        self.assertEqual(config.gate_public_key_sha256, "e" * 64)
+
     def test_cli_verifies_without_checking_out_candidate(self):
         candidate = self._candidate()
-        policy_path = self.repository / "release-transform.json"
-        policy_path.write_text(
-            json.dumps(
-                {
-                    "old_version": OLD_VERSION,
-                    "new_version": NEW_VERSION,
-                    "release_date": "2026-08-19",
-                    "json_pointers": {
-                        path: list(pointers) for path, pointers in self.policy.json_pointers.items()
-                    },
-                    "literals": dict(self.policy.literals),
-                    "changelog_path": "CHANGELOG.md",
-                }
-            )
-        )
-        before = self._git("rev-parse", "HEAD").stdout.strip()
+        self._git("reset", "--hard", "-q", self.authority)
+        policy_path = self.repository / "benchmarks/swebench/release-transform.json"
+        policy_path.write_text(json.dumps({**self._policy_value(), "new_version": "9.9.9"}))
+        self._write("untracked-state.txt", "must remain untouched\n")
+        before = self._repository_state()
 
         result = main(
             [
@@ -242,13 +333,28 @@ class AuthorityTests(unittest.TestCase):
                 self.authority,
                 "--candidate",
                 candidate,
-                "--policy",
-                str(policy_path),
             ]
         )
 
         self.assertEqual(result, 0)
-        self.assertEqual(self._git("rev-parse", "HEAD").stdout.strip(), before)
+        self.assertEqual(self._repository_state(), before)
+
+    def test_cli_rejects_policy_override(self):
+        candidate = self._candidate()
+
+        with self.assertRaises(SystemExit):
+            main(
+                [
+                    "--repository",
+                    str(self.repository),
+                    "--authority",
+                    self.authority,
+                    "--candidate",
+                    candidate,
+                    "--policy",
+                    str(self.repository / "attacker-policy.json"),
+                ]
+            )
 
 
 if __name__ == "__main__":

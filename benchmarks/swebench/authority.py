@@ -67,6 +67,14 @@ class VerifiedCandidate:
 
 
 @dataclass(frozen=True)
+class HostConfig:
+    authority_commit: str
+    coordinator_tree_sha256: str
+    confinement_policy_sha256: Mapping[str, str]
+    gate_public_key_sha256: str
+
+
+@dataclass(frozen=True)
 class _TreeEntry:
     mode: str
     object_type: str
@@ -295,11 +303,11 @@ def coordinator_tree_digest(repository: Path, authority_commit: str, paths: tupl
     return digest.hexdigest()
 
 
-def load_policy(path: Path) -> ReleaseTransformPolicy:
+def _parse_policy(content: bytes) -> ReleaseTransformPolicy:
     try:
-        raw = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("release transform policy is missing or invalid") from error
+        raw = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("release transform policy blob is invalid") from error
     if not isinstance(raw, dict):
         raise ValueError("release transform policy must be a JSON object")
     expected = {
@@ -328,22 +336,71 @@ def load_policy(path: Path) -> ReleaseTransformPolicy:
     )
 
 
+def load_policy_from_commit(repository: Path, authority_commit: str) -> ReleaseTransformPolicy:
+    repository = repository.resolve()
+    authority = _resolve_commit(repository, authority_commit, "authority_commit")
+    return _parse_policy(
+        _blob(repository, authority, "benchmarks/swebench/release-transform.json")
+    )
+
+
+def _provisioned_hash(value: object, label: str, length: int) -> str:
+    if value is None:
+        raise ValueError(f"{label} is not provisioned")
+    if not isinstance(value, str) or re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is None:
+        raise ValueError(f"{label} must be a lowercase {length * 4}-bit hash")
+    if value == "0" * length:
+        raise ValueError(f"{label} must not be an all-zero placeholder")
+    return value
+
+
+def load_host_config(path: Path) -> HostConfig:
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("host config is missing or invalid") from error
+    expected = {
+        "authority_commit",
+        "coordinator_tree_sha256",
+        "confinement_policy_sha256",
+        "gate_public_key_sha256",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise ValueError("host config must contain exactly the reviewed keys")
+    policies = raw["confinement_policy_sha256"]
+    if not isinstance(policies, dict) or set(policies) != {"apparmor", "seccomp"}:
+        raise ValueError("confinement_policy_sha256 must contain AppArmor and seccomp digests")
+    return HostConfig(
+        authority_commit=_provisioned_hash(raw["authority_commit"], "authority_commit", 40),
+        coordinator_tree_sha256=_provisioned_hash(
+            raw["coordinator_tree_sha256"], "coordinator_tree_sha256", 64
+        ),
+        confinement_policy_sha256=MappingProxyType(
+            {
+                name: _provisioned_hash(value, f"confinement_policy_sha256.{name}", 64)
+                for name, value in policies.items()
+            }
+        ),
+        gate_public_key_sha256=_provisioned_hash(
+            raw["gate_public_key_sha256"], "gate_public_key_sha256", 64
+        ),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify an exact Alloy release candidate")
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--authority", "--authority-commit", dest="authority_commit", required=True)
     parser.add_argument("--candidate", "--candidate-commit", dest="candidate_commit", required=True)
-    parser.add_argument(
-        "--policy",
-        type=Path,
-        default=Path(__file__).with_name("release-transform.json"),
-    )
     arguments = parser.parse_args(argv)
+    authority = _resolve_commit(
+        arguments.repository.resolve(), arguments.authority_commit, "authority_commit"
+    )
     verified = verify_candidate(
         arguments.repository,
-        arguments.authority_commit,
+        authority,
         arguments.candidate_commit,
-        load_policy(arguments.policy),
+        load_policy_from_commit(arguments.repository, authority),
     )
     print(json.dumps({
         "authority_commit": verified.authority_commit,
