@@ -16,6 +16,8 @@
         "acct",
         "add_key",
         "bpf",
+        "clone",
+        "clone3",
         "clock_adjtime",
         "clock_settime",
         "delete_module",

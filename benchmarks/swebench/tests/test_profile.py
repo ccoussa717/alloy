@@ -10,6 +10,7 @@ from benchmarks.swebench.profile import load_profile
 
 REPO_ROOT = Path(__file__).parents[3]
 PROFILE_PATH = Path(__file__).parents[1] / "profile.json"
+SECCOMP_PATH = PROFILE_PATH.parent / "policies" / "untrusted-seccomp.json"
 
 
 class ProfileTests(unittest.TestCase):
@@ -51,7 +52,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile.limits.max_export_bytes, 256 * 1024**2)
         self.assertEqual(
             profile.security_policy.seccomp_sha256,
-            "d35996b15ad4ba48ff062cab847e52004991e3d86e88e2a678374b33dc3c5ca6",
+            "36edf185c1d50275901c1221fb4a3b92bd5fd16b1b5bab8fd1dd5c59a79e2af6",
         )
         self.assertEqual(
             profile.security_policy.apparmor_sha256,
@@ -65,20 +66,39 @@ class ProfileTests(unittest.TestCase):
 
     def test_profile_rejects_unknown_and_missing_keys_at_every_level(self):
         reviewed = json.loads(PROFILE_PATH.read_text())
-        cases = (
+        cases = [
             ({**reviewed, "unexpected": True}, "unknown benchmark profile keys"),
             ({key: value for key, value in reviewed.items() if key != "proxy"}, "missing benchmark profile keys"),
-            ({**reviewed, "dataset": {**reviewed["dataset"], "unexpected": True}}, "unknown dataset keys"),
-            (
-                {
-                    **reviewed,
-                    "limits": {
-                        key: value for key, value in reviewed["limits"].items() if key != "pids"
-                    },
-                },
-                "missing limits keys",
-            ),
-        )
+        ]
+        nested_objects = {
+            "dataset": "revision",
+            "agent_image": "platform",
+            "proxy_image": "platform",
+            "evaluator_image": "platform",
+            "security_policy": "apparmor_name",
+            "limits": "pids",
+            "proxy": "allowed_routes",
+        }
+        for name, required_key in nested_objects.items():
+            cases.extend(
+                (
+                    (
+                        {**reviewed, name: {**reviewed[name], "unexpected": True}},
+                        f"unknown {name} keys",
+                    ),
+                    (
+                        {
+                            **reviewed,
+                            name: {
+                                key: value
+                                for key, value in reviewed[name].items()
+                                if key != required_key
+                            },
+                        },
+                        f"missing {name} keys",
+                    ),
+                )
+            )
         for value, message in cases:
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "profile.json"
@@ -156,6 +176,18 @@ class ProfileTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, message):
                     load_profile(PROFILE_PATH, authority_root)
+
+    def test_seccomp_denies_process_namespace_creation_syscalls(self):
+        policy = json.loads(SECCOMP_PATH.read_text())
+        denied = {
+            syscall
+            for rule in policy["syscalls"]
+            if rule["action"] == "SCMP_ACT_ERRNO"
+            for syscall in rule["names"]
+        }
+
+        self.assertIn("clone", denied)
+        self.assertIn("clone3", denied)
 
 
 if __name__ == "__main__":
