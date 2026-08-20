@@ -321,6 +321,15 @@ raise SystemExit(int(os.environ.get("FAKE_RUNNER_STATUS", "0")))
         self.assertFalse(self.installer_log.exists())
         self.assertFalse(self.runner_log.exists())
 
+    def test_release_wrapper_never_executes_candidate_code_on_host(self):
+        host_sentinel = self.root / "candidate-executed-on-host"
+        (self.repo / "install.sh").write_text(
+            f"#!/bin/sh\ntouch {host_sentinel}\n"
+        )
+        result = self._run("release")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(host_sentinel.exists())
+
     def test_wrapper_fails_closed_when_git_status_fails(self):
         result = self._run("dry-run", FAKE_STATUS_FAILURE="23")
         self.assertNotEqual(result.returncode, 0)
