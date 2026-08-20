@@ -33,7 +33,7 @@
     "seccomp_path": "benchmarks/swebench/policies/untrusted-seccomp.json",
     "seccomp_sha256": "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",
     "apparmor_path": "benchmarks/swebench/policies/alloy-swebench-gate.apparmor",
-    "apparmor_sha256": "60bdc28a77d2f6b3672331f0057d434839baf811f1667695db75b95fe8c8a487",
+    "apparmor_sha256": "aa784c3e41c4467450c85bc313c97ef3bd1b0770bf8900a6a61bd75ba09f6d50",
     "apparmor_name": "alloy-swebench-gate"
   },
   "limits": {

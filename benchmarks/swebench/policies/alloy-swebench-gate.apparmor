@@ -15,14 +15,18 @@ profile alloy-swebench-gate flags=(attach_disconnected,mediate_deleted) {
   deny mount,
   deny pivot_root,
   deny ptrace (read, trace),
+  signal (send, receive) peer=alloy-swebench-gate,
+  deny signal (send, receive) peer=unconfined,
 
   deny /proc/acpi/** rwklx,
+  deny /proc/*/mem rwklx,
   deny /proc/kcore rwklx,
   deny /proc/keys rwklx,
   deny /proc/sys/** wklx,
   deny /proc/sysrq-trigger rwklx,
   deny /proc/timer_list rwklx,
   deny /proc/timer_stats rwklx,
+  deny /sys/** wklx,
   deny /sys/firmware/** rwklx,
   deny /sys/kernel/security/** rwklx,
 }
