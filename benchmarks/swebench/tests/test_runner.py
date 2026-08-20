@@ -27,7 +27,8 @@ from benchmarks.swebench.runner import (
 
 EXPECTED_DIGEST = "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba"
 PROFILE_PATH = Path(__file__).parents[1] / "profile.json"
-PROFILE = swebench_runner.load_profile(PROFILE_PATH)
+REPO_ROOT = Path(__file__).parents[3]
+PROFILE = swebench_runner.load_profile(PROFILE_PATH, REPO_ROOT)
 GOOD_PROVENANCE = {
     "alloy_version": "1.1.25",
     "model_digest": EXPECTED_DIGEST,
@@ -37,36 +38,22 @@ GOOD_PROVENANCE = {
 
 
 class ProfileTests(unittest.TestCase):
-    def test_profile_loads_exact_reviewed_inputs_and_rejects_unknown_keys(self):
-        profile = swebench_runner.load_profile(PROFILE_PATH)
+    def test_runner_reexports_strict_profile_loader_and_schema(self):
+        profile = swebench_runner.load_profile(PROFILE_PATH, REPO_ROOT)
         self.assertEqual(profile.instance_id, "astropy__astropy-12907")
         self.assertEqual(profile.agent_timeout_seconds, 1800)
         self.assertEqual(profile.swebench_version, "5.0.0")
-        with self.assertRaisesRegex(RuntimeError, "unknown profile keys"):
+        with self.assertRaisesRegex(ValueError, "unknown benchmark profile keys"):
             swebench_runner.parse_profile(
-                {**json.loads(PROFILE_PATH.read_text()), "unexpected": True}
+                {**json.loads(PROFILE_PATH.read_text()), "unexpected": True}, REPO_ROOT
             )
-
-    def test_profile_rejects_missing_keys_and_malformed_types(self):
-        reviewed = json.loads(PROFILE_PATH.read_text())
-        cases = (
-            ({key: value for key, value in reviewed.items() if key != "dataset"}, "missing profile keys"),
-            ({**reviewed, "dataset": 1}, "profile dataset"),
-            ({**reviewed, "agent_timeout_seconds": True}, "agent_timeout_seconds"),
-            ({**reviewed, "agent_timeout_seconds": 0}, "positive"),
-            ({**reviewed, "base_commit": "ABCDEF" * 7}, "base_commit"),
-            ({**reviewed, "model_digest": "A" * 64}, "model_digest"),
-        )
-        for value, message in cases:
-            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
-                swebench_runner.parse_profile(value)
 
     def test_profile_rejects_non_object_json(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
             path.write_text("[]\n")
-            with self.assertRaisesRegex(RuntimeError, "profile.*object"):
-                swebench_runner.load_profile(path)
+            with self.assertRaisesRegex(ValueError, "profile.*object"):
+                swebench_runner.load_profile(path, REPO_ROOT)
 
 
 class CandidateMetadataTests(unittest.TestCase):

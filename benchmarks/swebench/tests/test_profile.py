@@ -1,0 +1,162 @@
+import json
+import shutil
+import tempfile
+import unittest
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+
+from benchmarks.swebench.profile import load_profile
+
+
+REPO_ROOT = Path(__file__).parents[3]
+PROFILE_PATH = Path(__file__).parents[1] / "profile.json"
+
+
+class ProfileTests(unittest.TestCase):
+    def test_profile_loads_all_reviewed_pins(self):
+        profile = load_profile(PROFILE_PATH, REPO_ROOT)
+
+        self.assertEqual(profile.canonical_repository, "https://github.com/ccoussa717/alloy.git")
+        self.assertEqual(profile.dataset.name, "SWE-bench/SWE-bench_Lite")
+        self.assertEqual(profile.dataset.split, "test")
+        self.assertEqual(profile.dataset.revision, "b0dde1093fe417d83b7184254edf8199c1f0dff5")
+        self.assertEqual(
+            profile.dataset.parquet_sha256,
+            "438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3",
+        )
+        self.assertEqual(
+            profile.dataset.row_sha256,
+            "36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153",
+        )
+        self.assertEqual(profile.dataset.instance_id, "astropy__astropy-12907")
+        self.assertEqual(profile.dataset.base_commit, "d16bfe05a744909de4b27f5875fe0d4ed41ce607")
+        self.assertEqual(
+            profile.evaluator_image.manifest_digest,
+            "sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
+        )
+        self.assertEqual(profile.agent_image.platform, "linux/amd64")
+        self.assertEqual(profile.proxy_image.platform, "linux/amd64")
+        self.assertEqual(profile.evaluator_image.platform, "linux/amd64")
+        self.assertEqual(
+            profile.proxy.allowed_routes,
+            (("GET", "/api/tags"), ("POST", "/api/show"), ("POST", "/v1/chat/completions")),
+        )
+        self.assertEqual(profile.limits.agent_timeout_seconds, 1800)
+        self.assertEqual(profile.limits.evaluator_timeout_seconds, 2400)
+        self.assertEqual(profile.limits.pids, 512)
+        self.assertEqual(profile.limits.memory_bytes, 16 * 1024**3)
+        self.assertEqual(profile.limits.cpus, 4)
+        self.assertEqual(profile.limits.max_files, 20_000)
+        self.assertEqual(profile.limits.max_file_bytes, 16 * 1024**2)
+        self.assertEqual(profile.limits.max_export_bytes, 256 * 1024**2)
+        self.assertEqual(
+            profile.security_policy.seccomp_sha256,
+            "d35996b15ad4ba48ff062cab847e52004991e3d86e88e2a678374b33dc3c5ca6",
+        )
+        self.assertEqual(
+            profile.security_policy.apparmor_sha256,
+            "60bdc28a77d2f6b3672331f0057d434839baf811f1667695db75b95fe8c8a487",
+        )
+
+    def test_profile_dataclasses_are_frozen(self):
+        profile = load_profile(PROFILE_PATH, REPO_ROOT)
+        with self.assertRaises(FrozenInstanceError):
+            profile.dataset.revision = "a" * 40
+
+    def test_profile_rejects_unknown_and_missing_keys_at_every_level(self):
+        reviewed = json.loads(PROFILE_PATH.read_text())
+        cases = (
+            ({**reviewed, "unexpected": True}, "unknown benchmark profile keys"),
+            ({key: value for key, value in reviewed.items() if key != "proxy"}, "missing benchmark profile keys"),
+            ({**reviewed, "dataset": {**reviewed["dataset"], "unexpected": True}}, "unknown dataset keys"),
+            (
+                {
+                    **reviewed,
+                    "limits": {
+                        key: value for key, value in reviewed["limits"].items() if key != "pids"
+                    },
+                },
+                "missing limits keys",
+            ),
+        )
+        for value, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "profile.json"
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, message):
+                    load_profile(path, REPO_ROOT)
+
+    def test_profile_rejects_malformed_hashes_images_platforms_limits_and_routes(self):
+        reviewed = json.loads(PROFILE_PATH.read_text())
+        cases = (
+            (
+                {**reviewed, "model_digest": "A" * 64},
+                "model_digest must be a lowercase SHA-256",
+            ),
+            (
+                {
+                    **reviewed,
+                    "evaluator_image": {
+                        **reviewed["evaluator_image"],
+                        "manifest_digest": "7485" + "a" * 60,
+                    },
+                },
+                "manifest_digest must be a sha256 image manifest digest",
+            ),
+            (
+                {
+                    **reviewed,
+                    "agent_image": {**reviewed["agent_image"], "reference": "node:latest"},
+                },
+                "reference must be digest-qualified",
+            ),
+            (
+                {
+                    **reviewed,
+                    "proxy_image": {**reviewed["proxy_image"], "platform": "linux/arm64"},
+                },
+                "platform must be linux/amd64",
+            ),
+            (
+                {**reviewed, "limits": {**reviewed["limits"], "pids": 0}},
+                "limits.pids must be positive",
+            ),
+            (
+                {
+                    **reviewed,
+                    "proxy": {
+                        **reviewed["proxy"],
+                        "allowed_routes": [["GET", "/api/tags"]],
+                    },
+                },
+                "proxy.allowed_routes must equal the reviewed routes",
+            ),
+        )
+        for value, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "profile.json"
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, message):
+                    load_profile(path, REPO_ROOT)
+
+    def test_profile_rejects_policy_file_hash_mismatches(self):
+        cases = (
+            ("untrusted-seccomp.json", "seccomp policy SHA-256 mismatch"),
+            ("alloy-swebench-gate.apparmor", "AppArmor policy SHA-256 mismatch"),
+        )
+        for filename, message in cases:
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
+                authority_root = Path(directory)
+                policy_root = authority_root / "benchmarks" / "swebench" / "policies"
+                policy_root.mkdir(parents=True)
+                source_root = PROFILE_PATH.parent / "policies"
+                for source in source_root.iterdir():
+                    shutil.copyfile(source, policy_root / source.name)
+                (policy_root / filename).write_text("tampered\n")
+
+                with self.assertRaisesRegex(ValueError, message):
+                    load_profile(PROFILE_PATH, authority_root)
+
+
+if __name__ == "__main__":
+    unittest.main()

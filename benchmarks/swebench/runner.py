@@ -12,9 +12,11 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from benchmarks.swebench.profile import BenchmarkProfile, load_profile, parse_profile
 
 try:
     from datasets import load_dataset
@@ -26,27 +28,12 @@ BENCH_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = BENCH_ROOT.parents[1]
 PROFILE_PATH = BENCH_ROOT / "profile.json"
 FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
-MODEL_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 SEMANTIC_VERSION = re.compile(
     r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
     r"(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
-
-
-@dataclass(frozen=True)
-class BenchmarkProfile:
-    agent_timeout_seconds: int
-    base_commit: str
-    dataset: str
-    evaluator_timeout_seconds: int
-    instance_id: str
-    model: str
-    model_digest: str
-    ollama_model: str
-    split: str
-    swebench_version: str
 
 
 @dataclass(frozen=True)
@@ -57,33 +44,6 @@ class CandidateMetadata:
     root: Path
 
 
-def parse_profile(value: object) -> BenchmarkProfile:
-    if not isinstance(value, dict):
-        raise RuntimeError("benchmark profile must be a JSON object")
-    expected = {field.name for field in fields(BenchmarkProfile)}
-    unknown = set(value) - expected
-    missing = expected - set(value)
-    if unknown:
-        raise RuntimeError(f"unknown profile keys: {sorted(map(str, unknown))}")
-    if missing:
-        raise RuntimeError(f"missing profile keys: {sorted(missing)}")
-    for key in expected - {"agent_timeout_seconds", "evaluator_timeout_seconds"}:
-        if not isinstance(value[key], str) or not value[key]:
-            raise RuntimeError(f"profile {key} must be a non-empty string")
-    for key in ("agent_timeout_seconds", "evaluator_timeout_seconds"):
-        if type(value[key]) is not int:
-            raise RuntimeError(f"profile {key} must be an integer")
-        if value[key] <= 0:
-            raise RuntimeError(f"profile {key} must be positive")
-    if FULL_GIT_SHA.fullmatch(value["base_commit"]) is None:
-        raise RuntimeError("profile base_commit must be a full lowercase Git SHA")
-    if MODEL_DIGEST_PATTERN.fullmatch(value["model_digest"]) is None:
-        raise RuntimeError("profile model_digest must be a 64-character lowercase hash")
-    if SEMANTIC_VERSION.fullmatch(value["swebench_version"]) is None:
-        raise RuntimeError("profile swebench_version must be a semantic version")
-    return BenchmarkProfile(**value)
-
-
 def _read_json_object(path: Path, label: str) -> dict:
     try:
         value = json.loads(path.read_text())
@@ -92,10 +52,6 @@ def _read_json_object(path: Path, label: str) -> dict:
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} must be a JSON object")
     return value
-
-
-def load_profile(path: Path) -> BenchmarkProfile:
-    return parse_profile(_read_json_object(path, "benchmark profile"))
 
 
 def load_candidate_metadata(
@@ -294,7 +250,7 @@ def prediction_record(instance_id: str, model: str, patch: str) -> dict:
 def load_instance(profile: BenchmarkProfile) -> dict:
     if load_dataset is None:
         raise RuntimeError("install requirements-swebench.txt in .venv first")
-    rows = load_dataset(profile.dataset, split=profile.split)
+    rows = load_dataset(profile.dataset.name, split=profile.split)
     matches = [row for row in rows if row["instance_id"] == profile.instance_id]
     if len(matches) != 1:
         raise RuntimeError(
@@ -319,7 +275,7 @@ def evaluator_command(
         "-m",
         "swebench.harness.run_evaluation",
         "--dataset_name",
-        profile.dataset,
+        profile.dataset.name,
         "--split",
         profile.split,
         "--instance_ids",
@@ -612,7 +568,7 @@ def main(
         parser.error("--run-path-file and --run-token must be provided together")
     if args.run_token == "":
         parser.error("--run-token must not be empty")
-    profile = load_profile(args.profile)
+    profile = load_profile(args.profile, REPO_ROOT)
     candidate = load_candidate_metadata(args.candidate_root, args.candidate_commit)
     install_manifest = load_install_manifest(args.install_manifest)
     alloy_bin = args.alloy_bin.absolute()
@@ -663,7 +619,7 @@ def main(
                 "import importlib.metadata; print(importlib.metadata.version('swebench'))",
             ],
         },
-        "dataset": profile.dataset,
+        "dataset": profile.dataset.name,
         "expected_alloy_version": candidate.alloy_version,
         "expected_model_digest": profile.model_digest,
         "expected_pi_version": candidate.pi_version,
