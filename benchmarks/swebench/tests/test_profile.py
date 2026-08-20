@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
@@ -52,7 +53,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile.limits.max_export_bytes, 256 * 1024**2)
         self.assertEqual(
             profile.security_policy.seccomp_sha256,
-            "36edf185c1d50275901c1221fb4a3b92bd5fd16b1b5bab8fd1dd5c59a79e2af6",
+            "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",
         )
         self.assertEqual(
             profile.security_policy.apparmor_sha256,
@@ -177,17 +178,90 @@ class ProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     load_profile(PROFILE_PATH, authority_root)
 
-    def test_seccomp_denies_process_namespace_creation_syscalls(self):
+    def test_seccomp_filters_each_clone_namespace_flag_and_falls_back_from_clone3(self):
         policy = json.loads(SECCOMP_PATH.read_text())
-        denied = {
-            syscall
+        clone_rules = [
+            rule
             for rule in policy["syscalls"]
-            if rule["action"] == "SCMP_ACT_ERRNO"
-            for syscall in rule["names"]
+            if rule["names"] == ["clone"]
+        ]
+        expected_flags = {
+            0x80,
+            0x00020000,
+            0x02000000,
+            0x04000000,
+            0x08000000,
+            0x10000000,
+            0x20000000,
+            0x40000000,
         }
 
-        self.assertIn("clone", denied)
-        self.assertIn("clone3", denied)
+        self.assertEqual(len(clone_rules), len(expected_flags))
+        self.assertEqual(
+            {
+                (argument["value"], argument["valueTwo"])
+                for rule in clone_rules
+                for argument in rule["args"]
+                if argument["index"] == 0
+                and argument["op"] == "SCMP_CMP_MASKED_EQ"
+            },
+            {(flag, flag) for flag in expected_flags},
+        )
+        self.assertTrue(
+            all(rule["action"] == "SCMP_ACT_ERRNO" and rule["errnoRet"] == 1 for rule in clone_rules)
+        )
+        self.assertFalse(
+            any(
+                "clone" in rule["names"] and "args" not in rule
+                for rule in policy["syscalls"]
+            )
+        )
+
+        clone3_rules = [rule for rule in policy["syscalls"] if rule["names"] == ["clone3"]]
+        self.assertEqual(len(clone3_rules), 1)
+        self.assertEqual(clone3_rules[0]["action"], "SCMP_ACT_ERRNO")
+        self.assertEqual(clone3_rules[0]["errnoRet"], 38)
+
+    def test_seccomp_allows_normal_process_and_thread_creation(self):
+        if shutil.which("docker") is None:
+            self.skipTest("Docker is unavailable")
+        image = "node:22-bookworm"
+        if subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        ).returncode != 0:
+            self.skipTest(f"local test image {image} is unavailable")
+        script = """
+const { spawnSync } = require("child_process");
+const { Worker } = require("worker_threads");
+const child = spawnSync("/bin/true");
+if (child.status !== 0) process.exit(2);
+const worker = new Worker("", { eval: true });
+worker.once("online", () => worker.terminate().then(() => process.exit(0)));
+worker.once("error", error => { console.error(error); process.exit(3); });
+"""
+        result = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--security-opt",
+                f"seccomp={SECCOMP_PATH}",
+                image,
+                "node",
+                "-e",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

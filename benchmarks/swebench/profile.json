@@ -31,7 +31,7 @@
   },
   "security_policy": {
     "seccomp_path": "benchmarks/swebench/policies/untrusted-seccomp.json",
-    "seccomp_sha256": "36edf185c1d50275901c1221fb4a3b92bd5fd16b1b5bab8fd1dd5c59a79e2af6",
+    "seccomp_sha256": "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",
     "apparmor_path": "benchmarks/swebench/policies/alloy-swebench-gate.apparmor",
     "apparmor_sha256": "60bdc28a77d2f6b3672331f0057d434839baf811f1667695db75b95fe8c8a487",
     "apparmor_name": "alloy-swebench-gate"
