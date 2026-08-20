@@ -82,6 +82,91 @@ class HostLauncherSubprocessTests(unittest.TestCase):
         self.assertNotIn("from benchmarks.", source[:validation_end])
         self.assertNotIn("import benchmarks.", source[:validation_end])
 
+    def test_launcher_git_ignores_global_system_and_environment_contamination(self):
+        repository = self.root / "repository"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Tests", "-c", "user.email=tests@example.com", "commit", "--allow-empty", "-qm", "fixture"],
+            cwd=repository,
+            check=True,
+        )
+        malicious_home = self.root / "malicious-home"
+        malicious_home.mkdir()
+        git_home = self.root / "launcher-git-home"
+        git_home.mkdir(mode=0o700)
+        sentinels = {
+            name: self.root / f"launcher-{name}-executed"
+            for name in ("hook", "fsmonitor", "helper", "ext")
+        }
+        hooks = self.root / "hooks"
+        hooks.mkdir()
+        for name, sentinel in sentinels.items():
+            executable = hooks / name
+            executable.write_text(
+                f"#!/bin/sh\n/usr/bin/touch {shlex.quote(str(sentinel))}\n"
+            )
+            executable.chmod(0o755)
+        shutil.copyfile(hooks / "hook", hooks / "post-checkout")
+        (hooks / "post-checkout").chmod(0o755)
+        malicious_config = malicious_home / ".gitconfig"
+        malicious_config.write_text(
+            "[core]\n"
+            f"\thooksPath = {hooks}\n"
+            f"\tfsmonitor = {hooks / 'fsmonitor'}\n"
+            "[credential]\n"
+            f"\thelper = !{hooks / 'helper'}\n"
+            f"[url \"ext::{hooks / 'ext'}\"]\n"
+            "\tinsteadOf = https://example.invalid/\n"
+            "[protocol \"file\"]\n\tallow = always\n"
+            "[protocol \"ext\"]\n\tallow = always\n"
+        )
+        script = f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(REPO_ROOT)!r})
+import benchmarks.swebench.host_launcher as launcher
+launcher.FIXED_ENV = {{
+    **launcher.FIXED_ENV,
+    "HOME": {str(malicious_home)!r},
+    "GIT_CONFIG_GLOBAL": {str(malicious_config)!r},
+    "GIT_CONFIG_SYSTEM": {str(malicious_config)!r},
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "url.ext::environment.insteadOf",
+    "GIT_CONFIG_VALUE_0": "https://example.invalid/",
+}}
+repository = Path({str(repository)!r})
+git_home = Path({str(git_home)!r})
+assert launcher._run_git(repository, git_home, "config", "--get", "core.hooksPath").strip() == "/dev/null"
+assert launcher._run_git(repository, git_home, "config", "--get", "core.fsmonitor").strip() == "false"
+assert launcher._run_git(repository, git_home, "config", "--get-all", "credential.helper").strip() == ""
+assert launcher._run_git(repository, git_home, "config", "--get", "protocol.file.allow").strip() == "never"
+assert launcher._run_git(repository, git_home, "config", "--get", "protocol.ext.allow").strip() == "never"
+try:
+    launcher._run_git(repository, git_home, "config", "--get-regexp", r"^url\\.")
+except ValueError:
+    pass
+else:
+    raise AssertionError("URL rewrite contamination remained visible")
+launcher._run_git(repository, git_home, "status", "--porcelain")
+launcher._run_git(repository, git_home, "checkout", "--quiet", "HEAD")
+for remote in ({('file://' + str(repository))!r}, {('ext::' + str(hooks / 'ext'))!r}):
+    try:
+        launcher._run_git(repository, git_home, "ls-remote", remote)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"unsafe protocol accepted: {{remote}}")
+"""
+        result = subprocess.run(
+            ["/usr/bin/python3", "-I", "-E", "-s", "-c", script],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(all(not path.exists() for path in sentinels.values()))
+
 
 class TrustedHostFixture(unittest.TestCase):
     def setUp(self):
@@ -205,8 +290,14 @@ class HostLauncherTests(TrustedHostFixture):
         self.import_tripwire.unlink(missing_ok=True)
 
         def avoid_external_candidate_fetch(source):
+            candidate_call = (
+                "        _candidate_is_advertised(\n"
+                "            host.paths.authority, host.paths.git_home, candidate_commit\n"
+                "        )\n"
+            )
+            self.assertIn(candidate_call, source)
             return source.replace(
-                "        _candidate_is_advertised(host.paths.authority, candidate_commit)\n",
+                candidate_call,
                 "        # Candidate advertisement is outside this local trust-anchor fixture.\n",
             )
 
@@ -257,6 +348,11 @@ class HostLauncherTests(TrustedHostFixture):
     def test_rejects_non_private_protected_state(self):
         self.paths.state.chmod(0o755)
         with self.assertRaisesRegex(ValueError, "state.*0700"):
+            load_trusted_host(self.host_paths, expected_uid=os.geteuid())
+
+    def test_rejects_nonempty_launcher_git_home_before_running_git(self):
+        (self.paths.git_home / ".gitconfig").write_text("[core]\n\tfsmonitor = attacker\n")
+        with self.assertRaisesRegex(ValueError, "Git HOME must be empty"):
             load_trusted_host(self.host_paths, expected_uid=os.geteuid())
 
     def test_rejects_dirty_or_wrong_authority_checkout(self):
@@ -521,6 +617,8 @@ class ProvisionTests(TrustedHostFixture):
         self.assertEqual(self.paths.public_key.stat().st_mode & 0o777, 0o644)
         self.assertEqual(self.paths.config.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.paths.launcher.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.paths.git_home.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(list(self.paths.git_home.iterdir()), [])
         self.assertEqual(
             self.apparmor_loads,
             [
@@ -740,6 +838,11 @@ class ReleaseWrapperTests(unittest.TestCase):
         end = ceremony.index("\n}", start) + 2
         return ceremony[start:end]
 
+    def _ceremony_body(self, ceremony):
+        start = ceremony.index("\n") + 1
+        end = ceremony.rindex("\nALLOY_SWEBENCH_BOOTSTRAP")
+        return ceremony[start:end]
+
     def test_test_mode_is_model_free_and_setup_is_non_authority(self):
         result = self._run("test")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -832,6 +935,32 @@ class ReleaseWrapperTests(unittest.TestCase):
         self.assertIn("directory:0:0:700", ceremony)
         self.assertIn("trap cleanup 0", ceremony)
         self.assertIn('/usr/bin/rm -rf -- "$bootstrap"', ceremony)
+        self.assertNotIn("exec /usr/bin/python3", ceremony)
+
+    def test_bootstrap_cleanup_executes_after_success_and_failure(self):
+        ceremony = self._provision_ceremony()
+        body = self._ceremony_body(ceremony)
+        prefix = body.split('home="$bootstrap/home"', 1)[0]
+        for exit_code in (0, 23):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory(
+                prefix="alloy-run-"
+            ) as directory:
+                parent = Path(directory)
+                parent.chmod(0o700)
+                executable = prefix.replace("/run", str(parent)).replace(
+                    "directory:0:0:",
+                    f"directory:{os.geteuid()}:{os.getegid()}:",
+                )
+                executable += f"\nexit {exit_code}\n"
+                result = subprocess.run(
+                    ["/bin/sh", "-eu", "-s", "--", SHA],
+                    input=executable,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, exit_code, result.stderr)
+                self.assertEqual(list(parent.glob("alloy-swebench-bootstrap.*")), [])
 
     def test_every_bootstrap_git_command_has_an_empty_fixed_environment_and_safe_config(self):
         ceremony = self._provision_ceremony()

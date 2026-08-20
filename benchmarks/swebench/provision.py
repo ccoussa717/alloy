@@ -46,6 +46,7 @@ class ProvisionPaths:
     authority: Path = Path("/var/lib/alloy-swebench-gate/authority")
     private_key: Path = Path("/var/lib/alloy-swebench-gate/gate-key.pem")
     public_key: Path = Path("/var/lib/alloy-swebench-gate/gate-key.pub.pem")
+    git_home: Path = Path("/var/lib/alloy-swebench-gate/git-home")
     root: Path = Path("/")
 
     @classmethod
@@ -59,6 +60,7 @@ class ProvisionPaths:
             state / "authority",
             state / "gate-key.pem",
             state / "gate-key.pub.pem",
+            state / "git-home",
             root,
         )
 
@@ -70,6 +72,7 @@ class ProvisionPaths:
             self.authority,
             self.private_key,
             self.public_key,
+            self.git_home,
         )
 
     def relative(self, path: Path) -> tuple[str, ...]:
@@ -704,7 +707,7 @@ def _provision(
             raise ValueError("replacement authority arguments are inconsistent")
 
     root_fd = _open_root(paths.root, owner_uid)
-    state_fd = config_parent_fd = launcher_parent_fd = -1
+    state_fd = config_parent_fd = launcher_parent_fd = launcher_git_home_fd = -1
     staging_name = f".authority-{os.getpid()}"
     backup_name = f".authority-backup-{os.getpid()}"
     swapped = False
@@ -714,6 +717,11 @@ def _provision(
     previous_config: bytes | None = None
     try:
         state_fd = _ensure_directory(root_fd, paths.relative(paths.state), 0o700, owner_uid)
+        launcher_git_home_fd = _ensure_directory(
+            root_fd, paths.relative(paths.git_home), 0o700, owner_uid
+        )
+        if os.listdir(launcher_git_home_fd):
+            raise ValueError("launcher Git HOME must remain empty")
         config_parent_fd = _ensure_directory(
             root_fd, paths.relative(paths.config.parent), 0o755, owner_uid
         )
@@ -881,7 +889,13 @@ def _provision(
                 )
         raise
     finally:
-        for fd in (state_fd, config_parent_fd, launcher_parent_fd, root_fd):
+        for fd in (
+            state_fd,
+            config_parent_fd,
+            launcher_parent_fd,
+            launcher_git_home_fd,
+            root_fd,
+        ):
             if fd >= 0:
                 os.close(fd)
 

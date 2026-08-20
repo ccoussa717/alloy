@@ -20,13 +20,13 @@ STATE_ROOT = Path("/var/lib/alloy-swebench-gate")
 AUTHORITY_ROOT = STATE_ROOT / "authority"
 PRIVATE_KEY_PATH = STATE_ROOT / "gate-key.pem"
 PUBLIC_KEY_PATH = STATE_ROOT / "gate-key.pub.pem"
+GIT_HOME_PATH = STATE_ROOT / "git-home"
 FILESYSTEM_ROOT = Path("/")
 REQUIRED_UID = 0
 CANONICAL_REMOTE = "https://github.com/ccoussa717/alloy.git"
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 FIXED_ENV = {
-    "HOME": "/root",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
     "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
@@ -64,6 +64,7 @@ class HostPaths:
     authority: Path = AUTHORITY_ROOT
     private_key: Path = PRIVATE_KEY_PATH
     public_key: Path = PUBLIC_KEY_PATH
+    git_home: Path = GIT_HOME_PATH
     root: Path = FILESYSTEM_ROOT
 
     @classmethod
@@ -75,6 +76,7 @@ class HostPaths:
             paths.authority,
             paths.private_key,
             paths.public_key,
+            paths.git_home,
             paths.root,
         )
 
@@ -111,6 +113,30 @@ def _fixed_environment() -> None:
     os.environ.clear()
     os.environ.update(FIXED_ENV)
     os.umask(0o077)
+
+
+def _activate_trusted_environment(git_home: Path) -> None:
+    os.environ.update(
+        {
+            "HOME": str(git_home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ALLOW_PROTOCOL": "https",
+            "GIT_CONFIG_COUNT": "5",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "/dev/null",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "credential.helper",
+            "GIT_CONFIG_VALUE_2": "",
+            "GIT_CONFIG_KEY_3": "protocol.file.allow",
+            "GIT_CONFIG_VALUE_3": "never",
+            "GIT_CONFIG_KEY_4": "protocol.ext.allow",
+            "GIT_CONFIG_VALUE_4": "never",
+        }
+    )
 
 
 def _open_nofollow(
@@ -218,10 +244,32 @@ def _sha256_fd(fd: int, label: str) -> str:
     return hashlib.sha256(_read_fd(fd, label, 64 * 1024 * 1024)).hexdigest()
 
 
-def _run_git(repository: Path, *arguments: str, text: bool = True):
+def _run_git(repository: Path, git_home: Path, *arguments: str, text: bool = True):
     try:
         result = subprocess.run(
-            ["/usr/bin/git", *arguments],
+            [
+                "/usr/bin/env",
+                "-i",
+                f"HOME={git_home}",
+                "PATH=/usr/bin:/bin",
+                "GIT_CONFIG_NOSYSTEM=1",
+                "GIT_CONFIG_GLOBAL=/dev/null",
+                "GIT_CONFIG_SYSTEM=/dev/null",
+                "GIT_TERMINAL_PROMPT=0",
+                "GIT_ALLOW_PROTOCOL=https",
+                "/usr/bin/git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "credential.helper=",
+                "-c",
+                "protocol.file.allow=never",
+                "-c",
+                "protocol.ext.allow=never",
+                *arguments,
+            ],
             cwd=repository,
             env=FIXED_ENV,
             text=text,
@@ -271,9 +319,16 @@ def _parse_config(content: bytes) -> HostConfig:
     )
 
 
-def _coordinator_tree_digest(repository: Path, authority: str) -> str:
+def _coordinator_tree_digest(repository: Path, authority: str, git_home: Path) -> str:
     output = _run_git(
-        repository, "ls-tree", "-r", "-z", "--full-tree", authority, text=False
+        repository,
+        git_home,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        authority,
+        text=False,
     )
     entries = {}
     for record in output.split(b"\0"):
@@ -302,16 +357,26 @@ def _verify_checkout(paths: HostPaths, config: HostConfig, expected_uid: int) ->
         directory=True,
     )
     os.close(authority_fd)
-    top = _run_git(paths.authority, "rev-parse", "--show-toplevel").strip()
+    top = _run_git(paths.authority, paths.git_home, "rev-parse", "--show-toplevel").strip()
     if top != str(paths.authority):
         raise ValueError("authority checkout is not at the fixed canonical path")
-    if _run_git(paths.authority, "rev-parse", "HEAD").strip() != config.authority_commit:
+    if _run_git(paths.authority, paths.git_home, "rev-parse", "HEAD").strip() != config.authority_commit:
         raise ValueError("authority checkout does not match the configured authority commit")
-    if _run_git(paths.authority, "status", "--porcelain=v1", "--untracked-files=all"):
+    if _run_git(
+        paths.authority,
+        paths.git_home,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    ):
         raise ValueError("authority checkout must be clean")
-    if _run_git(paths.authority, "remote", "get-url", "github").strip() != CANONICAL_REMOTE:
+    if _run_git(
+        paths.authority, paths.git_home, "remote", "get-url", "github"
+    ).strip() != CANONICAL_REMOTE:
         raise ValueError("authority checkout must use the canonical GitHub remote")
-    observed = _coordinator_tree_digest(paths.authority, config.authority_commit)
+    observed = _coordinator_tree_digest(
+        paths.authority, config.authority_commit, paths.git_home
+    )
     if observed != config.coordinator_tree_sha256:
         raise ValueError("coordinator tree digest differs from host config")
 
@@ -390,6 +455,20 @@ def load_trusted_host(paths: HostPaths = HostPaths(), *, expected_uid: int = REQ
         mode=0o755,
         directory=True,
     )
+    git_home_fd = _secure_path(
+        paths.git_home,
+        root=paths.root,
+        label="launcher Git HOME",
+        uid=expected_uid,
+        mode=0o700,
+        directory=True,
+    )
+    try:
+        git_home_entries = os.listdir(git_home_fd)
+    finally:
+        os.close(git_home_fd)
+    if git_home_entries:
+        raise ValueError("launcher Git HOME must be empty")
     os.close(state_fd)
     os.close(config_parent_fd)
     os.close(launcher_parent_fd)
@@ -437,6 +516,7 @@ def load_trusted_host(paths: HostPaths = HostPaths(), *, expected_uid: int = REQ
     _verify_checkout(paths, config, expected_uid)
     expected_launcher = _run_git(
         paths.authority,
+        paths.git_home,
         "show",
         f"{config.authority_commit}:benchmarks/swebench/host_launcher.py",
         text=False,
@@ -449,8 +529,8 @@ def load_trusted_host(paths: HostPaths = HostPaths(), *, expected_uid: int = REQ
     return TrustedHost(paths, config, profile)
 
 
-def _candidate_is_advertised(repository: Path, candidate: str) -> None:
-    advertised = _run_git(repository, "ls-remote", "github")
+def _candidate_is_advertised(repository: Path, git_home: Path, candidate: str) -> None:
+    advertised = _run_git(repository, git_home, "ls-remote", "github")
     if not any(
         line.split("\t", 1)[0] == candidate
         and "\trefs/" in line
@@ -458,8 +538,10 @@ def _candidate_is_advertised(repository: Path, candidate: str) -> None:
         for line in advertised.splitlines()
     ):
         raise ValueError("candidate commit is not an advertised canonical ref tip")
-    _run_git(repository, "fetch", "--no-tags", "github", candidate)
-    if _run_git(repository, "status", "--porcelain=v1", "--untracked-files=all"):
+    _run_git(repository, git_home, "fetch", "--no-tags", "github", candidate)
+    if _run_git(
+        repository, git_home, "status", "--porcelain=v1", "--untracked-files=all"
+    ):
         raise ValueError("authority checkout became dirty while fetching candidate")
 
 
@@ -605,7 +687,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 64
     try:
         host = load_trusted_host()
-        _candidate_is_advertised(host.paths.authority, candidate_commit)
+        _activate_trusted_environment(host.paths.git_home)
+        _candidate_is_advertised(
+            host.paths.authority, host.paths.git_home, candidate_commit
+        )
         return _authority_main(
             host,
             mode,
