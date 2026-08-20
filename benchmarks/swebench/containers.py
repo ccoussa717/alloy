@@ -89,8 +89,25 @@ class PreflightReport:
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-class _DaemonIdentityDrift(RuntimeError):
+class DaemonIdentityDriftError(RuntimeError):
     pass
+
+
+class CleanupUncertainError(RuntimeError):
+    def __init__(
+        self,
+        handle: ContainerHandle,
+        original_error: BaseException,
+        cleanup_error: BaseException,
+    ) -> None:
+        self.handle = handle
+        self.original_error = original_error
+        self.cleanup_error = cleanup_error
+        super().__init__(
+            "cleanup uncertain for "
+            f"container {handle.name} ({handle.container_id}, run {handle.run_id}); "
+            f"original failure: {original_error}; cleanup failure: {cleanup_error}"
+        )
 
 
 class DockerRuntime:
@@ -203,11 +220,28 @@ class DockerRuntime:
         )
         return self._identity_from_info(info)
 
-    def _assert_daemon_identity(self) -> None:
+    @staticmethod
+    def _handle_description(handle: ContainerHandle | None) -> str:
+        if handle is None:
+            return "pending container"
+        return f"container {handle.name} ({handle.container_id}, run {handle.run_id})"
+
+    def _assert_daemon_identity(self, handle: ContainerHandle | None = None) -> None:
+        description = self._handle_description(handle)
         if self._daemon_identity is None:
-            raise RuntimeError("official preflight did not record a Docker daemon identity")
-        if self._current_daemon_identity() != self._daemon_identity:
-            raise _DaemonIdentityDrift("Docker daemon identity drifted after preflight")
+            raise DaemonIdentityDriftError(
+                f"cannot prove original Docker daemon identity for {description}"
+            )
+        try:
+            current = self._current_daemon_identity()
+        except Exception as error:
+            raise DaemonIdentityDriftError(
+                f"cannot prove original Docker daemon identity for {description}"
+            ) from error
+        if current != self._daemon_identity:
+            raise DaemonIdentityDriftError(
+                f"Docker daemon identity drifted after preflight for {description}"
+            )
 
     @staticmethod
     def _apparmor_profile_mode(status: dict[str, object], name: str) -> str | None:
@@ -462,13 +496,17 @@ class DockerRuntime:
             raise RuntimeError("Docker create returned no container ID")
         handle = ContainerHandle(spec.name, container_id, spec.run_id)
         try:
+            self._assert_daemon_identity(handle)
             self.inspect_security(handle, spec)
-            self._assert_daemon_identity()
+            self._assert_daemon_identity(handle)
             self._run(self._docker_arguments("start", container_id))
-        except _DaemonIdentityDrift:
-            raise
-        except BaseException:
-            self.force_remove(handle)
+        except BaseException as original_error:
+            try:
+                self.force_remove(handle)
+            except BaseException as cleanup_error:
+                raise CleanupUncertainError(
+                    handle, original_error, cleanup_error
+                ) from original_error
             raise
         return handle
 
@@ -572,6 +610,7 @@ class DockerRuntime:
             raise RuntimeError("Docker wait returned an invalid exit code") from error
 
     def force_remove(self, handle: ContainerHandle) -> None:
+        self._assert_daemon_identity(handle)
         inspected, returncode = self._inspect(handle.name, check=False)
         if returncode != 0:
             return
@@ -579,10 +618,12 @@ class DockerRuntime:
         labels = self._mapping(self._mapping(inspected.get("Config")).get("Labels"))
         if labels.get(LABEL) != handle.run_id:
             raise RuntimeError("container name was reused with a different ownership label")
+        self._assert_daemon_identity(handle)
         self._run(self._docker_arguments("rm", "--force", handle.name))
         self.assert_absent(handle)
 
     def assert_absent(self, handle: ContainerHandle) -> None:
+        self._assert_daemon_identity(handle)
         inspected, returncode = self._inspect(handle.name, check=False)
         if returncode != 0:
             return

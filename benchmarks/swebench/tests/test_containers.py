@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import benchmarks.swebench.containers as containers
 from benchmarks.swebench.containers import (
     ContainerHandle,
     ContainerSpec,
@@ -153,6 +154,7 @@ class DockerRuntimeTests(unittest.TestCase):
             completed(json.dumps([self.owned_volume()])),
             completed(json.dumps(self.docker_info())),
             completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps([self.inspection()])),
             completed(json.dumps(self.docker_info())),
             completed(),
@@ -195,16 +197,17 @@ class DockerRuntimeTests(unittest.TestCase):
             "info", "--format", "{{json .}}",
         ]
         self.assertEqual(runner.calls[4][0], identity_command)
+        self.assertEqual(runner.calls[6][0], identity_command)
         self.assertEqual(
-            runner.calls[6][0],
+            runner.calls[7][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "inspect", "container-id",
             ],
         )
-        self.assertEqual(runner.calls[7][0], identity_command)
+        self.assertEqual(runner.calls[8][0], identity_command)
         self.assertEqual(
-            runner.calls[8][0],
+            runner.calls[9][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "start", "container-id",
@@ -233,16 +236,73 @@ class DockerRuntimeTests(unittest.TestCase):
             completed(json.dumps([self.owned_volume()])),
             completed(json.dumps(self.docker_info())),
             completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps([self.inspection()])),
+            completed(json.dumps(changed)),
             completed(json.dumps(changed)),
         )
         runtime = self.preflighted_runtime(runner)
 
-        with self.assertRaisesRegex(RuntimeError, "daemon identity drift"):
+        with self.assertRaisesRegex(
+            containers.CleanupUncertainError, self.spec.name
+        ) as raised:
             runtime.create(self.spec)
 
-        self.assertEqual(len(runner.calls), 8)
+        self.assertIsInstance(
+            raised.exception.original_error, containers.DaemonIdentityDriftError
+        )
+        self.assertEqual(len(runner.calls), 10)
         self.assertFalse(any("start" in arguments for arguments, _ in runner.calls))
+
+    def test_drift_after_create_before_inspection_surfaces_cleanup_uncertainty(self):
+        changed = {**self.docker_info(), "ID": "replacement-daemon"}
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed("container-id\n"),
+            completed(json.dumps(changed)),
+            completed(json.dumps(changed)),
+        )
+        runtime = self.preflighted_runtime(runner)
+
+        with self.assertRaisesRegex(
+            containers.CleanupUncertainError, self.spec.name
+        ) as raised:
+            runtime.create(self.spec)
+
+        self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+        self.assertIsInstance(
+            raised.exception.original_error, containers.DaemonIdentityDriftError
+        )
+        self.assertIsInstance(
+            raised.exception.cleanup_error, containers.DaemonIdentityDriftError
+        )
+        self.assertEqual(len(runner.calls), 8)
+        self.assertTrue(all(arguments[3] == "info" for arguments, _ in runner.calls[6:]))
+
+    def test_public_teardown_rejects_drift_after_successful_start(self):
+        changed = {**self.docker_info(), "DockerRootDir": "/replacement"}
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.inspection()])),
+            completed(json.dumps(self.docker_info())),
+            completed(),
+            completed(json.dumps(changed)),
+        )
+        runtime = self.preflighted_runtime(runner)
+        handle = runtime.create(self.spec)
+
+        with self.assertRaisesRegex(
+            containers.DaemonIdentityDriftError, self.spec.name
+        ):
+            runtime.force_remove(handle)
+
+        self.assertEqual(runner.calls[-1][0][3], "info")
 
     def test_rejects_unsafe_or_mutable_container_specs_before_docker(self):
         mutable = ImagePin("node:latest", "sha256:" + "b" * 64, "linux/amd64")
@@ -588,9 +648,13 @@ class DockerRuntimeTests(unittest.TestCase):
             completed(json.dumps([self.owned_volume()])),
             completed(json.dumps(self.docker_info())),
             completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps([inspected])),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps([self.inspection()])),
+            completed(json.dumps(self.docker_info())),
             completed(),
+            completed(json.dumps(self.docker_info())),
             absent(),
         )
 
@@ -598,36 +662,67 @@ class DockerRuntimeTests(unittest.TestCase):
             self.preflighted_runtime(runner).create(self.spec)
 
         self.assertEqual(
-            runner.calls[7][0],
-            [
-                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                "inspect", "alloy-agent-run-123",
-            ],
-        )
-        self.assertEqual(
-            runner.calls[8][0],
-            [
-                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
-                "rm", "--force", "alloy-agent-run-123",
-            ],
-        )
-        self.assertEqual(
             runner.calls[9][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "inspect", "alloy-agent-run-123",
             ],
         )
+        self.assertEqual(
+            runner.calls[11][0],
+            [
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                "rm", "--force", "alloy-agent-run-123",
+            ],
+        )
+        self.assertEqual(
+            runner.calls[13][0],
+            [
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                "inspect", "alloy-agent-run-123",
+            ],
+        )
+
+    def test_create_surfaces_cleanup_uncertainty_over_inspection_failure(self):
+        inspected = self.inspection()
+        inspected["HostConfig"]["Privileged"] = True
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([inspected])),
+            subprocess.CalledProcessError(1, ["docker", "info"], stderr="unavailable"),
+        )
+
+        with self.assertRaisesRegex(
+            containers.CleanupUncertainError, self.spec.name
+        ) as raised:
+            self.preflighted_runtime(runner).create(self.spec)
+
+        self.assertRegex(str(raised.exception.original_error), "privileged")
+        self.assertIs(raised.exception.__cause__, raised.exception.original_error)
+        self.assertIsInstance(
+            raised.exception.cleanup_error, containers.DaemonIdentityDriftError
+        )
+        self.assertEqual(runner.calls[-1][0][3], "info")
 
     def test_force_remove_checks_label_and_asserts_absence(self):
         handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
         runner = ScriptedRunner(
-            completed(json.dumps([self.inspection()])), completed(), absent()
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.inspection()])),
+            completed(json.dumps(self.docker_info())),
+            completed(),
+            completed(json.dumps(self.docker_info())),
+            absent(),
         )
-        runtime = self.runtime(runner)
+        runtime = self.preflighted_runtime(runner)
         runtime.force_remove(handle)
         self.assertEqual(
-            runner.calls[1][0],
+            runner.calls[6][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "rm", "--force", self.spec.name,
@@ -636,16 +731,72 @@ class DockerRuntimeTests(unittest.TestCase):
 
         reused = self.inspection()
         reused["Config"]["Labels"]["alloy.swebench.gate"] = "other-run"
-        runner = ScriptedRunner(completed(json.dumps([reused])))
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([reused])),
+        )
         with self.assertRaisesRegex(RuntimeError, "different ownership label"):
-            self.runtime(runner).force_remove(handle)
-        self.assertEqual(len(runner.calls), 1)
+            self.preflighted_runtime(runner).force_remove(handle)
+        self.assertEqual(len(runner.calls), 5)
+
+    def test_public_teardown_refuses_daemon_drift_without_inspect_or_remove(self):
+        handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
+        changed = {**self.docker_info(), "Name": "replacement-daemon"}
+        for method_name in ("force_remove", "assert_absent"):
+            runner = ScriptedRunner(
+                *self.successful_preflight(), completed(json.dumps(changed))
+            )
+            runtime = self.preflighted_runtime(runner)
+            with self.subTest(method=method_name), self.assertRaisesRegex(
+                containers.DaemonIdentityDriftError, self.spec.name
+            ):
+                getattr(runtime, method_name)(handle)
+            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(runner.calls[-1][0][3], "info")
+
+    def test_public_teardown_fails_closed_when_daemon_identity_cannot_be_queried(self):
+        handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
+        for method_name in ("force_remove", "assert_absent"):
+            runner = ScriptedRunner(
+                *self.successful_preflight(),
+                subprocess.CalledProcessError(1, ["docker", "info"], stderr="unavailable"),
+            )
+            runtime = self.preflighted_runtime(runner)
+            with self.subTest(method=method_name), self.assertRaisesRegex(
+                containers.DaemonIdentityDriftError, "cannot prove"
+            ):
+                getattr(runtime, method_name)(handle)
+            self.assertEqual(len(runner.calls), 4)
+
+    def test_force_remove_rechecks_identity_after_inspect_before_remove(self):
+        handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
+        changed = {**self.docker_info(), "ID": "replacement-daemon"}
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.inspection()])),
+            completed(json.dumps(changed)),
+        )
+        runtime = self.preflighted_runtime(runner)
+
+        with self.assertRaisesRegex(
+            containers.DaemonIdentityDriftError, self.spec.name
+        ):
+            runtime.force_remove(handle)
+
+        self.assertEqual(len(runner.calls), 6)
+        self.assertEqual(runner.calls[-1][0][3], "info")
 
     def test_assert_absent_fails_closed_when_docker_inspection_fails(self):
         handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
-        runner = ScriptedRunner(completed(returncode=1, stderr="daemon unavailable\n"))
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(returncode=1, stderr="daemon unavailable\n"),
+        )
         with self.assertRaisesRegex(RuntimeError, "could not prove container absence"):
-            self.runtime(runner).assert_absent(handle)
+            self.preflighted_runtime(runner).assert_absent(handle)
 
     def test_bind_mounts_are_read_only_regular_authority_files_only(self):
         invalid = (
@@ -685,6 +836,7 @@ class DockerRuntimeTests(unittest.TestCase):
             *self.successful_preflight(),
             completed(json.dumps(self.docker_info())),
             completed("container-id\n"),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps([inspected])),
             completed(json.dumps(self.docker_info())),
             completed(),
