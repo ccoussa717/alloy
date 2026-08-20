@@ -19,6 +19,10 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
+class ConsumptionUncertainError(RuntimeError):
+    pass
+
+
 def _nonempty(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
@@ -442,6 +446,79 @@ def _read_persisted_claim(state_fd: int, name: str) -> bytes:
         os.close(fd)
 
 
+def _rollback_consumption(
+    state_fd: int,
+    names: tuple[str, ...],
+    cause: BaseException,
+) -> None:
+    cleanup_error: OSError | None = None
+    for name in names:
+        try:
+            os.unlink(name, dir_fd=state_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+    try:
+        os.fsync(state_fd)
+    except OSError as error:
+        cleanup_error = cleanup_error or error
+    if cleanup_error is not None:
+        raise ConsumptionUncertainError(
+            "claim consumption state is uncertain because rollback durability could not be proven"
+        ) from cause
+
+
+def _persist_consumption_marker(state_fd: int, consumed_name: str, content: bytes) -> None:
+    temporary = f".{consumed_name}.{secrets.token_hex(16)}.tmp"
+    temporary_fd = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=state_fd,
+    )
+    try:
+        _write_all(temporary_fd, content)
+        os.fsync(temporary_fd)
+    except BaseException as error:
+        close_error: OSError | None = None
+        try:
+            os.close(temporary_fd)
+        except OSError as caught:
+            close_error = caught
+        _rollback_consumption(state_fd, (temporary,), close_error or error)
+        if close_error is not None:
+            raise close_error from error
+        raise
+    try:
+        os.close(temporary_fd)
+    except OSError as error:
+        _rollback_consumption(state_fd, (temporary,), error)
+        raise
+
+    try:
+        os.link(
+            temporary,
+            consumed_name,
+            src_dir_fd=state_fd,
+            dst_dir_fd=state_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        _rollback_consumption(state_fd, (temporary,), error)
+        raise FileExistsError("claim ordinal is already consumed") from error
+    except BaseException as error:
+        _rollback_consumption(state_fd, (temporary,), error)
+        raise
+
+    try:
+        os.unlink(temporary, dir_fd=state_fd)
+        os.fsync(state_fd)
+    except BaseException as error:
+        _rollback_consumption(state_fd, (consumed_name, temporary), error)
+        raise
+
+
 def consume_claim(
     state_dir: Path,
     claim: SignedClaim,
@@ -455,20 +532,7 @@ def consume_claim(
         if _read_persisted_claim(state_fd, claim_name) != claim.canonical_bytes():
             raise ValueError("persisted attempt claim does not match the launch claim")
         consumed_name = claim_name.removesuffix(".claim.json") + ".consumed"
-        try:
-            consumed_fd = os.open(
-                consumed_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=state_fd,
-            )
-        except FileExistsError as error:
-            raise FileExistsError("claim ordinal is already consumed") from error
-        try:
-            _write_all(consumed_fd, hashlib.sha256(claim.canonical_bytes()).hexdigest().encode("ascii"))
-            os.fsync(consumed_fd)
-        finally:
-            os.close(consumed_fd)
-        os.fsync(state_fd)
+        marker = hashlib.sha256(claim.canonical_bytes()).hexdigest().encode("ascii")
+        _persist_consumption_marker(state_fd, consumed_name, marker)
     finally:
         os.close(state_fd)

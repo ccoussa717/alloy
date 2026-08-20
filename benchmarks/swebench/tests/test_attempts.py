@@ -1,8 +1,10 @@
 import base64
 import errno
 import fcntl
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -10,8 +12,10 @@ import unittest.mock
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
+import benchmarks.swebench.attempts as attempts_module
 from benchmarks.swebench.attempts import (
     AttemptKey,
+    ConsumptionUncertainError,
     GateSigner,
     SignedClaim,
     authorize_retry,
@@ -58,6 +62,9 @@ class AttemptTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary_directory.cleanup()
+
+    def assert_no_consumption_temps(self):
+        self.assertEqual(list(self.state_dir.glob(".*.consumed.*.tmp")), [])
 
     def test_first_claim_is_canonical_signed_ordinal_one_and_state_is_private(self):
         claim = claim_first_attempt(self.state_dir, self.key, self.signer)
@@ -225,27 +232,114 @@ class AttemptTests(unittest.TestCase):
 
         original_open = os.open
         created = []
+        links = []
 
         def recording_open(path, flags, mode=0o777, *, dir_fd=None):
-            if isinstance(path, str) and path.endswith(".consumed"):
-                created.append((flags, mode, dir_fd))
+            if isinstance(path, str) and ".consumed." in path and path.endswith(".tmp"):
+                created.append((path, flags, mode, dir_fd))
             return original_open(path, flags, mode, dir_fd=dir_fd)
 
-        with unittest.mock.patch("benchmarks.swebench.attempts.os.open", recording_open):
+        original_link = os.link
+
+        def recording_link(source, destination, **kwargs):
+            links.append((source, destination, kwargs))
+            return original_link(source, destination, **kwargs)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.os.open", recording_open), unittest.mock.patch(
+            "benchmarks.swebench.attempts.os.link", recording_link
+        ):
             consume_claim(self.state_dir, claim, self.public_key, self.key)
 
         self.assertEqual(len(created), 1)
-        flags, mode, dir_fd = created[0]
+        _, flags, mode, dir_fd = created[0]
         self.assertTrue(flags & os.O_EXCL)
         self.assertTrue(flags & os.O_NOFOLLOW)
         self.assertEqual(mode, 0o600)
         self.assertIsNotNone(dir_fd)
+        self.assertEqual(len(links), 1)
+        self.assertTrue(links[0][1].endswith(".consumed"))
+        self.assertFalse(links[0][2]["follow_symlinks"])
         consumed = list(self.state_dir.glob("*.consumed"))
         self.assertEqual(len(consumed), 1)
         self.assertEqual(consumed[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            consumed[0].read_bytes(),
+            hashlib.sha256(claim.canonical_bytes()).hexdigest().encode("ascii"),
+        )
+        self.assert_no_consumption_temps()
         verify_claim(claim, self.public_key, self.key)
         with self.assertRaisesRegex(FileExistsError, "already consumed"):
             consume_claim(self.state_dir, claim, self.public_key, self.key)
+        self.assert_no_consumption_temps()
+
+    def test_consumption_write_failure_removes_temp_without_publishing(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        marker = hashlib.sha256(claim.canonical_bytes()).hexdigest().encode("ascii")
+        original_write_all = attempts_module._write_all
+
+        def fail_marker_write(fd, content):
+            if content == marker:
+                raise OSError("marker write failed")
+            return original_write_all(fd, content)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts._write_all", fail_marker_write):
+            with self.assertRaisesRegex(OSError, "marker write failed"):
+                consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+        self.assertEqual(list(self.state_dir.glob("*.consumed")), [])
+        self.assert_no_consumption_temps()
+
+    def test_consumption_file_fsync_failure_removes_temp_without_publishing(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        original_fsync = os.fsync
+
+        def fail_temp_fsync(fd):
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            if ".consumed." in target and target.endswith(".tmp"):
+                raise OSError("marker fsync failed")
+            return original_fsync(fd)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.os.fsync", fail_temp_fsync):
+            with self.assertRaisesRegex(OSError, "marker fsync failed"):
+                consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+        self.assertEqual(list(self.state_dir.glob("*.consumed")), [])
+        self.assert_no_consumption_temps()
+
+    def test_consumption_directory_fsync_failure_rolls_back_and_fsyncs_cleanup(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        original_fsync = os.fsync
+        directory_calls = 0
+
+        def fail_first_directory_fsync(fd):
+            nonlocal directory_calls
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                directory_calls += 1
+                if directory_calls == 1:
+                    raise OSError("publication fsync failed")
+            return original_fsync(fd)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.os.fsync", fail_first_directory_fsync):
+            with self.assertRaisesRegex(OSError, "publication fsync failed"):
+                consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+        self.assertGreaterEqual(directory_calls, 2)
+        self.assertEqual(list(self.state_dir.glob("*.consumed")), [])
+        self.assert_no_consumption_temps()
+        consume_claim(self.state_dir, claim, self.public_key, self.key)
+
+    def test_consumption_rollback_uncertainty_fails_closed(self):
+        claim = claim_first_attempt(self.state_dir, self.key, self.signer)
+        original_fsync = os.fsync
+
+        def fail_directory_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory storage failed")
+            return original_fsync(fd)
+
+        with unittest.mock.patch("benchmarks.swebench.attempts.os.fsync", fail_directory_fsync):
+            with self.assertRaisesRegex(ConsumptionUncertainError, "uncertain"):
+                consume_claim(self.state_dir, claim, self.public_key, self.key)
 
     def test_failed_verification_never_consumes_an_ordinal(self):
         claim = claim_first_attempt(self.state_dir, self.key, self.signer)
