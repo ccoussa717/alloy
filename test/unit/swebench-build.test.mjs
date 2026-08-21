@@ -115,7 +115,7 @@ describe("SWE-bench build boundaries", () => {
       assert.match(document, /f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b/);
       assert.match(document, /c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49/);
       assert.match(document, /7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3/);
-      assert.match(document, /88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68/);
+      assert.match(document, /3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6/);
       assert.match(document, /run-swebench-release-smoke\.sh dry-run ["']?[<$A-Z_]/);
       assert.match(document, /run-swebench-release-smoke\.sh release ["']?[<$A-Z_]/);
       assert.match(document, /run-swebench-release-smoke\.sh authorize-retry ["']?[<$A-Z_]/);

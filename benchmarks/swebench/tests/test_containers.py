@@ -93,11 +93,19 @@ class DockerRuntimeTests(unittest.TestCase):
             "Name": "local-daemon",
             "DockerRootDir": "/var/lib/docker",
             "ServerVersion": "29.6.2",
+            "KernelVersion": "7.0.0-15-generic",
+            "RuncCommit": {"ID": "v1.3.6-0-g491b69ba"},
         }
 
     def successful_preflight(self):
         return (
             completed(json.dumps(self.docker_info())),
+            completed("7.0.0-15-generic\n"),
+            completed(
+                "runc version 1.3.6\n"
+                "commit: v1.3.6-0-g491b69ba\n"
+                "spec: 1.2.1\n"
+            ),
             completed(),
             completed(json.dumps({"profiles": {"alloy-swebench-gate": "enforce"}})),
         )
@@ -128,6 +136,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 "PidsLimit": 512,
                 "Memory": 17179869184,
                 "NanoCpus": 4_000_000_000,
+                "CgroupnsMode": "private",
                 "PidMode": "",
                 "IpcMode": "private",
                 "UTSMode": "",
@@ -178,7 +187,7 @@ class DockerRuntimeTests(unittest.TestCase):
         runtime.create_volume("alloy-checkout-run-123", "run-123")
 
         self.assertEqual(
-            runner.calls[6][0],
+            runner.calls[8][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "volume", "create", "--label", "alloy.swebench.gate=run-123",
@@ -205,7 +214,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 containers.DaemonIdentityDriftError, "daemon identity drift",
             ):
                 getattr(runtime, method)(*arguments)
-            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(len(runner.calls), 6)
 
     def test_create_volume_rejects_each_plain_owned_volume_metadata_drift(self):
         cases = (
@@ -282,7 +291,7 @@ class DockerRuntimeTests(unittest.TestCase):
             "alloy-checkout-run-123", "/workspace", "run-123", self.image, self.image_id,
         )
 
-        create = runner.calls[6][0]
+        create = runner.calls[8][0]
         self.assertIn("0:0", create)
         self.assertIn("CHOWN", create)
         self.assertIn("chown 65532:65532 /workspace", create)
@@ -333,7 +342,7 @@ class DockerRuntimeTests(unittest.TestCase):
         self.preflighted_runtime(runner).remove_volume(
             "alloy-checkout-run-123", "run-123",
         )
-        self.assertEqual(runner.calls[7][0][-3:], ["volume", "rm", "alloy-checkout-run-123"])
+        self.assertEqual(runner.calls[9][0][-3:], ["volume", "rm", "alloy-checkout-run-123"])
         self.assertEqual(runner.results, [])
 
     def test_remove_volume_rejects_daemon_drift_after_initial_absent_inspection(self):
@@ -391,7 +400,7 @@ class DockerRuntimeTests(unittest.TestCase):
 
         seccomp = REPO_ROOT / self.profile.security_policy.seccomp_path
         self.assertEqual(
-            runner.calls[5][0],
+            runner.calls[7][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "create", "--name", "alloy-agent-run-123",
@@ -406,6 +415,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 "--pids-limit", "512",
                 "--memory", "17179869184",
                 "--cpus", "4",
+                "--cgroupns", "private",
                 "--network", "none",
                 "--mount", "type=volume,src=alloy-checkout-run-123,dst=/workspace",
                 self.image.reference,
@@ -413,7 +423,7 @@ class DockerRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            runner.calls[3][0],
+            runner.calls[5][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "volume", "inspect", "alloy-checkout-run-123",
@@ -423,18 +433,18 @@ class DockerRuntimeTests(unittest.TestCase):
             "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
             "info", "--format", "{{json .}}",
         ]
-        self.assertEqual(runner.calls[4][0], identity_command)
         self.assertEqual(runner.calls[6][0], identity_command)
+        self.assertEqual(runner.calls[8][0], identity_command)
         self.assertEqual(
-            runner.calls[7][0],
+            runner.calls[9][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "container", "inspect", "container-id",
             ],
         )
-        self.assertEqual(runner.calls[8][0], identity_command)
+        self.assertEqual(runner.calls[10][0], identity_command)
         self.assertEqual(
-            runner.calls[9][0],
+            runner.calls[11][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "start", "container-id",
@@ -544,7 +554,7 @@ class DockerRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "daemon identity drift"):
             runtime.create(self.spec)
 
-        self.assertEqual(len(runner.calls), 5)
+        self.assertEqual(len(runner.calls), 7)
 
     def test_start_rejects_daemon_identity_drift_after_create(self):
         changed = {**self.docker_info(), "ServerVersion": "99.0.0"}
@@ -568,7 +578,7 @@ class DockerRuntimeTests(unittest.TestCase):
         self.assertIsInstance(
             raised.exception.original_error, containers.DaemonIdentityDriftError
         )
-        self.assertEqual(len(runner.calls), 10)
+        self.assertEqual(len(runner.calls), 12)
         self.assertFalse(any("start" in arguments for arguments, _ in runner.calls))
 
     def test_drift_after_create_before_inspection_surfaces_cleanup_uncertainty(self):
@@ -595,8 +605,8 @@ class DockerRuntimeTests(unittest.TestCase):
         self.assertIsInstance(
             raised.exception.cleanup_error, containers.DaemonIdentityDriftError
         )
-        self.assertEqual(len(runner.calls), 8)
-        self.assertTrue(all(arguments[3] == "info" for arguments, _ in runner.calls[6:]))
+        self.assertEqual(len(runner.calls), 10)
+        self.assertTrue(all(arguments[3] == "info" for arguments, _ in runner.calls[8:]))
 
     def test_public_teardown_rejects_drift_after_successful_start(self):
         changed = {**self.docker_info(), "DockerRootDir": "/replacement"}
@@ -657,7 +667,7 @@ class DockerRuntimeTests(unittest.TestCase):
             runtime = self.preflighted_runtime(runner)
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 runtime.create(spec)
-            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(len(runner.calls), 5)
 
     def test_preflight_reloads_enforcing_profile_and_binds_report_to_policy(self):
         runner = ScriptedRunner(*self.successful_preflight())
@@ -683,11 +693,13 @@ class DockerRuntimeTests(unittest.TestCase):
                 "info", "--format", "{{json .}}",
             ],
         )
+        self.assertEqual(runner.calls[1][0], ["/usr/bin/uname", "-r"])
+        self.assertEqual(runner.calls[2][0], ["/usr/bin/runc", "--version"])
         self.assertEqual(
-            runner.calls[1][0],
+            runner.calls[3][0],
             ["/usr/sbin/apparmor_parser", "-r", str(APPARMOR_PATH)],
         )
-        self.assertEqual(runner.calls[2][0], ["/usr/sbin/aa-status", "--json"])
+        self.assertEqual(runner.calls[4][0], ["/usr/sbin/aa-status", "--json"])
         for _, kwargs in runner.calls:
             self.assertEqual(
                 kwargs["env"],
@@ -701,10 +713,77 @@ class DockerRuntimeTests(unittest.TestCase):
 
         amd64_info = {**self.docker_info(), "Architecture": "amd64"}
         amd64_runner = ScriptedRunner(
-            completed(json.dumps(amd64_info)), completed(),
+            completed(json.dumps(amd64_info)),
+            completed("7.0.0-15-generic\n"),
+            completed(
+                "runc version 1.3.6\ncommit: v1.3.6-0-g491b69ba\nspec: 1.2.1\n"
+            ),
+            completed(),
             completed(json.dumps({"profiles": {"alloy-swebench-gate": "enforce"}})),
         )
         self.assertEqual(self.runtime(amd64_runner).preflight().architecture, "amd64")
+
+    def test_preflight_captures_validated_kernel_and_runc_evidence_with_trusted_binaries(self):
+        info = {
+            **self.docker_info(),
+            "KernelVersion": "7.0.0-15-generic",
+            "RuncCommit": {"ID": "v1.3.6-0-g491b69ba"},
+        }
+        runner = ScriptedRunner(
+            completed(json.dumps(info)),
+            completed("7.0.0-15-generic\n"),
+            completed(
+                "runc version 1.3.6\n"
+                "commit: v1.3.6-0-g491b69ba\n"
+                "spec: 1.2.1\n"
+                "go: go1.25.12\n"
+                "libseccomp: 2.6.0\n"
+            ),
+            completed(),
+            completed(json.dumps({"profiles": {"alloy-swebench-gate": "enforce"}})),
+        )
+
+        report = self.runtime(runner).preflight()
+
+        self.assertEqual(report.kernel_release, "7.0.0-15-generic")
+        self.assertEqual(report.runc_version, "1.3.6")
+        self.assertEqual(report.runc_commit, "v1.3.6-0-g491b69ba")
+        self.assertEqual(report.runc_spec, "1.2.1")
+        self.assertEqual(runner.calls[1][0], ["/usr/bin/uname", "-r"])
+        self.assertEqual(runner.calls[2][0], ["/usr/bin/runc", "--version"])
+
+    def test_preflight_rejects_malformed_or_inconsistent_kernel_and_runc_evidence(self):
+        valid_info = {
+            **self.docker_info(),
+            "KernelVersion": "7.0.0-15-generic",
+            "RuncCommit": {"ID": "v1.3.6-0-g491b69ba"},
+        }
+        valid_kernel = completed("7.0.0-15-generic\n")
+        valid_runc = completed(
+            "runc version 1.3.6\n"
+            "commit: v1.3.6-0-g491b69ba\n"
+            "spec: 1.2.1\n"
+        )
+        cases = (
+            (valid_info, completed("Linux release with spaces\n"), valid_runc, "kernel release"),
+            (valid_info, valid_kernel, completed("runc 1.3.6\n"), "runc version"),
+            (
+                {**valid_info, "KernelVersion": "different-kernel"},
+                valid_kernel,
+                valid_runc,
+                "kernel release",
+            ),
+            (
+                {**valid_info, "RuncCommit": {"ID": "different-commit"}},
+                valid_kernel,
+                valid_runc,
+                "runc commit",
+            ),
+        )
+        for info, kernel, runc, message in cases:
+            runner = ScriptedRunner(completed(json.dumps(info)), kernel, runc)
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                self.runtime(runner).preflight()
 
     def test_preflight_rejects_docker_environment_context_overrides(self):
         for variable, value in (
@@ -784,7 +863,7 @@ class DockerRuntimeTests(unittest.TestCase):
         )
         for status, message in statuses:
             runner = ScriptedRunner(
-                completed(json.dumps(self.docker_info())), completed(), completed(json.dumps(status))
+                *self.successful_preflight()[:-1], completed(json.dumps(status))
             )
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 self.runtime(runner).preflight()
@@ -814,13 +893,17 @@ class DockerRuntimeTests(unittest.TestCase):
             runtime = self.preflighted_runtime(runner)
             with self.subTest(metadata=metadata), self.assertRaisesRegex(RuntimeError, message):
                 runtime.create(self.spec)
-            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(len(runner.calls), 6)
 
     def test_preflight_reload_and_status_failures_are_fatal(self):
         failures = (
             (
                 ScriptedRunner(
                     completed(json.dumps(self.docker_info())),
+                    completed("7.0.0-15-generic\n"),
+                    completed(
+                        "runc version 1.3.6\ncommit: v1.3.6-0-g491b69ba\nspec: 1.2.1\n"
+                    ),
                     subprocess.CalledProcessError(1, ["apparmor_parser"], stderr="denied"),
                 ),
                 subprocess.CalledProcessError,
@@ -828,6 +911,10 @@ class DockerRuntimeTests(unittest.TestCase):
             (
                 ScriptedRunner(
                     completed(json.dumps(self.docker_info())),
+                    completed("7.0.0-15-generic\n"),
+                    completed(
+                        "runc version 1.3.6\ncommit: v1.3.6-0-g491b69ba\nspec: 1.2.1\n"
+                    ),
                     completed(),
                     subprocess.CalledProcessError(1, ["aa-status"], stderr="denied"),
                 ),
@@ -941,6 +1028,7 @@ class DockerRuntimeTests(unittest.TestCase):
             (("HostConfig", "PidsLimit"), 513, "PID limit"),
             (("HostConfig", "Memory"), 1, "memory limit"),
             (("HostConfig", "NanoCpus"), 1, "CPU limit"),
+            (("HostConfig", "CgroupnsMode"), "host", "cgroup namespace"),
             (("HostConfig", "PidMode"), "host", "PID namespace"),
             (("HostConfig", "IpcMode"), "host", "IPC namespace"),
             (("HostConfig", "UTSMode"), "host", "UTS namespace"),
@@ -959,6 +1047,24 @@ class DockerRuntimeTests(unittest.TestCase):
             runner = ScriptedRunner(completed(json.dumps([inspected])))
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 self.runtime(runner).inspect_security(handle, self.spec)
+
+    def test_inspection_requires_exact_private_cgroup_namespace_evidence(self):
+        handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
+        cases = ("", None, 1, [], {}, "host")
+        for value in cases:
+            inspected = copy.deepcopy(self.inspection())
+            inspected["HostConfig"]["CgroupnsMode"] = value
+            runner = ScriptedRunner(completed(json.dumps([inspected])))
+            with self.subTest(value=value), self.assertRaisesRegex(
+                RuntimeError, "cgroup namespace"
+            ):
+                self.runtime(runner).inspect_security(handle, self.spec)
+
+        inspected = copy.deepcopy(self.inspection())
+        del inspected["HostConfig"]["CgroupnsMode"]
+        runner = ScriptedRunner(completed(json.dumps([inspected])))
+        with self.assertRaisesRegex(RuntimeError, "cgroup namespace"):
+            self.runtime(runner).inspect_security(handle, self.spec)
 
     def test_inspection_rejects_duplicate_conflicting_or_extra_security_options(self):
         expected = self.inspection()["HostConfig"]["SecurityOpt"]
@@ -1000,21 +1106,21 @@ class DockerRuntimeTests(unittest.TestCase):
             self.preflighted_runtime(runner).create(self.spec)
 
         self.assertEqual(
-            runner.calls[9][0],
+            runner.calls[11][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "container", "inspect", "alloy-agent-run-123",
             ],
         )
         self.assertEqual(
-            runner.calls[11][0],
+            runner.calls[13][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "rm", "--force", "alloy-agent-run-123",
             ],
         )
         self.assertEqual(
-            runner.calls[13][0],
+            runner.calls[15][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "container", "inspect", "alloy-agent-run-123",
@@ -1060,7 +1166,7 @@ class DockerRuntimeTests(unittest.TestCase):
         runtime = self.preflighted_runtime(runner)
         runtime.force_remove(handle)
         self.assertEqual(
-            runner.calls[6][0],
+            runner.calls[8][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "rm", "--force", self.spec.name,
@@ -1076,7 +1182,7 @@ class DockerRuntimeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "different ownership label"):
             self.preflighted_runtime(runner).force_remove(handle)
-        self.assertEqual(len(runner.calls), 5)
+        self.assertEqual(len(runner.calls), 7)
 
     def test_public_teardown_refuses_daemon_drift_without_inspect_or_remove(self):
         handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
@@ -1090,7 +1196,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 containers.DaemonIdentityDriftError, self.spec.name
             ):
                 getattr(runtime, method_name)(handle)
-            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(len(runner.calls), 6)
             self.assertEqual(runner.calls[-1][0][3], "info")
 
     def test_public_teardown_fails_closed_when_daemon_identity_cannot_be_queried(self):
@@ -1105,7 +1211,7 @@ class DockerRuntimeTests(unittest.TestCase):
                 containers.DaemonIdentityDriftError, "cannot prove"
             ):
                 getattr(runtime, method_name)(handle)
-            self.assertEqual(len(runner.calls), 4)
+            self.assertEqual(len(runner.calls), 6)
 
     def test_force_remove_rechecks_identity_after_inspect_before_remove(self):
         handle = ContainerHandle(self.spec.name, "container-id", self.spec.run_id)
@@ -1123,7 +1229,7 @@ class DockerRuntimeTests(unittest.TestCase):
         ):
             runtime.force_remove(handle)
 
-        self.assertEqual(len(runner.calls), 6)
+        self.assertEqual(len(runner.calls), 8)
         self.assertEqual(runner.calls[-1][0][3], "info")
 
     def test_assert_absent_fails_closed_when_docker_inspection_fails(self):
@@ -1156,7 +1262,7 @@ class DockerRuntimeTests(unittest.TestCase):
             runtime.preflight()
             with self.subTest(source=source), self.assertRaisesRegex(ValueError, message):
                 runtime.create(spec)
-            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(len(runner.calls), 5)
 
     def test_read_only_regular_authority_file_bind_is_accepted_and_inspected(self):
         mount = MountSpec(APPARMOR_PATH, "/policy", True, kind="bind")
@@ -1184,7 +1290,7 @@ class DockerRuntimeTests(unittest.TestCase):
 
         self.assertIn(
             "type=bind,src=" + str(APPARMOR_PATH) + ",dst=/policy,readonly",
-            runner.calls[4][0],
+            runner.calls[6][0],
         )
 
     def test_bind_mount_rejects_symlinks_sockets_and_devices(self):

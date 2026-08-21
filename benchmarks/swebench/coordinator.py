@@ -408,7 +408,13 @@ class TrustedRunServices:
             preflight={
                 "apparmor": report.apparmor,
                 "cgroup_version": report.cgroup_version,
+                "kernel": {"release": report.kernel_release},
                 "profile_fingerprint": report.profile_fingerprint,
+                "runc": {
+                    "commit": report.runc_commit,
+                    "spec": report.runc_spec,
+                    "version": report.runc_version,
+                },
                 "seccomp": report.seccomp,
             },
         )

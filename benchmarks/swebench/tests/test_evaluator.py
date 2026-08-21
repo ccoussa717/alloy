@@ -280,6 +280,7 @@ class EvaluatorConfinementTests(unittest.TestCase):
         patch = PATCH_PATH.read_text()
         self.assertIn('cap_drop=["ALL"]', patch)
         self.assertIn('network_mode="none"', patch)
+        self.assertIn('cgroupns="private"', patch)
         self.assertIn("no-new-privileges", patch)
         self.assertIn("alloy-swebench-gate", patch)
         self.assertIn("pids_limit=512", patch)
@@ -289,6 +290,7 @@ class EvaluatorConfinementTests(unittest.TestCase):
         self.assertIn("user=\"65532:65532\"", patch)
         self.assertIn('labels={"alloy.swebench.gate": run_id}', patch)
         self.assertIn('host.get("Privileged") is not False', patch)
+        self.assertIn('host.get("CgroupnsMode") != "private"', patch)
         self.assertIn('host.get("Devices") not in ([], None)', patch)
         self.assertIn('set(networks) - {"none"}', patch)
         self.assertIn("Evaluator workspace mount drifted", patch)
@@ -549,6 +551,7 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
             import types
             import docker
             import swebench.harness.run_evaluation as patched
+            patched.cleanup_container = lambda *_: None
 
             digest = {PROFILE.evaluator_image.manifest_digest!r}
             reference = {PROFILE.evaluator_image.reference!r}
@@ -584,6 +587,7 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
             class Volume:
                 attrs = {{"Labels": {{"alloy.swebench.gate": run_id}}, "Driver": "local", "Options": None, "Scope": "local"}}
                 def reload(self): pass
+                def remove(self, **_): pass
 
             class Volumes:
                 def get(self, _): raise docker.errors.NotFound("missing")
@@ -601,6 +605,7 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
                         "SecurityOpt": ["no-new-privileges:true", "seccomp=" + open(os.environ["SWEBENCH_SECCOMP_PATH"]).read(), "apparmor=alloy-swebench-gate"],
                         "ReadonlyRootfs": True, "Init": True, "PidsLimit": 512,
                         "Memory": 17179869184, "NanoCpus": 4000000000,
+                        "CgroupnsMode": "private",
                         "PidMode": "", "IpcMode": "private", "UTSMode": "",
                         "NetworkMode": "none", "Devices": [],
                     }},
@@ -624,8 +629,20 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
             assert kwargs["image"] == reference
             assert kwargs["cap_drop"] == ["ALL"]
             assert kwargs["network_mode"] == "none"
+            assert kwargs["cgroupns"] == "private"
             assert kwargs["read_only"] is True
             assert kwargs["user"] == "65532:65532"
+            for value in ("host", "", None):
+                if value is None:
+                    Container.attrs["HostConfig"].pop("CgroupnsMode", None)
+                else:
+                    Container.attrs["HostConfig"]["CgroupnsMode"] = value
+                try:
+                    patched.create_container(spec, client, run_id, Logger())
+                except Exception as error:
+                    assert "cgroup namespace" in str(error), error
+                else:
+                    raise AssertionError("patched evaluator accepted non-private cgroup namespace")
             print(json.dumps(kwargs, sort_keys=True))
             """
         )

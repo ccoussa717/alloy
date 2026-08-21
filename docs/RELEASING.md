@@ -115,7 +115,7 @@ Before the candidate exists, authority fixes these release inputs:
 - Evaluator image digest
   `sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3`
 - Evaluator confinement patch SHA-256
-  `88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68`
+  `3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6`
 
 The gate also verifies the exact model digest, Python 3.14.4 evaluator closure,
 requirements lock, patched evaluator source, seccomp/AppArmor policies, Docker
@@ -176,8 +176,8 @@ Verify the Ed25519 signature over canonical `manifest.json` bytes with the
 provisioned public key. Verify that key's SHA-256 against both
 `gate_public_key_sha256` in `/etc/alloy/swebench-gate.json` and the provisioning
 receipt. Confirm the signed authority and candidate commits, attempt ordinal,
-input digests, container inspection and teardown proof, patch digest, evaluator
-summary digest, and terminal status.
+input digests, validated kernel/runc preflight evidence, container inspection
+and teardown proof, patch digest, evaluator summary digest, and terminal status.
 
 `resolved` is a valid official one-instance outcome. `unresolved` is a valid
 official one-instance outcome. Only a persisted schema-v2 official summary can

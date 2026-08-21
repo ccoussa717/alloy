@@ -46,8 +46,12 @@ class ProfileTests(unittest.TestCase):
             "9b3dc406fab87fe2901cea91aa02d594bd7b2a12dc011fa294bb784ea0f145e6",
         )
         self.assertEqual(
+            profile.evaluator.patch_sha256,
+            "3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6",
+        )
+        self.assertEqual(
             profile.evaluator.patched_run_evaluation_sha256,
-            "589026ff47ca25228718391c136c3580902677e15800cc0dea94ce1334ff3110",
+            "eca25c57af5c7569ce541149dbe4dc57c62e6d093eacf2a0a902db9a09c3991b",
         )
         self.assertEqual(profile.agent_image.platform, "linux/amd64")
         self.assertEqual(profile.proxy_image.platform, "linux/amd64")

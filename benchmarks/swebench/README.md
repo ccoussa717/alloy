@@ -71,7 +71,7 @@ The authority profile pins all release inputs:
 - Ollama model digest:
   `116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba`
 - Evaluator confinement patch SHA-256:
-  `88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68`
+  `3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6`
 
 The evaluator dependency closure is fully exact in `requirements.lock`, with
 hashes for every distribution and bootstrap `pip`. Provisioning verifies the
@@ -188,8 +188,8 @@ canonical bytes of `manifest.json` with the provisioned public key, and verify
 that public key's SHA-256 equals `gate_public_key_sha256` in
 `/etc/alloy/swebench-gate.json` and the provisioning receipt. Then inspect the
 signed authority/candidate commits, attempt ordinal, all input digests,
-container inspections, cleanup proof, terminal status, patch digest, and
-evaluator-summary digest.
+validated kernel/runc preflight evidence, container inspections, cleanup proof,
+terminal status, patch digest, and evaluator-summary digest.
 
 Agent/evaluator stdout/stderr, model patches, and official summaries are
 untrusted and may contain sensitive content produced or read by those

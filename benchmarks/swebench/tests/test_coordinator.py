@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from benchmarks.swebench.coordinator import (
     EXPECTED_RELEASE_PHASES,
@@ -20,7 +21,9 @@ from benchmarks.swebench.authority import HostConfig, VerifiedCandidate
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerHandle,
+    DaemonIdentity,
     MountSpec,
+    PreflightReport,
     VolumeCleanupUncertainError,
 )
 from benchmarks.swebench.evaluator import EvaluationCleanupError, EvaluationResult
@@ -103,6 +106,14 @@ class RecordingServices:
             policy_digests={"apparmor": "1" * 64, "seccomp": "2" * 64},
             lock_digests={"evaluator": "3" * 64, "npm": "4" * 64},
             model_digest="5" * 64,
+            preflight={
+                "kernel": {"release": "7.0.0-15-generic"},
+                "runc": {
+                    "commit": "runc-commit",
+                    "spec": "1.2.1",
+                    "version": "1.3.6",
+                },
+            },
         )
 
     def candidate_install(self, state):
@@ -571,6 +582,7 @@ class CoordinatorTests(unittest.TestCase):
             "policy_digests",
             "lock_digests",
             "model_digest",
+            "preflight",
             "container_ids",
             "container_inspections",
             "candidate_versions",
@@ -728,6 +740,59 @@ class TrustedRunServicesTests(unittest.TestCase):
         self.assertEqual(evidence["daemon_identity"]["daemon_id"], "observed-daemon")
         self.assertEqual(
             evidence["inspection"]["NetworkSettings"]["Networks"], ["agent-network"]
+        )
+
+    def test_integrity_preflight_binds_kernel_and_runc_evidence_into_manifest(self):
+        report = PreflightReport(
+            cgroup_version="2",
+            apparmor=True,
+            seccomp=True,
+            os_type="linux",
+            architecture="x86_64",
+            apparmor_name="alloy-swebench-gate",
+            seccomp_sha256=PROFILE.security_policy.seccomp_sha256,
+            apparmor_sha256=PROFILE.security_policy.apparmor_sha256,
+            profile_fingerprint="f" * 64,
+            daemon_identity=DaemonIdentity(
+                "unix:///var/run/docker.sock",
+                "daemon-id",
+                "local-daemon",
+                "/var/lib/docker",
+                "29.6.2",
+            ),
+            kernel_release="7.0.0-15-generic",
+            runc_version="1.3.6",
+            runc_commit="v1.3.6-0-g491b69ba",
+            runc_spec="1.2.1",
+        )
+        runtime = types.SimpleNamespace(
+            preflight=mock.Mock(return_value=report),
+            verify_local_image=mock.Mock(
+                side_effect=["sha256:" + value * 64 for value in ("a", "b", "c")]
+            ),
+        )
+        services, state, _proxy = self.services(runtime)
+        services.config.fetcher.fetch_target_source = mock.Mock(return_value=object())
+        services.config.evaluator.verify = mock.Mock()
+        services._ollama_model_digest = mock.Mock(return_value=PROFILE.model_digest)
+
+        with mock.patch(
+            "benchmarks.swebench.coordinator.fetch_and_verify_instance",
+            return_value={"instance_id": PROFILE.instance_id},
+        ):
+            services.integrity_preflight(state)
+
+        self.assertEqual(
+            state.manifest["preflight"]["kernel"],
+            {"release": "7.0.0-15-generic"},
+        )
+        self.assertEqual(
+            state.manifest["preflight"]["runc"],
+            {
+                "commit": "v1.3.6-0-g491b69ba",
+                "spec": "1.2.1",
+                "version": "1.3.6",
+            },
         )
 
     def test_trusted_fixture_command_is_frozen_before_claim_and_uses_production_start(self):

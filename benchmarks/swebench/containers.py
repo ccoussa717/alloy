@@ -25,6 +25,8 @@ DOCKER_SOCKET = "/var/run/docker.sock"
 DOCKER_SOCKET_CANONICAL = "/run/docker.sock"
 APPARMOR_PARSER_BIN = "/usr/sbin/apparmor_parser"
 AA_STATUS_BIN = "/usr/sbin/aa-status"
+UNAME_BIN = "/usr/bin/uname"
+RUNC_BIN = "/usr/bin/runc"
 FIXED_ENV = MappingProxyType({
     "HOME": "/root",
     "LANG": "C.UTF-8",
@@ -87,6 +89,10 @@ class PreflightReport:
     apparmor_sha256: str
     profile_fingerprint: str
     daemon_identity: DaemonIdentity
+    kernel_release: str
+    runc_version: str
+    runc_commit: str
+    runc_spec: str
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -293,6 +299,42 @@ class DockerRuntime:
             return mode if isinstance(mode, str) else None
         return None
 
+    @staticmethod
+    def _kernel_release(result: subprocess.CompletedProcess[str]) -> str:
+        lines = result.stdout.splitlines()
+        if len(lines) != 1 or re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,127}", lines[0]) is None:
+            raise RuntimeError("trusted kernel release probe returned malformed evidence")
+        return lines[0]
+
+    @staticmethod
+    def _runc_evidence(result: subprocess.CompletedProcess[str]) -> tuple[str, str, str]:
+        lines = result.stdout.splitlines()
+        if not lines:
+            raise RuntimeError("trusted runc version probe returned malformed evidence")
+        version_match = re.fullmatch(
+            r"runc version ([0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.-]+)?)",
+            lines[0],
+        )
+        if version_match is None:
+            raise RuntimeError("trusted runc version probe returned malformed evidence")
+        fields: dict[str, str] = {}
+        allowed = {"commit", "spec", "go", "libseccomp", "criu"}
+        for line in lines[1:]:
+            match = re.fullmatch(r"([a-z][a-z0-9_-]*): ([\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?)", line)
+            if match is None or match.group(1) not in allowed or match.group(1) in fields:
+                raise RuntimeError("trusted runc version probe returned malformed evidence")
+            fields[match.group(1)] = match.group(2)
+        commit = fields.get("commit")
+        spec_version = fields.get("spec")
+        if (
+            commit is None
+            or re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,127}", commit) is None
+            or spec_version is None
+            or re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", spec_version) is None
+        ):
+            raise RuntimeError("trusted runc version probe returned malformed evidence")
+        return version_match.group(1), commit, spec_version
+
     def preflight(self) -> PreflightReport:
         self._completed_preflight = None
         self._daemon_identity = None
@@ -326,6 +368,15 @@ class DockerRuntime:
             raise RuntimeError("official runs require a Linux Docker daemon")
         if architecture not in {"amd64", "x86_64"}:
             raise RuntimeError("official runs require an amd64 Docker daemon")
+        kernel_release = self._kernel_release(self._run([UNAME_BIN, "-r"]))
+        runc_version, runc_commit, runc_spec = self._runc_evidence(
+            self._run([RUNC_BIN, "--version"])
+        )
+        if info.get("KernelVersion") != kernel_release:
+            raise RuntimeError("Docker kernel release differs from the trusted host probe")
+        docker_runc_commit = self._mapping(info.get("RuncCommit")).get("ID")
+        if docker_runc_commit != runc_commit:
+            raise RuntimeError("Docker runc commit differs from the trusted runtime probe")
         self._run([APPARMOR_PARSER_BIN, "-r", str(self.apparmor_path)])
         status = self._json_object(
             self._run([AA_STATUS_BIN, "--json"]), "AppArmor status"
@@ -338,16 +389,20 @@ class DockerRuntime:
             raise RuntimeError("pinned AppArmor profile must be in enforce mode")
         fingerprint = self._profile_fingerprint()
         report = PreflightReport(
-            cgroup_version,
-            apparmor,
-            seccomp,
-            os_type,
-            architecture,
-            policy.apparmor_name,
-            policy.seccomp_sha256,
-            policy.apparmor_sha256,
-            fingerprint,
-            daemon_identity,
+            cgroup_version=cgroup_version,
+            apparmor=apparmor,
+            seccomp=seccomp,
+            os_type=os_type,
+            architecture=architecture,
+            apparmor_name=policy.apparmor_name,
+            seccomp_sha256=policy.seccomp_sha256,
+            apparmor_sha256=policy.apparmor_sha256,
+            profile_fingerprint=fingerprint,
+            daemon_identity=daemon_identity,
+            kernel_release=kernel_release,
+            runc_version=runc_version,
+            runc_commit=runc_commit,
+            runc_spec=runc_spec,
         )
         self._completed_preflight = fingerprint
         self._daemon_identity = daemon_identity
@@ -494,6 +549,8 @@ class DockerRuntime:
             str(limits.memory_bytes),
             "--cpus",
             str(limits.cpus),
+            "--cgroupns",
+            "private",
             "--network",
             "none",
         ]
@@ -696,6 +753,8 @@ class DockerRuntime:
             raise RuntimeError("container memory limit drifted")
         if host.get("NanoCpus") != self.profile.limits.cpus * 1_000_000_000:
             raise RuntimeError("container CPU limit drifted")
+        if host.get("CgroupnsMode") != "private":
+            raise RuntimeError("container cgroup namespace drifted")
         if host.get("PidMode") not in ("", None):
             raise RuntimeError("container PID namespace drifted")
         if host.get("IpcMode") not in ("", "private", None):

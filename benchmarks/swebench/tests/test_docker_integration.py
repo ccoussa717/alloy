@@ -348,7 +348,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         )
         cls.dataset_row = json.loads(dataset.stdout)
         runtime = DockerRuntime(cls.profile, REPO_ROOT)
-        runtime.preflight()
+        cls.preflight_report = runtime.preflight()
         cls.agent_image_id = runtime.pull_and_verify(cls.profile.agent_image)
         cls.proxy_image_id = runtime.pull_and_verify(cls.profile.proxy_image)
         cls.evaluator_image_id = runtime.pull_and_verify(cls.profile.evaluator_image)
@@ -561,6 +561,13 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
     def test_host_results_dataset_evaluator_and_docker_socket_are_unreadable(self):
         evidence = self.run_fixture("read-host.sh")
         self.assertEqual(evidence.status, "evaluated", evidence.error)
+        self.assertRegex(self.preflight_report.kernel_release, r"^[0-9A-Za-z][0-9A-Za-z._+-]+$")
+        self.assertRegex(self.preflight_report.runc_version, r"^[0-9]+(?:\.[0-9]+)+")
+        self.assertTrue(self.preflight_report.runc_commit)
+        self.assertRegex(self.preflight_report.runc_spec, r"^[0-9]+(?:\.[0-9]+)+$")
+        for name in ("proxy", "agent"):
+            inspection = evidence.manifest["container_inspections"][name]["inspection"]
+            self.assertEqual(inspection["HostConfig"].get("CgroupnsMode"), "private")
         marker, _patch = self.read_marker_from_patch(evidence)
         self.assertEqual(marker, {name.lower(): False for name in (*self.host_paths, "DOCKER_SOCKET")})
 
@@ -747,6 +754,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         self.assertTrue(result.teardown_evidence["absent"])
         inspection = result.container_evidence["inspection"]
         self.assertEqual(inspection["HostConfig"].get("CapAdd"), None)
+        self.assertEqual(inspection["HostConfig"].get("CgroupnsMode"), "private")
         self._assert_no_leaks(run_id)
 
     def test_evaluator_timeout_and_crash_remove_workspace_volume(self):

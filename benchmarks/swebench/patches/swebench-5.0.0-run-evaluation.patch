@@ -1,6 +1,6 @@
 --- a/swebench/harness/run_evaluation.py
 +++ b/swebench/harness/run_evaluation.py
-@@ -85,69 +85,164 @@
+@@ -85,69 +85,167 @@
          logger (logging.Logger): Logger to use for logging the creation process
      """
      container = None
@@ -132,6 +132,7 @@
 +            pids_limit=512,
 +            mem_limit=17179869184,
 +            nano_cpus=4000000000,
++            cgroupns="private",
 +            network_mode="none",
 +            volumes={volume_name: {"bind": CONTAINER_WORKDIR, "mode": "rw"}},
 +            tmpfs={"/tmp": "rw,nosuid,nodev,noexec,size=268435456"},
@@ -150,6 +151,8 @@
 +            raise EvaluationError(test_spec.instance_id, "Evaluator isolation drifted", logger)
 +        if host.get("Init") is not True or host.get("NetworkMode") != "none":
 +            raise EvaluationError(test_spec.instance_id, "Evaluator runtime isolation drifted", logger)
++        if host.get("CgroupnsMode") != "private":
++            raise EvaluationError(test_spec.instance_id, "Evaluator cgroup namespace drifted", logger)
 +        if host.get("PidMode") not in ("", None) or host.get("IpcMode") not in ("", "private", None):
 +            raise EvaluationError(test_spec.instance_id, "Evaluator namespace drifted", logger)
 +        if host.get("UTSMode") not in ("", None) or host.get("Devices") not in ([], None):
