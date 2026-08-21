@@ -150,6 +150,22 @@ describe("SWE-bench build boundaries", () => {
     assert.doesNotMatch(ci, /npm run bench:swebench/);
   });
 
+  it("prepares the exact pinned evaluator environment before Linux benchmark tests", () => {
+    assert.match(ci, /id: evaluator-python/);
+    assert.match(ci, /python-version: ["']3\.14\.4["']/);
+    assert.match(ci, /EVALUATOR_PYTHON: \$\{\{ steps\.evaluator-python\.outputs\.python-path \}\}/);
+    assert.match(ci, /Python 3\.14\.4/);
+    assert.match(ci, /benchmarks\/swebench\/\.venv/);
+    assert.match(ci, /--require-hashes/);
+    assert.match(ci, /--only-binary=:all:/);
+    assert.match(ci, /installed evaluator distributions do not equal requirements\.lock/);
+    assert.match(ci, /_apply_verified_patch\(\)/);
+    const prepare = ci.indexOf("Prepare pinned SWE-bench evaluator");
+    const tests = ci.indexOf("Test source-only SWE-bench release tooling");
+    const docker = ci.indexOf("Verify SWE-bench Docker isolation");
+    assert.ok(prepare >= 0 && prepare < tests && tests < docker);
+  });
+
   it("keeps benchmark tooling outside runtime boundaries", () => {
     assert.equal(pkg.files.includes("benchmarks"), false);
     assert.equal(

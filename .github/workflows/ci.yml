@@ -31,10 +31,47 @@ jobs:
           node-version: 22.19.0
           cache: npm
 
+      - name: Set up evaluator Python
+        id: evaluator-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.14.4"
+
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+
+      - name: Prepare pinned SWE-bench evaluator
+        env:
+          EVALUATOR_PYTHON: ${{ steps.evaluator-python.outputs.python-path }}
+        run: |
+          test "$("$EVALUATOR_PYTHON" --version)" = "Python 3.14.4"
+          test ! -e benchmarks/swebench/.venv
+          "$EVALUATOR_PYTHON" -m venv --copies benchmarks/swebench/.venv
+          if test -L benchmarks/swebench/.venv/lib64; then
+            unlink benchmarks/swebench/.venv/lib64
+          fi
+          benchmarks/swebench/.venv/bin/python -m pip install \
+            --require-hashes --only-binary=:all: \
+            -r benchmarks/swebench/requirements.lock
+          benchmarks/swebench/.venv/bin/python - <<'PY'
+          from pathlib import Path
+          from benchmarks.swebench.evaluator import EvaluatorEnvironment, locked_distributions
+          from benchmarks.swebench.profile import load_profile
+
+          root = Path.cwd()
+          bench = root / "benchmarks/swebench"
+          profile = load_profile(bench / "profile.json", root)
+          environment = EvaluatorEnvironment(
+              profile, root, bench / ".venv/bin/python"
+          )
+          if environment._sha256(environment.lock_path) != profile.evaluator.requirements_lock_sha256:
+              raise RuntimeError("evaluator requirements lock SHA-256 mismatch")
+          if environment._installed_distributions() != locked_distributions(environment.lock_path):
+              raise RuntimeError("installed evaluator distributions do not equal requirements.lock")
+          environment._apply_verified_patch()
+          PY
 
       - name: Test source-only SWE-bench release tooling
         run: bash scripts/run-swebench-release-smoke.sh test
