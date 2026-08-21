@@ -544,6 +544,27 @@ globalThis.fetch = async (input, options) => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
     });
 
+    it(`accepts the executable version fallback in ${path} inside a nested template expression`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      const nestedSource = [
+        "const nested = `escaped \\` and \\${literal} ${",
+        "  (() => {",
+        "    const inner = `inner`;",
+        ...(path === "lib/mcp-client.mjs"
+          ? ["    return [", source, "    ];"]
+          : [source, "    return inner;"]),
+        "  })()",
+        "}`;",
+        "",
+      ].join("\n");
+      writeFileSync(sourcePath, nestedSource);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
     it(`requires exactly one executable version fallback in ${path}`, () => {
       const directory = releaseFixture();
       const sourcePath = join(directory, path);

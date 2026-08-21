@@ -39,25 +39,26 @@ function startsRegexLiteral(source, offset) {
 }
 
 function isCodeOffset(source, offset) {
-  let state = "code";
+  let mode = "code";
   let regexCharacterClass = false;
+  const templateExpressionDepths = [];
 
   for (let index = 0; index < offset; index += 1) {
     const character = source[index];
     const next = source[index + 1];
 
-    if (state === "line-comment") {
-      if (character === "\n") state = "code";
+    if (mode === "line-comment") {
+      if (character === "\n") mode = "code";
       continue;
     }
-    if (state === "block-comment") {
+    if (mode === "block-comment") {
       if (character === "*" && next === "/") {
-        state = "code";
+        mode = "code";
         index += 1;
       }
       continue;
     }
-    if (state === "regex") {
+    if (mode === "regex") {
       if (character === "\\") {
         index += 1;
       } else if (character === "[") {
@@ -65,34 +66,58 @@ function isCodeOffset(source, offset) {
       } else if (character === "]") {
         regexCharacterClass = false;
       } else if (character === "/" && !regexCharacterClass) {
-        state = "code";
+        mode = "code";
       }
       continue;
     }
-    if (state !== "code") {
+    if (mode === "template") {
       if (character === "\\") {
         index += 1;
-      } else if (character === state) {
-        state = "code";
+      } else if (character === "`") {
+        mode = "code";
+      } else if (character === "$" && next === "{") {
+        templateExpressionDepths.push(0);
+        mode = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (mode !== "code") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === mode) {
+        mode = "code";
       }
       continue;
     }
 
     if (character === "/" && next === "/") {
-      state = "line-comment";
+      mode = "line-comment";
       index += 1;
     } else if (character === "/" && next === "*") {
-      state = "block-comment";
+      mode = "block-comment";
       index += 1;
     } else if (character === "/" && startsRegexLiteral(source, index)) {
-      state = "regex";
+      mode = "regex";
       regexCharacterClass = false;
-    } else if (character === '"' || character === "'" || character === "`") {
-      state = character;
+    } else if (character === '"' || character === "'") {
+      mode = character;
+    } else if (character === "`") {
+      mode = "template";
+    } else if (templateExpressionDepths.length > 0 && character === "{") {
+      templateExpressionDepths[templateExpressionDepths.length - 1] += 1;
+    } else if (templateExpressionDepths.length > 0 && character === "}") {
+      const expressionIndex = templateExpressionDepths.length - 1;
+      if (templateExpressionDepths[expressionIndex] === 0) {
+        templateExpressionDepths.pop();
+        mode = "template";
+      } else {
+        templateExpressionDepths[expressionIndex] -= 1;
+      }
     }
   }
 
-  return state === "code";
+  return mode === "code";
 }
 
 const runtimeFallbacks = [
