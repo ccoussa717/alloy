@@ -858,6 +858,7 @@ class DockerRuntime:
             raise ValueError("run ID must be safe for a Docker resource name")
         self._assert_daemon_identity()
         result = self._run(self._docker_arguments("volume", "inspect", name), check=False)
+        self._assert_daemon_identity()
         if result.returncode != 0:
             if "no such volume" in result.stderr.lower():
                 return
@@ -876,6 +877,7 @@ class DockerRuntime:
         self._run(self._docker_arguments("volume", "rm", name))
         self._assert_daemon_identity()
         absent = self._run(self._docker_arguments("volume", "inspect", name), check=False)
+        self._assert_daemon_identity()
         if absent.returncode == 0 or "no such volume" not in absent.stderr.lower():
             raise RuntimeError("could not prove Docker volume removal")
 

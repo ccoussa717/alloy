@@ -223,8 +223,10 @@ class DockerRuntimeTests(unittest.TestCase):
                 completed(json.dumps(self.docker_info())), completed(json.dumps([metadata])),
                 completed(json.dumps(self.docker_info())),
                 completed(json.dumps([self.owned_volume()])),
+                completed(json.dumps(self.docker_info())),
                 completed(json.dumps(self.docker_info())), completed(),
                 completed(json.dumps(self.docker_info())), volume_absent(),
+                completed(json.dumps(self.docker_info())),
             )
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 self.preflighted_runtime(runner).create_volume(
@@ -313,6 +315,7 @@ class DockerRuntimeTests(unittest.TestCase):
         runner = ScriptedRunner(
             *self.successful_preflight(), completed(json.dumps(self.docker_info())),
             completed(json.dumps([foreign])),
+            completed(json.dumps(self.docker_info())),
         )
         with self.assertRaisesRegex(RuntimeError, "ownership label"):
             self.preflighted_runtime(runner).remove_volume(
@@ -322,13 +325,54 @@ class DockerRuntimeTests(unittest.TestCase):
         runner = ScriptedRunner(
             *self.successful_preflight(), completed(json.dumps(self.docker_info())),
             completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
             completed(json.dumps(self.docker_info())), completed(),
             completed(json.dumps(self.docker_info())), volume_absent(),
+            completed(json.dumps(self.docker_info())),
         )
         self.preflighted_runtime(runner).remove_volume(
             "alloy-checkout-run-123", "run-123",
         )
-        self.assertEqual(runner.calls[6][0][-3:], ["volume", "rm", "alloy-checkout-run-123"])
+        self.assertEqual(runner.calls[7][0][-3:], ["volume", "rm", "alloy-checkout-run-123"])
+        self.assertEqual(runner.results, [])
+
+    def test_remove_volume_rejects_daemon_drift_after_initial_absent_inspection(self):
+        changed = {**self.docker_info(), "ID": "replacement-daemon"}
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            volume_absent(),
+            completed(json.dumps(changed)),
+        )
+
+        with self.assertRaisesRegex(
+            containers.DaemonIdentityDriftError, "daemon identity drift"
+        ):
+            self.preflighted_runtime(runner).remove_volume(
+                "alloy-checkout-run-123", "run-123"
+            )
+        self.assertEqual(runner.results, [])
+
+    def test_remove_volume_rejects_daemon_drift_after_final_absent_inspection(self):
+        changed = {**self.docker_info(), "ID": "replacement-daemon"}
+        runner = ScriptedRunner(
+            *self.successful_preflight(),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps([self.owned_volume()])),
+            completed(json.dumps(self.docker_info())),
+            completed(json.dumps(self.docker_info())),
+            completed(),
+            completed(json.dumps(self.docker_info())),
+            volume_absent(),
+            completed(json.dumps(changed)),
+        )
+
+        with self.assertRaisesRegex(
+            containers.DaemonIdentityDriftError, "daemon identity drift"
+        ):
+            self.preflighted_runtime(runner).remove_volume(
+                "alloy-checkout-run-123", "run-123"
+            )
         self.assertEqual(runner.results, [])
 
     def test_create_uses_exact_confinement_argv_and_inspects_before_start(self):
