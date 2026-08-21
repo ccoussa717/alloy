@@ -1,3 +1,4 @@
+import dataclasses
 import subprocess
 import tempfile
 import types
@@ -19,6 +20,7 @@ from benchmarks.swebench.authority import HostConfig, VerifiedCandidate
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerHandle,
+    MountSpec,
     VolumeCleanupUncertainError,
 )
 from benchmarks.swebench.evaluator import EvaluationCleanupError, EvaluationResult
@@ -610,6 +612,7 @@ class AgentBoundaryRuntime:
         }
 
     def wait(self, handle, *, timeout=None):
+        self.wait_timeout = timeout
         return 0
 
     def force_remove(self, handle):
@@ -726,6 +729,50 @@ class TrustedRunServicesTests(unittest.TestCase):
         self.assertEqual(
             evidence["inspection"]["NetworkSettings"]["Networks"], ["agent-network"]
         )
+
+    def test_trusted_fixture_command_is_frozen_before_claim_and_uses_production_start(self):
+        runtime = AgentBoundaryRuntime()
+        services, state, _proxy = self.services(runtime)
+        with self.assertRaisesRegex(ValueError, "explicit fixture mode"):
+            dataclasses.replace(services.config, agent_command=("/bin/true",))
+        with self.assertRaisesRegex(ValueError, "must not exceed"):
+            dataclasses.replace(
+                services.config,
+                agent_fixture=True,
+                agent_command=("/bin/true",),
+                agent_timeout_seconds=services.config.profile.agent_timeout_seconds + 1,
+            )
+        with self.assertRaisesRegex(ValueError, "must be unique"):
+            dataclasses.replace(
+                services.config,
+                agent_fixture=True,
+                agent_command=("/bin/true",),
+                agent_environment=(("DUPLICATE", "1"), ("DUPLICATE", "2")),
+            )
+        fixture_mount = MountSpec(
+            REPO_ROOT / "README.md", "/fixture/agent.sh", True, "bind"
+        )
+        services.config = dataclasses.replace(
+            services.config,
+            agent_fixture=True,
+            agent_command=("/bin/bash", "/fixture/agent.sh"),
+            agent_mounts=(fixture_mount,),
+            agent_environment=(("FIXTURE_MODE", "malicious"),),
+            agent_timeout_seconds=9,
+        )
+        services.agent_spec = None
+
+        services.prepare_agent_launch(state)
+        frozen = services.agent_spec
+        services.agent_start(state)
+
+        self.assertEqual(frozen.command, ("/bin/bash", "/fixture/agent.sh"))
+        self.assertIn(fixture_mount, frozen.mounts)
+        self.assertIn(("FIXTURE_MODE", "malicious"), frozen.environment)
+        self.assertEqual(runtime.wait_timeout, 9)
+        self.assertEqual(runtime.events[:2], ["pre-create-complete", "docker-create"])
+        self.assertTrue(state.manifest["agent_fixture"]["enabled"])
+        self.assertEqual(state.manifest["agent_fixture"]["timeout_seconds"], 9)
 
     def test_create_cleanup_uncertainty_never_infers_absence(self):
         handle = ContainerHandle("alloy-agent-run", "uncertain-id", "run")

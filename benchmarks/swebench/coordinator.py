@@ -211,6 +211,35 @@ class TrustedServiceConfig:
     work_root: Path
     ollama_origin: str
     retry_claim: SignedClaim | None = None
+    agent_fixture: bool = False
+    agent_command: tuple[str, ...] | None = None
+    agent_mounts: tuple[MountSpec, ...] = ()
+    agent_environment: tuple[tuple[str, str], ...] = ()
+    agent_timeout_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        injected = bool(
+            self.agent_command is not None
+            or self.agent_mounts
+            or self.agent_environment
+            or self.agent_timeout_seconds is not None
+        )
+        if injected and not self.agent_fixture:
+            raise ValueError("agent overrides require explicit fixture mode")
+        if self.agent_fixture and self.agent_command is None:
+            raise ValueError("agent fixture mode requires an explicit trusted command")
+        if self.agent_command is not None and not self.agent_command:
+            raise ValueError("trusted agent command must not be empty")
+        if self.agent_timeout_seconds is not None and self.agent_timeout_seconds <= 0:
+            raise ValueError("trusted agent timeout must be positive")
+        if (
+            self.agent_timeout_seconds is not None
+            and self.agent_timeout_seconds > self.profile.agent_timeout_seconds
+        ):
+            raise ValueError("trusted agent timeout must not exceed the pinned timeout")
+        names = [name for name, _value in self.agent_environment]
+        if len(names) != len(set(names)):
+            raise ValueError("trusted agent environment names must be unique")
 
 
 class TrustedRunServices:
@@ -461,6 +490,24 @@ class TrustedRunServices:
         if self.claim is None:
             raise RuntimeError("verified attempt claim is missing before agent launch")
         self.agent_spec = self._build_agent_spec()
+        state.manifest["agent_fixture"] = {
+            "enabled": self.config.agent_fixture,
+            "command_sha256": (
+                hashlib.sha256(canonical_json_bytes(list(self.agent_spec.command))).hexdigest()
+                if self.config.agent_fixture else None
+            ),
+            "environment_names": (
+                sorted(name for name, _value in self.config.agent_environment)
+                if self.config.agent_fixture else []
+            ),
+            "mount_destinations": (
+                sorted(mount.target for mount in self.config.agent_mounts)
+                if self.config.agent_fixture else []
+            ),
+            "timeout_seconds": (
+                self.config.agent_timeout_seconds if self.config.agent_fixture else None
+            ),
+        }
 
     def agent_start(self, state: _RunState) -> None:
         if self.agent_spec is None or self.endpoint is None:
@@ -510,7 +557,8 @@ class TrustedRunServices:
             )
         )
         try:
-            status = runtime.wait(self.agent, timeout=profile.agent_timeout_seconds)
+            timeout = self.config.agent_timeout_seconds or profile.agent_timeout_seconds
+            status = runtime.wait(self.agent, timeout=timeout)
         except subprocess.TimeoutExpired as error:
             raise TimeoutError("agent exceeded the pinned timeout") from error
         if status != 0:
@@ -796,7 +844,7 @@ class TrustedRunServices:
         ):
             raise RuntimeError("agent prerequisites are incomplete")
         profile = self.config.profile
-        command = (
+        default_command = (
             "/bin/bash",
             "-euc",
             (
@@ -805,6 +853,18 @@ class TrustedRunServices:
                 "exec /opt/alloy/prefix/bin/alloy --model \"$MODEL\" -p \"$PROMPT\""
             ),
         )
+        command = self.config.agent_command or default_command
+        environment = (
+            ("HOME", "/agent-state/home"),
+            ("MODEL", profile.model),
+            ("OLLAMA_HOST", self.endpoint.url),
+            ("PROMPT", self._prompt()),
+            ("PROXY_HOST", self.endpoint.host),
+            ("PROXY_PORT", str(self.endpoint.port)),
+            *self.config.agent_environment,
+        )
+        if len({name for name, _value in environment}) != len(environment):
+            raise ValueError("trusted agent environment collides with production variables")
         return ContainerSpec(
             name=f"alloy-agent-{self.run_id}",
             run_id=self.run_id,
@@ -815,15 +875,9 @@ class TrustedRunServices:
                 self.install.app_mount(),
                 MountSpec(self.target.agent_volume, "/agent-work", False, "volume"),
                 MountSpec(self.agent_state_volume, "/agent-state", False, "volume"),
+                *self.config.agent_mounts,
             ),
-            environment=(
-                ("HOME", "/agent-state/home"),
-                ("MODEL", profile.model),
-                ("OLLAMA_HOST", self.endpoint.url),
-                ("PROMPT", self._prompt()),
-                ("PROXY_HOST", self.endpoint.host),
-                ("PROXY_PORT", str(self.endpoint.port)),
-            ),
+            environment=environment,
         )
 
     def _ollama_model_digest(self, model: str) -> str:

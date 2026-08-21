@@ -59,6 +59,8 @@ class ResourceLimits:
     max_files: int
     max_file_bytes: int
     max_export_bytes: int
+    max_package_file_bytes: int
+    max_package_cache_bytes: int
 
 
 @dataclass(frozen=True)
@@ -211,9 +213,20 @@ def _limits(value: object) -> ResourceLimits:
         "max_files",
         "max_file_bytes",
         "max_export_bytes",
+        "max_package_file_bytes",
+        "max_package_cache_bytes",
     }
     _keys(raw, names, "limits")
-    return ResourceLimits(**{name: _positive_int(raw[name], f"limits.{name}") for name in names})
+    limits = ResourceLimits(
+        **{name: _positive_int(raw[name], f"limits.{name}") for name in names}
+    )
+    if limits.max_file_bytes > limits.max_export_bytes:
+        raise ValueError("limits.max_file_bytes must not exceed max_export_bytes")
+    if limits.max_package_file_bytes > limits.max_package_cache_bytes:
+        raise ValueError(
+            "limits.max_package_file_bytes must not exceed max_package_cache_bytes"
+        )
+    return limits
 
 
 def _proxy(value: object) -> ProxyPolicy:

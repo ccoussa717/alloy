@@ -151,6 +151,15 @@ def _logs(runtime: DockerRuntime, container_id: str) -> dict[str, object]:
     return value
 
 
+def _failure_log(runtime: DockerRuntime, container_id: str) -> str:
+    run = getattr(runtime, "_run", None)
+    docker_arguments = getattr(runtime, "_docker_arguments", None)
+    if run is None or docker_arguments is None:
+        return ""
+    logged = run(docker_arguments("logs", container_id), check=False)
+    return (logged.stderr or logged.stdout).strip()[-4096:]
+
+
 def _run_with_teardown(runtime: DockerRuntime, handle, operation):
     try:
         result = operation()
@@ -202,19 +211,29 @@ cat > /output/shims/npm <<'NPM'
 #!/bin/bash
 set -euo pipefail
 if [[ "${1:-}" == ci ]]; then
-  /usr/local/bin/node - /output/npm-cache/index.json npm-shrinkwrap.json <<'NODE'
+  /usr/local/bin/node - /output/npm-cache/npm/index.json npm-shrinkwrap.json package.json <<'NODE'
 const fs = require('node:fs');
 const index = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const lockPath = process.argv[3];
-const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+const lock = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 for (const pkg of Object.values(lock.packages || {})) {
-  if (pkg && typeof pkg.resolved === 'string') {
-    const local = index[pkg.resolved];
-    if (!local) throw new Error(`missing verified artifact for ${pkg.resolved}`);
-    pkg.resolved = `/output/npm-cache/${local}`;
+  if (pkg && typeof pkg.resolved === 'string' && !index[pkg.resolved]) {
+    throw new Error(`missing verified artifact for ${pkg.resolved}`);
   }
 }
-fs.writeFileSync(lockPath, JSON.stringify(lock));
+const rewrite = (value) => {
+  if (typeof value === 'string' && index[value]) {
+    return `file:/output/npm-cache/${index[value]}`;
+  }
+  if (Array.isArray(value)) return value.map(rewrite);
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) value[key] = rewrite(child);
+  }
+  return value;
+};
+for (const path of process.argv.slice(3)) {
+  const document = rewrite(JSON.parse(fs.readFileSync(path, 'utf8')));
+  fs.writeFileSync(path, JSON.stringify(document));
+}
 NODE
 fi
 exec /usr/local/bin/npm "$@"
@@ -324,7 +343,10 @@ def install_candidate(
         def install_probe():
             status = runtime.wait(handle, timeout=profile.agent_timeout_seconds)
             if status != 0:
-                raise RuntimeError(f"candidate installation exited with status {status}")
+                detail = repr(_failure_log(runtime, handle.container_id))
+                raise RuntimeError(
+                    f"candidate installation exited with status {status}: {detail}"
+                )
             return _logs(runtime, handle.container_id)
 
         probe = _run_with_teardown(runtime, handle, install_probe)
@@ -357,13 +379,13 @@ def install_candidate(
 
 
 TARGET_SCRIPT = r"""
-set -euo pipefail
-test "$(git -C /testbed rev-parse HEAD)" = "$BASE_COMMIT"
+set -euxo pipefail
+git -c safe.directory=/testbed -C /testbed cat-file -e "$BASE_COMMIT^{commit}"
 tar -xf /input/target.tar -C /agent-work --strip-components=1
 cp -a /testbed/.git /agent-work/.git
-git -C /agent-work reset --hard "$BASE_COMMIT"
-git -C /agent-work clean -ffdqx
-test "$(git -C /agent-work rev-parse HEAD)" = "$BASE_COMMIT"
+git -c safe.directory=/agent-work -C /agent-work reset --hard "$BASE_COMMIT"
+git -c safe.directory=/agent-work -C /agent-work clean -ffdqx
+test "$(git -c safe.directory=/agent-work -C /agent-work rev-parse HEAD)" = "$BASE_COMMIT"
 """.strip()
 
 
@@ -400,7 +422,8 @@ def prepare_target(
         def target_setup():
             status = runtime.wait(handle, timeout=profile.evaluator_timeout_seconds)
             if status != 0:
-                raise RuntimeError(f"target setup exited with status {status}")
+                detail = repr(_failure_log(runtime, handle.container_id))
+                raise RuntimeError(f"target setup exited with status {status}: {detail}")
 
         _run_with_teardown(runtime, handle, target_setup)
         return PreparedTarget(image_id, profile.base_commit, source.sha256, volume)

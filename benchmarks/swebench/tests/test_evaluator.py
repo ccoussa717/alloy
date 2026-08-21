@@ -115,6 +115,22 @@ class EvaluatorLockTests(unittest.TestCase):
 
 
 class EvaluatorConfinementTests(unittest.TestCase):
+    def test_failure_logs_are_bounded_binary_safe_and_do_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / "secret"
+            secret.write_text("host-secret")
+            scratch = root / "scratch"
+            scratch.mkdir()
+            (scratch / "binary.log").write_bytes(b"x" * 20_000 + b"\xfftail")
+            (scratch / "escape.log").symlink_to(secret)
+
+            captured = EvaluatorEnvironment._failure_logs(scratch)
+
+        self.assertLessEqual(len(captured.encode()), 16_500)
+        self.assertIn("tail", captured)
+        self.assertNotIn("host-secret", captured)
+
     def test_evaluator_observation_waits_for_owned_container_and_records_exact_evidence(self):
         environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
         process = mock.Mock()
@@ -195,7 +211,9 @@ class EvaluatorConfinementTests(unittest.TestCase):
                     "NanoCpus": PROFILE.limits.cpus * 1_000_000_000,
                     "SecurityOpt": [
                         "no-new-privileges",
-                        f"seccomp={REPO_ROOT / PROFILE.security_policy.seccomp_path}",
+                        "seccomp=" + (
+                            REPO_ROOT / PROFILE.security_policy.seccomp_path
+                        ).read_text(),
                         f"apparmor={PROFILE.security_policy.apparmor_name}",
                     ],
                 },
@@ -219,7 +237,7 @@ class EvaluatorConfinementTests(unittest.TestCase):
     def test_patch_is_confinement_only_and_has_no_sys_admin_or_fuzz(self):
         patch = PATCH_PATH.read_text()
         self.assertIn('cap_drop=["ALL"]', patch)
-        self.assertIn("network_disabled=True", patch)
+        self.assertIn('network_mode="none"', patch)
         self.assertIn("no-new-privileges", patch)
         self.assertIn("alloy-swebench-gate", patch)
         self.assertIn("pids_limit=512", patch)
@@ -506,7 +524,7 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
                     "Config": {{"User": "65532:65532", "Labels": {{"alloy.swebench.gate": run_id}}}},
                     "HostConfig": {{
                         "Privileged": False, "CapDrop": ["ALL"],
-                        "SecurityOpt": ["no-new-privileges:true", "seccomp=" + os.environ["SWEBENCH_SECCOMP_PATH"], "apparmor=alloy-swebench-gate"],
+                        "SecurityOpt": ["no-new-privileges:true", "seccomp=" + open(os.environ["SWEBENCH_SECCOMP_PATH"]).read(), "apparmor=alloy-swebench-gate"],
                         "ReadonlyRootfs": True, "Init": True, "PidsLimit": 512,
                         "Memory": 17179869184, "NanoCpus": 4000000000,
                         "PidMode": "", "IpcMode": "private", "UTSMode": "",
@@ -531,7 +549,7 @@ class InstalledPatchedEvaluatorTests(unittest.TestCase):
             kwargs = client.containers.kwargs
             assert kwargs["image"] == reference
             assert kwargs["cap_drop"] == ["ALL"]
-            assert kwargs["network_disabled"] is True
+            assert kwargs["network_mode"] == "none"
             assert kwargs["read_only"] is True
             assert kwargs["user"] == "65532:65532"
             print(json.dumps(kwargs, sort_keys=True))

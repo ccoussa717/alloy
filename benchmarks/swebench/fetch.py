@@ -36,26 +36,109 @@ REDIRECT_ORIGINS = frozenset({
     "https://objects.githubusercontent.com",
     "https://release-assets.githubusercontent.com",
 })
+_WYHASH11_PRIMES = (
+    0xA0761D6478BD642F,
+    0xE7037ED1A0B428DB,
+    0x8EBC6AF09C88C6E3,
+    0x589965CC75374CC3,
+    0x1D8E4E27C47D124F,
+)
 
 
 Downloader = Callable[[str], bytes]
 
 
+def _wyhash11(value: bytes) -> int:
+    def read(offset: int, size: int) -> int:
+        return int.from_bytes(value[offset:offset + size], "little")
+
+    def packed(offset: int, size: int) -> int:
+        if size == 1:
+            return read(offset, 1)
+        if size == 2:
+            return read(offset, 2)
+        if size == 3:
+            return (read(offset, 2) << 8) | read(offset + 2, 1)
+        if size == 4:
+            return read(offset, 4)
+        if size <= 7:
+            remainder = packed(offset + 4, size - 4)
+            return (read(offset, 4) << ((size - 4) * 8)) | remainder
+        return (read(offset, 4) << 32) | read(offset + 4, 4)
+
+    def mum(left: int, right: int) -> int:
+        product = left * right
+        return ((product >> 64) ^ product) & ((1 << 64) - 1)
+
+    def mix(left: int, right: int, seed: int, first: int, second: int) -> int:
+        return mum(left ^ seed ^ _WYHASH11_PRIMES[first], right ^ seed ^ _WYHASH11_PRIMES[second])
+
+    seed = 0
+    offset = 0
+    while len(value) - offset >= 32:
+        seed = mix(read(offset, 8), read(offset + 8, 8), seed, 0, 1) ^ mix(
+            read(offset + 16, 8), read(offset + 24, 8), seed, 2, 3,
+        )
+        offset += 32
+    remainder = len(value) - offset
+    if remainder == 0:
+        final = seed
+    elif remainder <= 16:
+        left = packed(offset, min(remainder, 8))
+        right = packed(offset + 8, remainder - 8) if remainder > 8 else _WYHASH11_PRIMES[4]
+        final = mix(left, right, seed, 0, 1)
+    else:
+        head = mix(packed(offset, 8), packed(offset + 8, 8), seed, 0, 1)
+        if remainder <= 24:
+            tail = mix(packed(offset + 16, remainder - 16), _WYHASH11_PRIMES[4], seed, 2, 3)
+        else:
+            tail = mix(
+                packed(offset + 16, 8), packed(offset + 24, remainder - 24), seed, 2, 3,
+            )
+        final = head ^ tail
+    return mum(final ^ len(value), _WYHASH11_PRIMES[4])
+
+
+def _bun_cache_version(version: str) -> str:
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-([^+]+))?(?:\+(.+))?", version)
+    if match is None:
+        raise RuntimeError("Bun package version is unsupported")
+    prerelease = match.group(2)
+    build = match.group(3)
+    normalized = match.group(1)
+    if prerelease is not None:
+        normalized += f"-{_wyhash11(prerelease.encode()):016x}"
+    if build is not None:
+        normalized += f"+{_wyhash11(build.encode()):016X}"
+    return normalized
+
+
 class _ArchiveBudget:
-    def __init__(self, profile: BenchmarkProfile, label: str) -> None:
+    def __init__(
+        self,
+        profile: BenchmarkProfile,
+        label: str,
+        *,
+        max_file_bytes: int | None = None,
+        max_total_bytes: int | None = None,
+    ) -> None:
         self.max_files = profile.limits.max_files
-        self.max_file_bytes = profile.limits.max_file_bytes
-        self.max_total_bytes = profile.limits.max_export_bytes
+        self.max_file_bytes = max_file_bytes or profile.limits.max_file_bytes
+        self.max_total_bytes = max_total_bytes or profile.limits.max_export_bytes
         self.label = label
         self.count = 0
         self.total_bytes = 0
 
-    def observe(self, size: int) -> None:
+    def observe(self, size: int, member: str | None = None) -> None:
         self.count += 1
         if self.count > self.max_files:
             raise RuntimeError(f"{self.label} exceeds the profile file-count bound")
         if size < 0 or size > self.max_file_bytes:
-            raise RuntimeError(f"{self.label} member exceeds the profile per-file bound")
+            detail = f" {member!r}" if member is not None else " member"
+            raise RuntimeError(
+                f"{self.label}{detail} exceeds the profile per-file bound "
+                f"({size} > {self.max_file_bytes} bytes)"
+            )
         if size > self.max_total_bytes - self.total_bytes:
             raise RuntimeError(f"{self.label} exceeds the profile total-byte bound")
         self.total_bytes += size
@@ -353,13 +436,13 @@ class ArtifactFetcher:
             if url in fetched_urls:
                 return fetched_urls[url]
             content = self._fetch(url, NPM_ORIGINS)
-            if len(content) > self._profile().limits.max_file_bytes:
+            if len(content) > self._profile().limits.max_package_file_bytes:
                 raise RuntimeError(f"{label} exceeds the profile per-file bound")
             fetched_count += 1
             fetched_total += len(content)
             if fetched_count > self._profile().limits.max_files:
                 raise RuntimeError("package cache exceeds the profile file-count bound")
-            if fetched_total > self._profile().limits.max_export_bytes:
+            if fetched_total > self._profile().limits.max_package_cache_bytes:
                 raise RuntimeError("package cache exceeds the profile total-byte bound")
             try:
                 algorithm, encoded = integrity.split("-", 1)
@@ -417,8 +500,18 @@ class ArtifactFetcher:
                 }
                 bun_packages.append((name, version, url, content))
 
-        package_budget = _ArchiveBudget(self._profile(), "Bun package archive")
-        output_budget = _ArchiveBudget(self._profile(), "package cache")
+        # Package members are integrity-pinned trusted inputs, not agent exports. Some
+        # current compiler binaries exceed the stricter untrusted-export per-file cap.
+        package_member_limit = self._profile().limits.max_package_file_bytes
+        package_cache_limit = self._profile().limits.max_package_cache_bytes
+        package_budget = _ArchiveBudget(
+            self._profile(), "Bun package archive", max_file_bytes=package_member_limit,
+            max_total_bytes=package_cache_limit,
+        )
+        output_budget = _ArchiveBudget(
+            self._profile(), "package cache", max_file_bytes=package_member_limit,
+            max_total_bytes=package_cache_limit,
+        )
 
         def add_output(archive: tarfile.TarFile, name: str, content: bytes, mode: int) -> None:
             output_budget.observe(len(content))
@@ -434,7 +527,7 @@ class ArtifactFetcher:
                 encoded = json.dumps(index, sort_keys=True, separators=(",", ":")).encode()
                 add_output(archive, "npm/index.json", encoded, 0o444)
                 for name, version, _, content in bun_packages:
-                    cache_root = f"bun/{name}@{version}@@@1"
+                    cache_root = f"bun/{name}@{_bun_cache_version(version)}@@@1"
                     with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as package_archive:
                         package_seen: set[str] = set()
                         for package_member in package_archive:
@@ -443,7 +536,7 @@ class ArtifactFetcher:
                                 else len(package_member.linkname.encode("utf-8"))
                                 if package_member.issym() else 0
                             )
-                            package_budget.observe(payload_size)
+                            package_budget.observe(payload_size, package_member.name)
                             if package_member.name in package_seen:
                                 raise RuntimeError("Bun package contains a duplicate path")
                             package_seen.add(package_member.name)
@@ -471,7 +564,7 @@ class ArtifactFetcher:
                 encoded = json.dumps(cache_metadata, sort_keys=True, separators=(",", ":")).encode()
                 add_output(archive, "cache-metadata.json", encoded, 0o444)
             size = output.tell()
-            if size > self._profile().limits.max_export_bytes:
+            if size > self._profile().limits.max_package_cache_bytes:
                 raise RuntimeError("package cache exceeds the profile total-byte bound")
             output.seek(0)
             cache_content = output.read(size + 1)

@@ -47,7 +47,7 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             profile.evaluator.patched_run_evaluation_sha256,
-            "e398d067dee9f4400c5822af7dbc20270f681b7bc6c43ab23b6cf6999cc1bf54",
+            "589026ff47ca25228718391c136c3580902677e15800cc0dea94ce1334ff3110",
         )
         self.assertEqual(profile.agent_image.platform, "linux/amd64")
         self.assertEqual(profile.proxy_image.platform, "linux/amd64")
@@ -64,6 +64,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile.limits.max_files, 20_000)
         self.assertEqual(profile.limits.max_file_bytes, 16 * 1024**2)
         self.assertEqual(profile.limits.max_export_bytes, 256 * 1024**2)
+        self.assertEqual(profile.limits.max_package_file_bytes, 32 * 1024**2)
+        self.assertEqual(profile.limits.max_package_cache_bytes, 1024 * 1024**2)
         self.assertEqual(
             profile.security_policy.seccomp_sha256,
             "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -128,6 +129,29 @@ class EvaluatorEnvironment:
             return hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError as error:
             raise RuntimeError(f"required evaluator file is unavailable: {path}") from error
+
+    @staticmethod
+    def _failure_logs(scratch: Path) -> str:
+        captured = []
+        for path in scratch.rglob("*.log"):
+            descriptor = None
+            try:
+                flags = os.O_RDONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                descriptor = os.open(path, flags)
+                details = os.fstat(descriptor)
+                if not stat.S_ISREG(details.st_mode):
+                    continue
+                os.lseek(descriptor, max(0, details.st_size - 16384), os.SEEK_SET)
+                content = os.read(descriptor, 16384).decode("utf-8", errors="replace")
+                captured.append(f"{path.relative_to(scratch)}:\n{content}")
+            except (OSError, ValueError):
+                continue
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        return "\n".join(captured)[-16384:]
 
     def _installed_distributions(self) -> dict[str, str]:
         code = (
@@ -293,14 +317,24 @@ class EvaluatorEnvironment:
             return EvaluationExecution(
                 stdout, stderr, scratch, run_id, evidence
             )
-        except BaseException:
+        except BaseException as error:
             if process is not None and process.poll() is None:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 process.communicate()
-            shutil.rmtree(scratch)
+            try:
+                try:
+                    logs = self._failure_logs(scratch)
+                    if logs:
+                        error.add_note("evaluator logs:\n" + logs)
+                except BaseException as log_error:
+                    error.add_note(
+                        f"evaluator logs unavailable: {type(log_error).__name__}"
+                    )
+            finally:
+                shutil.rmtree(scratch)
             raise
 
     def _await_evaluator_evidence(
@@ -337,7 +371,8 @@ class EvaluatorEnvironment:
                         returncode, process.args, output=stdout, stderr=stderr
                     )
                 raise RuntimeError(
-                    "evaluator exited before its container could be observed"
+                    "evaluator exited before its container could be observed: "
+                    + repr((stdout + "\n" + stderr).strip()[-8192:])
                 )
             time.sleep(0.25)
         raise RuntimeError("evaluator container was never observed for trusted inspection")
@@ -363,7 +398,9 @@ class EvaluatorEnvironment:
         labels = config.get("Labels")
         expected_security = {
             "no-new-privileges:true",
-            f"seccomp={self.authority_root / self.profile.security_policy.seccomp_path}",
+            "seccomp=" + (
+                self.authority_root / self.profile.security_policy.seccomp_path
+            ).read_text(),
             f"apparmor={self.profile.security_policy.apparmor_name}",
         }
         security = {

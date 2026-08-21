@@ -163,7 +163,7 @@ def _safe_symlink_target(path: PurePosixPath, target: str) -> str:
         raise ValueError("archive symlink target is invalid")
     link = PurePosixPath(target)
     if link.is_absolute():
-        raise ValueError("archive symlink target must be relative")
+        raise ValueError(f"archive symlink {path.as_posix()!r} target must be relative")
     encoded_parts = [os.fsencode(part) for part in link.parts]
     if len(os.fsencode(target)) > MAX_PATH_BYTES or any(
         len(part) > MAX_COMPONENT_BYTES for part in encoded_parts
@@ -236,7 +236,15 @@ def _member_kind(member: tarfile.TarInfo) -> str:
         return "symlink"
     if member.islnk():
         raise ValueError("archive hard links are forbidden")
-    raise ValueError("archive member type is forbidden")
+    forbidden_type = (
+        "fifo" if member.isfifo()
+        else "character-device" if member.ischr()
+        else "block-device" if member.isblk()
+        else "unknown"
+    )
+    raise ValueError(
+        f"archive member {member.name!r} has forbidden type {forbidden_type}"
+    )
 
 
 def _validate_owner(member: tarfile.TarInfo) -> None:

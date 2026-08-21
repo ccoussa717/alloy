@@ -13,7 +13,7 @@ from unittest import mock
 
 from benchmarks.swebench.authority import VerifiedCandidate
 from benchmarks.swebench.containers import ContainerHandle
-from benchmarks.swebench.fetch import ArtifactFetcher, _verified_archive_files
+from benchmarks.swebench.fetch import ArtifactFetcher, _bun_cache_version, _verified_archive_files
 from benchmarks.swebench.install import (
     FetchedCandidate,
     ResourceCleanupUncertainError,
@@ -86,6 +86,20 @@ def artifact(path, content):
 
 
 class ArtifactFetcherTests(unittest.TestCase):
+    def test_bun_prerelease_cache_version_matches_bun_1_3_14(self):
+        self.assertEqual(
+            _bun_cache_version("1.0.0-beta.2"),
+            "1.0.0-4049f5e8f1219d89",
+        )
+        self.assertEqual(
+            _bun_cache_version("1.2.3-abcdefghijklmnopq"),
+            "1.2.3-5922607915c550e7",
+        )
+        self.assertRegex(
+            _bun_cache_version("1.2.3-alpha+build.123"),
+            r"^1\.2\.3-[0-9a-f]{16}\+[0-9A-F]{16}$",
+        )
+
     @staticmethod
     def _package_tar(content=b"module.exports = 1\n"):
         output = io.BytesIO()
@@ -285,7 +299,9 @@ class ArtifactFetcherTests(unittest.TestCase):
             bomb_profile = dataclasses.replace(
                 PROFILE,
                 limits=dataclasses.replace(
-                    PROFILE.limits, max_file_bytes=700, max_export_bytes=512,
+                    PROFILE.limits,
+                    max_package_file_bytes=700,
+                    max_package_cache_bytes=512,
                 ),
             )
             bomb_fetcher = ArtifactFetcher(

@@ -1,6 +1,6 @@
 --- a/swebench/harness/run_evaluation.py
 +++ b/swebench/harness/run_evaluation.py
-@@ -85,69 +85,162 @@
+@@ -85,69 +85,164 @@
          logger (logging.Logger): Logger to use for logging the creation process
      """
      container = None
@@ -11,6 +11,7 @@
 +        expected_digest = os.environ["SWEBENCH_EVALUATOR_IMAGE_DIGEST"]
 +        expected_image_id = os.environ["SWEBENCH_EVALUATOR_IMAGE_ID"]
 +        seccomp_path = os.environ["SWEBENCH_SECCOMP_PATH"]
++        seccomp_profile = Path(seccomp_path).read_text()
 +        apparmor_name = os.environ["SWEBENCH_APPARMOR_NAME"]
 +        if apparmor_name != "alloy-swebench-gate":
 +            raise EvaluationError(test_spec.instance_id, "Evaluator AppArmor profile drifted", logger)
@@ -119,10 +120,11 @@
 +            detach=True,
 +            command="tail -f /dev/null",
 +            labels={"alloy.swebench.gate": run_id},
++            environment={"HOME": "/tmp"},
 +            cap_drop=["ALL"],
 +            security_opt=[
 +                "no-new-privileges",
-+                f"seccomp={seccomp_path}",
++                f"seccomp={seccomp_profile}",
 +                f"apparmor={apparmor_name}",
 +            ],
 +            read_only=True,
@@ -130,7 +132,7 @@
 +            pids_limit=512,
 +            mem_limit=17179869184,
 +            nano_cpus=4000000000,
-+            network_disabled=True,
++            network_mode="none",
 +            volumes={volume_name: {"bind": CONTAINER_WORKDIR, "mode": "rw"}},
 +            tmpfs={"/tmp": "rw,nosuid,nodev,noexec,size=268435456"},
 +        )
@@ -163,7 +165,7 @@
 +        }
 +        if security != {
 +            "no-new-privileges:true",
-+            f"seccomp={seccomp_path}",
++            f"seccomp={seccomp_profile}",
 +            f"apparmor={apparmor_name}",
 +        }:
 +            raise EvaluationError(test_spec.instance_id, "Evaluator security options drifted", logger)
@@ -209,21 +211,48 @@
          raise EvaluationError(test_spec.instance_id, str(e), logger) from e
 
 
-@@ -361,11 +454,11 @@
+@@ -293,7 +388,7 @@
+                 f"Intermediate patch for {instance_id} written to {patch_file}, now applying to container..."
+             )
+             copy_to_container(
+-                container, patch_file, PurePosixPath(CONTAINER_PATCH_FILE)
++                container, patch_file, PurePosixPath("/testbed/.alloy-model.patch")
+             )
+
+             # Attempt to apply patch to container
+@@ -308,7 +403,7 @@
+                         user=CONTAINER_USER,
+                     )
+                 val = container.exec_run(
+-                    f"{git_apply_cmd} {CONTAINER_PATCH_FILE}",
++                    f"{git_apply_cmd} /testbed/.alloy-model.patch",
+                     workdir=CONTAINER_WORKDIR,
+                     user=CONTAINER_USER,
+                 )
+@@ -321,7 +416,7 @@
+             if not applied_patch:
+                 # the chain can leave the patch fully applied while each command still exited non-zero
+                 reverse_check = container.exec_run(
+-                    f"git apply --check --reverse {CONTAINER_PATCH_FILE}",
++                    "git apply --check --reverse /testbed/.alloy-model.patch",
+                     workdir=CONTAINER_WORKDIR,
+                     user=CONTAINER_USER,
+                 )
+@@ -361,11 +456,11 @@
          logger.info(
              f"Eval script for {instance_id} written to {eval_file}; copying to container..."
          )
 -        copy_to_container(container, eval_file, PurePosixPath("/eval.sh"))
-+        copy_to_container(container, eval_file, PurePosixPath("/tmp/eval.sh"))
++        copy_to_container(container, eval_file, PurePosixPath("/testbed/.alloy-eval.sh"))
 
          # Run eval script, write output to logs
          test_output, timed_out, total_runtime = exec_run_with_timeout(
 -            container, "/bin/bash /eval.sh", timeout
-+            container, "/bin/bash /tmp/eval.sh", timeout
++            container, "/bin/bash /testbed/.alloy-eval.sh", timeout
          )
          test_output_path = log_dir / LOG_TEST_OUTPUT
          logger.info(f"Test runtime: {total_runtime:_.2f} seconds")
-@@ -425,6 +518,24 @@
+@@ -425,6 +520,24 @@
      finally:
          # Remove instance container + image, close logger
          cleanup_container(client, container, logger)
@@ -248,7 +277,7 @@
          close_logger(logger)
      return
 
-@@ -688,6 +799,7 @@
+@@ -688,6 +801,7 @@
      modal: bool,
      report_dir: str = ".",
      task_repo: str | None = None,
@@ -256,7 +285,7 @@
  ):
      """
      Run evaluation harness for the given dataset and predictions.
-@@ -707,6 +819,8 @@
+@@ -707,6 +821,8 @@
              "repo's Dockerfiles would be ignored while its tests were used. Drop "
              "--task-repo to run on Modal, or drop --modal to build the repo."
          )
@@ -265,7 +294,7 @@
 
      # set open file limit
      assert len(run_id) > 0, "Run ID must be provided"
-@@ -834,6 +948,7 @@
+@@ -834,6 +950,7 @@
      parser.add_argument(
          "--report_dir", type=str, default=".", help="Directory to write reports to"
      )
