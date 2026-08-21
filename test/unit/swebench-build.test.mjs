@@ -198,6 +198,30 @@ describe("SWE-bench build boundaries", () => {
     );
   });
 
+  it("seeds an explicit clean uv cache and validates exact resolver output before offline tests", () => {
+    assert.match(ci, /id: setup-uv/);
+    assert.match(ci, /enable-cache: false/);
+    const seedStart = ci.indexOf("Prepare clean uv resolver cache");
+    const testsStart = ci.indexOf("Test source-only SWE-bench release tooling");
+    assert.ok(seedStart >= 0 && seedStart < testsStart);
+    const seed = ci.slice(seedStart, testsStart);
+    assert.match(seed, /UV_BIN: \$\{\{ steps\.setup-uv\.outputs\.uv-path \}\}/);
+    assert.match(seed, /UV_CACHE_DIR: \$\{\{ runner\.temp \}\}\/alloy-swebench-uv-cache/);
+    assert.match(seed, /GENERATED_LOCK: \$\{\{ runner\.temp \}\}\/alloy-swebench-requirements\.lock/);
+    assert.match(seed, /test ! -e "\$UV_CACHE_DIR"/);
+    assert.match(seed, /mkdir -m 0700 -- "\$UV_CACHE_DIR"/);
+    assert.match(seed, /"\$UV_BIN" pip compile/);
+    assert.doesNotMatch(seed, /--offline/);
+    assert.match(seed, /--python benchmarks\/swebench\/\.venv\/bin\/python/);
+    assert.match(seed, /--generate-hashes/);
+    assert.match(seed, /--no-emit-index-url/);
+    assert.match(seed, /--output-file "\$GENERATED_LOCK"/);
+    assert.match(seed, /benchmarks\/swebench\/requirements\.in/);
+    assert.match(seed, /generated evaluator lock does not exactly match committed resolver output/);
+    assert.match(seed, /trap 'rm -f -- "\$GENERATED_LOCK"' EXIT/);
+    assert.match(seed, /printf 'UV_CACHE_DIR=%s\\n' "\$UV_CACHE_DIR" >> "\$GITHUB_ENV"/);
+  });
+
   it("makes authority-checkout fixture commits independent of runner Git identity", () => {
     assert.match(
       releaseWrapperTests,
