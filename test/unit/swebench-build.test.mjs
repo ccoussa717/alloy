@@ -10,6 +10,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const installer = readFileSync(join(root, "install.sh"), "utf8");
 const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+const releaseSmoke = readFileSync(
+  join(root, "scripts", "run-swebench-release-smoke.sh"),
+  "utf8",
+);
+const releaseWrapperTests = readFileSync(
+  join(root, "benchmarks", "swebench", "tests", "test_release_wrapper.py"),
+  "utf8",
+);
 const benchmarkReadme = readFileSync(
   join(root, "benchmarks", "swebench", "README.md"),
   "utf8",
@@ -70,15 +78,11 @@ describe("SWE-bench build boundaries", () => {
     );
   });
 
-  it("documents the honest host-mode and untrusted-artifact boundary", () => {
+  it("documents the trusted authority, attempt, and artifact boundaries", () => {
     for (const document of [normalizedBenchmarkReadme, normalizedReleasing]) {
       assert.match(
         document,
         /does not intentionally inject host credentials or environment variables, dataset gold fields, or evaluator scripts into persisted artifacts/i,
-      );
-      assert.match(
-        document,
-        /Host mode is not a filesystem jail; Alloy runs as the maintainer's Unix user\./,
       );
       assert.match(
         document,
@@ -88,6 +92,43 @@ describe("SWE-bench build boundaries", () => {
         document,
         /inspect persisted artifacts before sharing, attaching, or releasing them/i,
       );
+      assert.doesNotMatch(document, /Host mode is not a filesystem jail/i);
+      assert.doesNotMatch(document, /real (?:attempt|release|execution).*disabled/i);
+    }
+
+    for (const path of [
+      "/usr/local/libexec/alloy-swebench-gate",
+      "/etc/alloy/swebench-gate.json",
+      "/var/lib/alloy-swebench-gate",
+    ]) {
+      assert.match(benchmarkReadme, new RegExp(path.replaceAll("/", "\\/")));
+      assert.match(releasing, new RegExp(path.replaceAll("/", "\\/")));
+    }
+
+    assert.match(normalizedBenchmarkReadme, /provision <authority-sha>` prints an operator-reviewed bootstrap command/i);
+    assert.match(normalizedBenchmarkReadme, /--replace-authority <old-sha> <new-sha>/);
+    assert.match(normalizedBenchmarkReadme, /dry-run does not consume an attempt/i);
+    assert.match(normalizedBenchmarkReadme, /signed first-attempt claim/i);
+    assert.match(normalizedBenchmarkReadme, /audited, one-use retry/i);
+    assert.match(normalizedBenchmarkReadme, /cleanup-before-sign/i);
+    assert.match(normalizedBenchmarkReadme, /manifest\.signature\.json/);
+    assert.match(normalizedBenchmarkReadme, /Ed25519/);
+  });
+
+  it("documents immutable inputs and the exact release-candidate sequence", () => {
+    for (const document of [normalizedBenchmarkReadme, normalizedReleasing]) {
+      assert.match(document, /b0dde1093fe417d83b7184254edf8199c1f0dff5/);
+      assert.match(document, /438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3/);
+      assert.match(document, /36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153/);
+      assert.match(document, /f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b/);
+      assert.match(document, /c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49/);
+      assert.match(document, /7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3/);
+      assert.match(document, /3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6/);
+      assert.match(document, /run-swebench-release-smoke\.sh dry-run ["']?[<$A-Z_]/);
+      assert.match(document, /run-swebench-release-smoke\.sh release ["']?[<$A-Z_]/);
+      assert.match(document, /run-swebench-release-smoke\.sh authorize-retry ["']?[<$A-Z_]/);
+      assert.match(document, /source-only GitHub release/i);
+      assert.match(document, /npm publication (?:is|remains) blocked/i);
     }
   });
 
@@ -115,6 +156,81 @@ describe("SWE-bench build boundaries", () => {
       /bash scripts\/run-swebench-release-smoke\.sh test/,
     );
     assert.doesNotMatch(ci, /npm run bench:swebench/);
+  });
+
+  it("prepares the exact pinned evaluator environment before Linux benchmark tests", () => {
+    assert.match(ci, /id: evaluator-python/);
+    assert.match(ci, /python-version: ["']3\.14\.4["']/);
+    assert.match(ci, /EVALUATOR_PYTHON: \$\{\{ steps\.evaluator-python\.outputs\.python-path \}\}/);
+    assert.match(ci, /Python 3\.14\.4/);
+    assert.match(ci, /benchmarks\/swebench\/\.venv/);
+    assert.match(ci, /--require-hashes/);
+    assert.match(ci, /--only-binary=:all:/);
+    assert.match(ci, /installed evaluator distributions do not equal requirements\.lock/);
+    assert.match(ci, /_apply_verified_patch\(\)/);
+    const prepare = ci.indexOf("Prepare pinned SWE-bench evaluator");
+    const tests = ci.indexOf("Test source-only SWE-bench release tooling");
+    const docker = ci.indexOf("Verify SWE-bench Docker isolation");
+    assert.ok(prepare >= 0 && prepare < tests && tests < docker);
+  });
+
+  it("uses the prepared evaluator interpreter and a reproducibly pinned uv in Linux CI", () => {
+    assert.match(
+      ci,
+      /astral-sh\/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10\.0\.1/,
+    );
+    assert.match(ci, /version: ["']0\.12\.1["']/);
+    assert.match(
+      ci,
+      /checksum: ["']90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb["']/,
+    );
+    assert.match(
+      ci,
+      /Test source-only SWE-bench release tooling[\s\S]*?ALLOY_SWEBENCH_TEST_PYTHON: \$\{\{ github\.workspace \}\}\/benchmarks\/swebench\/\.venv\/bin\/python[\s\S]*?run: bash scripts\/run-swebench-release-smoke\.sh test/,
+    );
+    assert.match(
+      releaseSmoke,
+      /TEST_PYTHON="\$\{ALLOY_SWEBENCH_TEST_PYTHON:-python3\}"\s+unset ALLOY_SWEBENCH_TEST_PYTHON/,
+    );
+    assert.match(
+      releaseSmoke,
+      /exec "\$TEST_PYTHON" -m unittest discover -s "\$BENCH_ROOT\/tests" -v/,
+    );
+  });
+
+  it("seeds an explicit clean uv cache and validates exact resolver output before offline tests", () => {
+    assert.match(ci, /id: setup-uv/);
+    assert.match(ci, /enable-cache: false/);
+    const seedStart = ci.indexOf("Prepare clean uv resolver cache");
+    const testsStart = ci.indexOf("Test source-only SWE-bench release tooling");
+    assert.ok(seedStart >= 0 && seedStart < testsStart);
+    const seed = ci.slice(seedStart, testsStart);
+    assert.match(seed, /UV_BIN: \$\{\{ steps\.setup-uv\.outputs\.uv-path \}\}/);
+    assert.match(seed, /UV_CACHE_DIR: \$\{\{ runner\.temp \}\}\/alloy-swebench-uv-cache/);
+    assert.match(seed, /GENERATED_LOCK: \$\{\{ runner\.temp \}\}\/alloy-swebench-requirements\.lock/);
+    assert.match(seed, /test ! -e "\$UV_CACHE_DIR"/);
+    assert.match(seed, /mkdir -m 0700 -- "\$UV_CACHE_DIR"/);
+    assert.match(seed, /"\$UV_BIN" pip compile/);
+    assert.doesNotMatch(seed, /--offline/);
+    assert.match(seed, /--python benchmarks\/swebench\/\.venv\/bin\/python/);
+    assert.match(seed, /--generate-hashes/);
+    assert.match(seed, /--no-emit-index-url/);
+    assert.match(seed, /--output-file "\$GENERATED_LOCK"/);
+    assert.match(seed, /benchmarks\/swebench\/requirements\.in/);
+    assert.match(seed, /generated evaluator lock does not exactly match committed resolver output/);
+    assert.match(seed, /trap 'rm -f -- "\$GENERATED_LOCK"' EXIT/);
+    assert.match(seed, /printf 'UV_CACHE_DIR=%s\\n' "\$UV_CACHE_DIR" >> "\$GITHUB_ENV"/);
+  });
+
+  it("makes authority-checkout fixture commits independent of runner Git identity", () => {
+    assert.match(
+      releaseWrapperTests,
+      /\[\s*"git", "-c", "user\.name=Tests",\s*"-c", "user\.email=tests@example\.com",\s*"commit", "--allow-empty", "-qm", "wrong checkout",\s*\]/,
+    );
+    assert.match(
+      releaseWrapperTests,
+      /\[\s*"git", "-c", "user\.name=Tests",\s*"-c", "user\.email=tests@example\.com",\s*"commit", "--allow-empty", "-qm", "wrong head",\s*\]/,
+    );
   });
 
   it("keeps benchmark tooling outside runtime boundaries", () => {
@@ -209,6 +325,7 @@ describe("SWE-bench build boundaries", () => {
       ignoreLines.filter((line) => line.startsWith("benchmarks/")),
       [
         "benchmarks/swebench/.venv/",
+        "benchmarks/swebench/.cache/",
         "benchmarks/swebench/.work/",
         "benchmarks/swebench/results/",
         "benchmarks/swebench/__pycache__/",

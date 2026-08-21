@@ -1,12 +1,67 @@
 {
-  "agent_timeout_seconds": 1800,
-  "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607",
-  "dataset": "SWE-bench/SWE-bench_Lite",
-  "evaluator_timeout_seconds": 2400,
-  "instance_id": "astropy__astropy-12907",
+  "canonical_repository": "https://github.com/ccoussa717/alloy.git",
+  "dataset": {
+    "name": "SWE-bench/SWE-bench_Lite",
+    "split": "test",
+    "revision": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+    "parquet_path": "data/test-00000-of-00001.parquet",
+    "parquet_sha256": "438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3",
+    "row_sha256": "36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153",
+    "instance_id": "astropy__astropy-12907",
+    "base_commit": "d16bfe05a744909de4b27f5875fe0d4ed41ce607"
+  },
   "model": "ollama/qwen3.8-alloy:latest",
   "model_digest": "116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba",
   "ollama_model": "qwen3.8-alloy:latest",
-  "split": "test",
-  "swebench_version": "5.0.0"
+  "swebench_version": "5.0.0",
+  "agent_image": {
+    "reference": "node:22.19.0-bookworm@sha256:f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b",
+    "manifest_digest": "sha256:f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b",
+    "platform": "linux/amd64"
+  },
+  "proxy_image": {
+    "reference": "python:3.12.11-slim-bookworm@sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49",
+    "manifest_digest": "sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49",
+    "platform": "linux/amd64"
+  },
+  "evaluator_image": {
+    "reference": "swebench/sweb.eval.x86_64.astropy_1776_astropy-12907@sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
+    "manifest_digest": "sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3",
+    "platform": "linux/amd64"
+  },
+  "evaluator": {
+    "python_version": "3.14.4",
+    "requirements_lock_path": "benchmarks/swebench/requirements.lock",
+    "requirements_lock_sha256": "7a316d1f9f8df01f307192b77e0581647b12d56a0dc2856c90119b13314b5720",
+    "patch_path": "benchmarks/swebench/patches/swebench-5.0.0-run-evaluation.patch",
+    "patch_sha256": "3f2d38f9b0363fcc814ba97f8a8c18fc7e46c665e5e5e3b29a70902bc08c54f6",
+    "upstream_run_evaluation_sha256": "9b3dc406fab87fe2901cea91aa02d594bd7b2a12dc011fa294bb784ea0f145e6",
+    "patched_run_evaluation_sha256": "eca25c57af5c7569ce541149dbe4dc57c62e6d093eacf2a0a902db9a09c3991b"
+  },
+  "security_policy": {
+    "seccomp_path": "benchmarks/swebench/policies/untrusted-seccomp.json",
+    "seccomp_sha256": "b08e89ec087ebd1cc10996da70c6b632965f2c3708820e9e45a7c84d663a7cb4",
+    "apparmor_path": "benchmarks/swebench/policies/alloy-swebench-gate.apparmor",
+    "apparmor_sha256": "205bdc1b42fc317558e89e450f1810801b2db817e212f5701d07b5aa12799eeb",
+    "apparmor_name": "alloy-swebench-gate"
+  },
+  "limits": {
+    "agent_timeout_seconds": 1800,
+    "evaluator_timeout_seconds": 2400,
+    "pids": 512,
+    "memory_bytes": 17179869184,
+    "cpus": 4,
+    "max_files": 20000,
+    "max_file_bytes": 16777216,
+    "max_export_bytes": 268435456,
+    "max_package_file_bytes": 33554432,
+    "max_package_cache_bytes": 1073741824
+  },
+  "proxy": {
+    "allowed_routes": [
+      ["GET", "/api/tags"],
+      ["POST", "/api/show"],
+      ["POST", "/v1/chat/completions"]
+    ]
+  }
 }

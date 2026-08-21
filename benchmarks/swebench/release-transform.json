@@ -1,0 +1,16 @@
+{
+  "old_version": "1.1.25",
+  "new_version": "1.1.26",
+  "release_date": "2026-08-19",
+  "json_pointers": {
+    "package.json": ["/version"],
+    "tui/package.json": ["/version"],
+    "npm-shrinkwrap.json": ["/version", "/packages//version"]
+  },
+  "literals": {
+    "extensions/ui.ts": 1,
+    "lib/child-runner.mjs": 1,
+    "lib/mcp-client.mjs": 1
+  },
+  "changelog_path": "CHANGELOG.md"
+}

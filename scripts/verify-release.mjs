@@ -8,6 +8,7 @@ function fail(message) {
 }
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+const tuiPkg = JSON.parse(readFileSync("tui/package.json", "utf8"));
 const lockPath = "npm-shrinkwrap.json";
 const publishGate = process.argv.includes("--publish");
 const sourceGate = process.argv.includes("--source");
@@ -22,6 +23,127 @@ let piForkShapeValid = true;
 
 if (pkg.name !== "alloy-agent") fail("package name must be alloy-agent");
 if (pkg.license !== "MIT") fail("package license must be MIT");
+if (tuiPkg.version !== pkg.version) {
+  fail("tui/package.json version must match package.json");
+}
+
+function startsRegexLiteral(source, offset) {
+  let index = offset - 1;
+  while (index >= 0 && /\s/.test(source[index])) index -= 1;
+  if (index < 0 || "([{:;,=!?&|+-*%^~<>".includes(source[index])) return true;
+
+  const prefix = source.slice(0, offset);
+  return /\b(?:await|case|delete|in|instanceof|new|of|return|throw|typeof|void|yield)\s*$/.test(
+    prefix,
+  );
+}
+
+function isCodeOffset(source, offset) {
+  let mode = "code";
+  let regexCharacterClass = false;
+  const templateExpressionDepths = [];
+
+  for (let index = 0; index < offset; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+
+    if (mode === "line-comment") {
+      if (character === "\n") mode = "code";
+      continue;
+    }
+    if (mode === "block-comment") {
+      if (character === "*" && next === "/") {
+        mode = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (mode === "regex") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === "[") {
+        regexCharacterClass = true;
+      } else if (character === "]") {
+        regexCharacterClass = false;
+      } else if (character === "/" && !regexCharacterClass) {
+        mode = "code";
+      }
+      continue;
+    }
+    if (mode === "template") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === "`") {
+        mode = "code";
+      } else if (character === "$" && next === "{") {
+        templateExpressionDepths.push(0);
+        mode = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (mode !== "code") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === mode) {
+        mode = "code";
+      }
+      continue;
+    }
+
+    if (character === "/" && next === "/") {
+      mode = "line-comment";
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      mode = "block-comment";
+      index += 1;
+    } else if (character === "/" && startsRegexLiteral(source, index)) {
+      mode = "regex";
+      regexCharacterClass = false;
+    } else if (character === '"' || character === "'") {
+      mode = character;
+    } else if (character === "`") {
+      mode = "template";
+    } else if (templateExpressionDepths.length > 0 && character === "{") {
+      templateExpressionDepths[templateExpressionDepths.length - 1] += 1;
+    } else if (templateExpressionDepths.length > 0 && character === "}") {
+      const expressionIndex = templateExpressionDepths.length - 1;
+      if (templateExpressionDepths[expressionIndex] === 0) {
+        templateExpressionDepths.pop();
+        mode = "template";
+      } else {
+        templateExpressionDepths[expressionIndex] -= 1;
+      }
+    }
+  }
+
+  return mode === "code";
+}
+
+const runtimeFallbacks = [
+  {
+    path: "extensions/ui.ts",
+    pattern: /^[\t ]*const\s+VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*;[\t ]*$/gm,
+  },
+  {
+    path: "lib/child-runner.mjs",
+    pattern: /^[\t ]*out\.ALLOY_VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*out\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*;[\t ]*$/gm,
+  },
+  {
+    path: "lib/mcp-client.mjs",
+    pattern: /^[\t ]*\{\s*name:\s*"alloy",\s*version:\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*\},?[\t ]*$/gm,
+  },
+];
+
+for (const { path, pattern } of runtimeFallbacks) {
+  const source = readFileSync(path, "utf8");
+  const matches = [...source.matchAll(pattern)].filter((match) => isCodeOffset(source, match.index));
+  if (matches.length !== 1) {
+    fail(`${path} must contain exactly one executable version fallback`);
+  } else if (matches[0][1] !== pkg.version) {
+    fail(`${path} version fallback must match package.json`);
+  }
+}
 if (publishGate) fail("npm publication is blocked until package-consumer lifecycle design is explicit");
 if (sourceGate && pkg.private !== true) {
   fail("package must remain private for a source launch");
@@ -360,7 +482,12 @@ if (pkg.overrides?.undici !== "8.10.0") {
 if (existsSync(lockPath)) {
   const lock = JSON.parse(readFileSync(lockPath, "utf8"));
   if (lock.lockfileVersion !== 3) fail("npm-shrinkwrap.json must use lockfileVersion 3");
-  if (lock.name !== pkg.name || lock.version !== pkg.version) {
+  if (
+    lock.name !== pkg.name ||
+    lock.version !== pkg.version ||
+    lock.packages?.[""]?.name !== pkg.name ||
+    lock.packages?.[""]?.version !== pkg.version
+  ) {
     fail("package and shrinkwrap identity must match");
   }
   const rootDependencies = lock.packages?.[""]?.dependencies || {};
