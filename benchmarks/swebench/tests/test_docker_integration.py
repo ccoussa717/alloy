@@ -13,6 +13,7 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from benchmarks.swebench.artifacts import ResultWriter
 from benchmarks.swebench.attempts import GateSigner
@@ -76,7 +77,12 @@ class _StaticEvaluator:
                 "container_id": "fixture-evaluator",
                 "inspection": {"fixture": True},
             },
-            {"absent": True, "container_id": "fixture-evaluator"},
+            {
+                "absent": True,
+                "container_id": "fixture-evaluator",
+                "workspace_volume": "fixture-evaluator-volume",
+                "workspace_volume_absent": True,
+            },
         )
 
 
@@ -742,6 +748,62 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         inspection = result.container_evidence["inspection"]
         self.assertEqual(inspection["HostConfig"].get("CapAdd"), None)
         self._assert_no_leaks(run_id)
+
+    def test_evaluator_timeout_and_crash_remove_workspace_volume(self):
+        profile = dataclasses.replace(
+            self.profile,
+            limits=dataclasses.replace(
+                self.profile.limits, evaluator_timeout_seconds=1
+            ),
+        )
+        for mode, expected_error in (
+            ("timeout", subprocess.TimeoutExpired),
+            ("crash", subprocess.CalledProcessError),
+        ):
+            with self.subTest(mode=mode):
+                run_id = f"docker-integration-evaluator-{mode}-{uuid.uuid4().hex}"
+                self.evaluator_run_ids.append(run_id)
+                predictions = self.root / f"{mode}-predictions.jsonl"
+                dataset = self.root / f"{mode}-dataset.json"
+                predictions.write_text("{}\n")
+                dataset.write_text("[]\n")
+                volume = f"alloy-eval-workspace-{run_id}"
+                action = (
+                    "import time; time.sleep(30)"
+                    if mode == "timeout"
+                    else "import os; os._exit(17)"
+                )
+                code = (
+                    "import subprocess; "
+                    f"subprocess.run(['/usr/bin/docker','volume','create','--label','{LABEL}={run_id}','{volume}'],check=True,capture_output=True); "
+                    + action
+                )
+                command = [
+                    str(VENV_PYTHON),
+                    "-c",
+                    code,
+                    "--report_dir",
+                    str(self.root),
+                    "--run_id",
+                    run_id,
+                ]
+                environment = EvaluatorEnvironment(
+                    profile, REPO_ROOT, VENV_PYTHON, runtime=DockerRuntime(profile, REPO_ROOT)
+                )
+                environment.runtime.preflight()
+                environment._image_id = self.evaluator_image_id
+                with (
+                    mock.patch.object(environment, "verify"),
+                    mock.patch.object(environment, "_command", return_value=command),
+                    mock.patch.object(
+                        environment,
+                        "_await_evaluator_evidence",
+                        return_value={"container_id": "fixture", "inspection": {}},
+                    ),
+                    self.assertRaises(expected_error),
+                ):
+                    environment.run(predictions, dataset, run_id)
+                self._assert_no_leaks(run_id)
 
     def test_benign_patch_applies_cleanly(self):
         evidence = self.run_fixture("benign.sh")

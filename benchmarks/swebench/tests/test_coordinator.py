@@ -944,6 +944,8 @@ class TrustedRunServicesTests(unittest.TestCase):
                 "absent": True,
                 "container_id": "observed-evaluator-id",
                 "daemon_identity": {"daemon_id": "observed-daemon"},
+                "workspace_volume": "alloy-eval-workspace-evaluation-run",
+                "workspace_volume_absent": True,
             },
         )
 
@@ -958,6 +960,9 @@ class TrustedRunServicesTests(unittest.TestCase):
             {"SecurityOpt": ["observed-security"]},
         )
         self.assertTrue(state.manifest["teardown"]["evaluator"]["absent"])
+        self.assertTrue(
+            state.manifest["teardown"]["evaluator"]["workspace_volume_absent"]
+        )
 
 
 if __name__ == "__main__":

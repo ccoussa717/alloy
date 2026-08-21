@@ -448,8 +448,24 @@ class EvaluatorEnvironment:
     def _verify_and_teardown_container(self, run_id: str) -> dict[str, object]:
         name = f"sweb.eval.{self.profile.instance_id.lower()}.{run_id}"
         handle = self._last_evaluator_handle or ContainerHandle(name, name, run_id)
-        self.runtime.force_remove(handle)
-        self.runtime.assert_absent(handle)
+        workspace_volume = f"alloy-eval-workspace-{run_id}"
+        cleanup_errors = []
+        for cleanup in (
+            lambda: self.runtime.force_remove(handle),
+            lambda: self.runtime.assert_absent(handle),
+            lambda: self.runtime.remove_volume(workspace_volume, run_id),
+        ):
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if cleanup_errors:
+            raise CleanupUncertaintyError(
+                "evaluator resource teardown failed: "
+                + "; ".join(str(error) for error in cleanup_errors),
+                original_error=None,
+                cleanup_errors=cleanup_errors,
+            )
         evidence = {
             "absent": True,
             "container_id": handle.container_id,
@@ -458,6 +474,8 @@ class EvaluatorEnvironment:
                 if self.runtime._daemon_identity is not None
                 else None
             ),
+            "workspace_volume": workspace_volume,
+            "workspace_volume_absent": True,
         }
         self._last_teardown_evidence = evidence
         return evidence

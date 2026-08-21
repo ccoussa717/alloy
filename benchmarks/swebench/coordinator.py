@@ -666,7 +666,10 @@ class TrustedRunServices:
         container_id = result.container_evidence.get("container_id")
         if not isinstance(container_id, str) or not container_id:
             raise RuntimeError("evaluator returned no observed container identity")
-        if result.teardown_evidence.get("absent") is not True:
+        if (
+            result.teardown_evidence.get("absent") is not True
+            or result.teardown_evidence.get("workspace_volume_absent") is not True
+        ):
             raise RuntimeError("evaluator returned no verified teardown proof")
         state.manifest.setdefault("container_ids", {})["evaluator"] = container_id
         state.manifest.setdefault("container_inspections", {})["evaluator"] = (
@@ -693,10 +696,19 @@ class TrustedRunServices:
             proof = self.config.evaluator._last_teardown_evidence
             if proof is None:
                 proof = self.config.evaluator._verify_and_teardown_container(self.run_id)
-            if proof.get("absent") is not True:
+            if (
+                proof.get("absent") is not True
+                or proof.get("workspace_volume_absent") is not True
+            ):
                 raise RuntimeError("evaluator teardown could not prove absence")
             state.manifest.setdefault("teardown", {})["evaluator"] = proof
-        elif self.evaluation_result.teardown_evidence.get("absent") is not True:
+        elif (
+            self.evaluation_result.teardown_evidence.get("absent") is not True
+            or self.evaluation_result.teardown_evidence.get(
+                "workspace_volume_absent"
+            )
+            is not True
+        ):
             raise RuntimeError("evaluator teardown could not prove absence")
         self.evaluator_absent = True
         state.manifest.setdefault("teardown", {})["evaluator_absent"] = True

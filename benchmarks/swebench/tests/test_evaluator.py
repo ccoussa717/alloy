@@ -234,6 +234,48 @@ class EvaluatorConfinementTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "inspection drifted"):
             environment._validate_evaluator_evidence(evidence, run_id)
 
+    def test_trusted_teardown_removes_and_proves_workspace_volume_absent(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        run_id = "run-cleanup"
+        handle = mock.Mock(container_id="evaluator-id")
+        environment._last_evaluator_handle = handle
+        environment.runtime.force_remove = mock.Mock()
+        environment.runtime.assert_absent = mock.Mock()
+        environment.runtime.remove_volume = mock.Mock()
+
+        evidence = environment._verify_and_teardown_container(run_id)
+
+        environment.runtime.force_remove.assert_called_once_with(handle)
+        environment.runtime.assert_absent.assert_called_once_with(handle)
+        environment.runtime.remove_volume.assert_called_once_with(
+            f"alloy-eval-workspace-{run_id}", run_id
+        )
+        self.assertEqual(
+            evidence,
+            {
+                "absent": True,
+                "container_id": "evaluator-id",
+                "daemon_identity": None,
+                "workspace_volume": f"alloy-eval-workspace-{run_id}",
+                "workspace_volume_absent": True,
+            },
+        )
+
+    def test_workspace_volume_cleanup_runs_even_if_container_cleanup_fails(self):
+        environment = EvaluatorEnvironment(PROFILE, REPO_ROOT, Path(sys.executable))
+        run_id = "run-dual-cleanup"
+        environment.runtime.force_remove = mock.Mock(
+            side_effect=RuntimeError("container cleanup failed")
+        )
+        environment.runtime.remove_volume = mock.Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "evaluator resource teardown failed"):
+            environment._verify_and_teardown_container(run_id)
+
+        environment.runtime.remove_volume.assert_called_once_with(
+            f"alloy-eval-workspace-{run_id}", run_id
+        )
+
     def test_patch_is_confinement_only_and_has_no_sys_admin_or_fuzz(self):
         patch = PATCH_PATH.read_text()
         self.assertIn('cap_drop=["ALL"]', patch)
@@ -353,6 +395,38 @@ class EvaluatorConfinementTests(unittest.TestCase):
         self.assertIs(raised.exception.original_error, primary)
         self.assertIs(raised.exception.cleanup_error, cleanup)
         self.assertIs(raised.exception.__cause__, primary)
+
+    def test_run_cleans_workspace_volume_after_timeout_crash_and_interruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions.jsonl"
+            dataset = root / "dataset.json"
+            predictions.write_text("{}\n")
+            dataset.write_text("[]\n")
+            failures = (
+                subprocess.TimeoutExpired(["evaluator"], 2400),
+                subprocess.CalledProcessError(17, ["evaluator"]),
+                KeyboardInterrupt(),
+            )
+            for failure in failures:
+                with self.subTest(failure=type(failure).__name__):
+                    environment = EvaluatorEnvironment(
+                        PROFILE, REPO_ROOT, Path(sys.executable)
+                    )
+                    environment.runtime.force_remove = mock.Mock()
+                    environment.runtime.assert_absent = mock.Mock()
+                    environment.runtime.remove_volume = mock.Mock()
+                    with (
+                        mock.patch.object(environment, "verify"),
+                        mock.patch.object(
+                            environment, "_run_evaluator", side_effect=failure
+                        ),
+                        self.assertRaises(type(failure)),
+                    ):
+                        environment.run(predictions, dataset, "run-interrupted")
+                    environment.runtime.remove_volume.assert_called_once_with(
+                        "alloy-eval-workspace-run-interrupted", "run-interrupted"
+                    )
 
     def test_summary_is_not_located_read_or_parsed_before_verified_teardown(self):
         with tempfile.TemporaryDirectory() as directory:
