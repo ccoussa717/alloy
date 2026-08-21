@@ -122,10 +122,12 @@ The supported release is a source-only GitHub release.
 ## Exact Candidate Flow
 
 After the release metadata PR has merged with green CI, record the exact pushed
-candidate SHA. It must be a full lowercase commit advertised as a non-peeled ref
-tip by the canonical GitHub remote. The root-owned authority verifies that the
-candidate differs from the authority only by the reviewed root/TUI/shrinkwrap
-version fields, three runtime fallback literals, and changelog extraction.
+candidate SHA. It must be the full lowercase commit advertised specifically as
+`refs/heads/main` by the canonical GitHub remote; another branch or tag pointing
+to the same commit is insufficient. The root-owned authority fetches that exact
+ref and verifies that the candidate differs from the authority only by the
+reviewed root/TUI/shrinkwrap version fields, three runtime fallback literals,
+and changelog extraction.
 
 Run the candidate dry-run first:
 

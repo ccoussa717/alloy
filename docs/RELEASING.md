@@ -126,9 +126,10 @@ reachable functioning Docker daemon, and the documented loopback Ollama model.
 
 ### Exact Candidate Attempt
 
-The candidate must be a full lowercase commit SHA advertised as an exact ref tip
-on canonical GitHub. It may differ from authority only on the reviewed release
-metadata surfaces.
+The candidate must be the full lowercase commit SHA advertised specifically as
+canonical GitHub's `refs/heads/main`; another branch or tag at that SHA is not
+release evidence. The authority fetches that exact ref. The candidate may differ
+from authority only on the reviewed release metadata surfaces.
 
 ```bash
 CANDIDATE_SHA=<40-character-release-candidate-sha>

@@ -36,6 +36,61 @@ WRAPPER = REPO_ROOT / "scripts" / "run-swebench-release-smoke.sh"
 
 
 class HostLauncherArgumentTests(unittest.TestCase):
+    def test_candidate_must_be_exact_canonical_main_tip(self):
+        repository = Path("/authority")
+        git_home = Path("/git-home")
+        candidate = "b" * 40
+
+        for advertised in (
+            f"{candidate}\trefs/heads/release\n",
+            f"{candidate}\trefs/tags/v1.1.26\n",
+        ):
+            with self.subTest(advertised=advertised), mock.patch.object(
+                host_launcher_module,
+                "_run_git",
+                return_value=advertised,
+            ) as git:
+                with self.assertRaisesRegex(ValueError, "canonical main tip"):
+                    host_launcher_module._candidate_is_advertised(
+                        repository, git_home, candidate
+                    )
+                git.assert_called_once_with(
+                    repository, git_home, "ls-remote", "github", "refs/heads/main"
+                )
+
+        main = f"{candidate}\trefs/heads/main\n"
+        with mock.patch.object(
+            host_launcher_module,
+            "_run_git",
+            side_effect=[main, "", ""],
+        ) as git:
+            host_launcher_module._candidate_is_advertised(
+                repository, git_home, candidate
+            )
+        self.assertEqual(
+            git.call_args_list,
+            [
+                mock.call(
+                    repository, git_home, "ls-remote", "github", "refs/heads/main"
+                ),
+                mock.call(
+                    repository,
+                    git_home,
+                    "fetch",
+                    "--no-tags",
+                    "github",
+                    "refs/heads/main",
+                ),
+                mock.call(
+                    repository,
+                    git_home,
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                ),
+            ],
+        )
+
     def test_authorize_retry_rejects_missing_or_blank_reason_before_trust_and_git(self):
         cases = (
             ["authorize-retry", SHA],

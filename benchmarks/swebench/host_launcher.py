@@ -530,15 +530,14 @@ def load_trusted_host(paths: HostPaths = HostPaths(), *, expected_uid: int = REQ
 
 
 def _candidate_is_advertised(repository: Path, git_home: Path, candidate: str) -> None:
-    advertised = _run_git(repository, git_home, "ls-remote", "github")
-    if not any(
-        line.split("\t", 1)[0] == candidate
-        and "\trefs/" in line
-        and not line.endswith("^{}")
-        for line in advertised.splitlines()
-    ):
-        raise ValueError("candidate commit is not an advertised canonical ref tip")
-    _run_git(repository, git_home, "fetch", "--no-tags", "github", candidate)
+    advertised = _run_git(
+        repository, git_home, "ls-remote", "github", "refs/heads/main"
+    )
+    if advertised.splitlines() != [f"{candidate}\trefs/heads/main"]:
+        raise ValueError("candidate commit is not the advertised canonical main tip")
+    _run_git(
+        repository, git_home, "fetch", "--no-tags", "github", "refs/heads/main"
+    )
     if _run_git(
         repository, git_home, "status", "--porcelain=v1", "--untracked-files=all"
     ):
