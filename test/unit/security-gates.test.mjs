@@ -602,6 +602,20 @@ globalThis.fetch = async (input, options) => {
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
     });
+
+    it(`does not treat fallback text in an inner nested template in ${path} as executable`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      writeFileSync(
+        sourcePath,
+        ["const inert = `outer ${", "  `inner", source, "  `", "}`;", ""].join("\n"),
+      );
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+    });
   }
 
   it("rejects benchmark tooling in the runtime package boundary", () => {
