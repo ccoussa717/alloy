@@ -132,7 +132,9 @@ BENCH_ROOT="$REPO_ROOT/benchmarks/swebench"
 
 case "$SUBCOMMAND" in
   test)
-    exec python3 -m unittest discover -s "$BENCH_ROOT/tests" -v
+    TEST_PYTHON="${ALLOY_SWEBENCH_TEST_PYTHON:-python3}"
+    unset ALLOY_SWEBENCH_TEST_PYTHON
+    exec "$TEST_PYTHON" -m unittest discover -s "$BENCH_ROOT/tests" -v
     ;;
   setup)
     python3 -m venv --copies "$BENCH_ROOT/.venv"

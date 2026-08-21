@@ -10,6 +10,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const installer = readFileSync(join(root, "install.sh"), "utf8");
 const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+const releaseSmoke = readFileSync(
+  join(root, "scripts", "run-swebench-release-smoke.sh"),
+  "utf8",
+);
+const releaseWrapperTests = readFileSync(
+  join(root, "benchmarks", "swebench", "tests", "test_release_wrapper.py"),
+  "utf8",
+);
 const benchmarkReadme = readFileSync(
   join(root, "benchmarks", "swebench", "README.md"),
   "utf8",
@@ -164,6 +172,41 @@ describe("SWE-bench build boundaries", () => {
     const tests = ci.indexOf("Test source-only SWE-bench release tooling");
     const docker = ci.indexOf("Verify SWE-bench Docker isolation");
     assert.ok(prepare >= 0 && prepare < tests && tests < docker);
+  });
+
+  it("uses the prepared evaluator interpreter and a reproducibly pinned uv in Linux CI", () => {
+    assert.match(
+      ci,
+      /astral-sh\/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10\.0\.1/,
+    );
+    assert.match(ci, /version: ["']0\.12\.1["']/);
+    assert.match(
+      ci,
+      /checksum: ["']90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb["']/,
+    );
+    assert.match(
+      ci,
+      /Test source-only SWE-bench release tooling[\s\S]*?ALLOY_SWEBENCH_TEST_PYTHON: \$\{\{ github\.workspace \}\}\/benchmarks\/swebench\/\.venv\/bin\/python[\s\S]*?run: bash scripts\/run-swebench-release-smoke\.sh test/,
+    );
+    assert.match(
+      releaseSmoke,
+      /TEST_PYTHON="\$\{ALLOY_SWEBENCH_TEST_PYTHON:-python3\}"\s+unset ALLOY_SWEBENCH_TEST_PYTHON/,
+    );
+    assert.match(
+      releaseSmoke,
+      /exec "\$TEST_PYTHON" -m unittest discover -s "\$BENCH_ROOT\/tests" -v/,
+    );
+  });
+
+  it("makes authority-checkout fixture commits independent of runner Git identity", () => {
+    assert.match(
+      releaseWrapperTests,
+      /\[\s*"git", "-c", "user\.name=Tests",\s*"-c", "user\.email=tests@example\.com",\s*"commit", "--allow-empty", "-qm", "wrong checkout",\s*\]/,
+    );
+    assert.match(
+      releaseWrapperTests,
+      /\[\s*"git", "-c", "user\.name=Tests",\s*"-c", "user\.email=tests@example\.com",\s*"commit", "--allow-empty", "-qm", "wrong head",\s*\]/,
+    );
   });
 
   it("keeps benchmark tooling outside runtime boundaries", () => {

@@ -478,7 +478,11 @@ class HostLauncherTests(TrustedHostFixture):
             check=True,
         )
         subprocess.run(
-            ["git", "commit", "--allow-empty", "-qm", "wrong checkout"],
+            [
+                "git", "-c", "user.name=Tests",
+                "-c", "user.email=tests@example.com",
+                "commit", "--allow-empty", "-qm", "wrong checkout",
+            ],
             cwd=self.paths.authority,
             check=True,
         )
@@ -561,7 +565,11 @@ class HostLauncherTests(TrustedHostFixture):
 
     def test_subprocess_rejects_wrong_head_before_authority_import(self):
         subprocess.run(
-            ["git", "commit", "--allow-empty", "-qm", "wrong head"],
+            [
+                "git", "-c", "user.name=Tests",
+                "-c", "user.email=tests@example.com",
+                "commit", "--allow-empty", "-qm", "wrong head",
+            ],
             cwd=self.paths.authority,
             check=True,
         )
