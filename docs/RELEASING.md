@@ -1,215 +1,247 @@
 # Releasing Alloy
 
-Only maintainers may publish a release.
+Only maintainers may publish a release. Alloy ships continuously as tagged,
+source-only GitHub releases; npm publication is blocked.
 
-## Continuous stable shipping (default)
+## Continuous Stable Shipping
 
-**Policy (operator request):** every meaningful ship that lands on `main` —
-features, fixes, docs that change operator behavior, security patches — gets a
-**new semver tag and GitHub Release** so the default install command always
-pulls the newest line:
+Every meaningful ship that lands on `main` gets an appropriate semver tag and
+GitHub Release so the stable installer resolves the newest line:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh | bash
 ```
 
-That script defaults to `ALLOY_CHANNEL=stable`, which resolves
-`/repos/…/releases/latest`. If we merge to `main` without tagging, first-time
-installers stay on the last tag and miss the work.
+Use a patch for fixes, documentation that changes operator behavior, small UX
+changes, and security updates. Use a minor for new workflow capability or
+behavior/config changes, and a major for breaking changes. Skip a tag only for a
+truly invisible internal refactor.
 
-### When to cut a release
+## Release Checklist
 
-| Change | Bump | Tag |
-|--------|------|-----|
-| Bugfix, docs/help clarity, small UX, security patch | patch (`1.0.x`) | yes |
-| New workflow capability, behavior change, config shape | minor (`1.x.0`) | yes |
-| Breaking config/CLI/compat | major (`x.0.0`) | yes |
-| Internal-only refactor with **zero** user-visible change | optional | skip only if truly invisible |
+1. Merge the independently reviewed gate hardening to protected `main`; record
+   that pushed merge SHA as the authority.
+2. Provision that authority on the designated release host and preserve its
+   machine-readable receipt. If authority was previously provisioned, use the
+   explicit replacement procedure below.
+3. In a separate release PR, bump root `package.json`, `tui/package.json`, both
+   root versions in `npm-shrinkwrap.json`, and all three runtime fallback
+   versions. Move `[Unreleased]` into a dated release section.
+4. Run `npm run ci:local`, `npm run ci:release`, independent review, and protected
+   branch CI. Merge only the reviewed release surfaces. Record that pushed merge
+   SHA as the exact candidate.
+5. Run the manual SWE-bench release gate against that exact candidate: dry-run,
+   explicit authorization, and one real attempt. Verify the signed result and
+   inspect sensitive artifacts.
+6. Tag that exact candidate commit and wait for green tag CI.
+7. Publish a source-only GitHub release with no npm package or binary asset.
+8. Inspect the published source archive and confirm the stable installer
+   resolves the new tag.
 
-Default bias: **when in doubt, tag a patch.** Prefer many small stable releases
-over a long `main`-only delta.
+Do not bump or tag a different commit after the benchmark. Any intervening
+source change creates a new candidate and invalidates the evidence.
 
-### Release checklist (every ship)
+## Manual SWE-bench Release Gate
 
-1. On a PR (or stacked release PR): bump **root** `package.json`, **`tui/package.json`**,
-   and **`npm-shrinkwrap.json`** root + `packages[""]` to the same version.
-2. Move notes from `CHANGELOG.md` `[Unreleased]` into `## [X.Y.Z] - YYYY-MM-DD`.
-3. Merge to `main` with green CI (`verify` + platform checks).
-4. From that pushed commit with no tracked worktree changes, run the candidate
-   dry-run in the [manual SWE-bench release gate](#manual-swe-bench-release-gate).
-5. Stop before tagging while the real gate is disabled. Trusted agent isolation,
-   an immutable dataset revision, and evaluator dependency integrity pins are
-   required before an official verdict can become release evidence.
-6. Only after the real gate is re-enabled, completes, and release authority is
-   confirmed, tag the
-   exact merge commit: `git tag -a vX.Y.Z -m "Alloy X.Y.Z — …"` and
-   `git push origin vX.Y.Z`.
-7. Create the GitHub Release for that tag (source archives only; not npm).
-8. Confirm: `releases/latest` → `vX.Y.Z` and a dry install resolves that ref.
+The official gate runs from independently provisioned, root-owned authority:
 
-### Manual SWE-bench release gate
+- `/usr/local/libexec/alloy-swebench-gate`: fixed launcher used by official modes
+- `/etc/alloy/swebench-gate.json`: authority, policy, coordinator-tree, and gate
+  public-key digests
+- `/var/lib/alloy-swebench-gate`: authority checkout, key material, claims, work,
+  and results
 
-This maintainer-only gate runs after green CI and before tagging. Its real
-execution path is currently disabled pending trusted isolation and immutable
-dataset/evaluator integrity pins. Follow the
-complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md),
-including its prerequisites, provenance checks, artifact review, and explicit
-one-attempt/no-retry rule.
+Read the complete [SWE-bench release smoke instructions](../benchmarks/swebench/README.md)
+before operating the gate.
 
-Before starting, verify outbound GitHub and codeload access, target repository
-clone access, Hugging Face dataset access, Python package index access, and the
-image and registry access required by SWE-bench. The host must also have a
-reachable, functioning Docker daemon that can start containers, not merely an
-installed Docker CLI, and the documented loopback Ollama model at its exact
-digest.
+### Setup Versus Provisioning
 
-The exact candidate commit must be clean and pushed as an advertised ref tip on
-the canonical GitHub remote. Bootstrap and test the source-only tooling:
+The source-only setup command prepares an unprivileged test environment and
+caches. It does not establish release authority and its `.venv` is not consumed
+by the official gate:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh test
 bash scripts/run-swebench-release-smoke.sh setup
 ```
 
-These commands are intentionally absent from package metadata. Then run the
-isolated candidate handoff:
+Initial provisioning is a separate reviewed ceremony. The wrapper command
+`provision <authority-sha>` prints, but does not execute, a canonical root
+bootstrap:
 
 ```bash
-bash scripts/run-swebench-release-smoke.sh dry-run
+AUTHORITY_SHA=<40-character-main-sha>
+bash scripts/run-swebench-release-smoke.sh provision "$AUTHORITY_SHA" \
+  > /tmp/alloy-swebench-bootstrap.sh
+less /tmp/alloy-swebench-bootstrap.sh
+/bin/sh /tmp/alloy-swebench-bootstrap.sh
+rm -f /tmp/alloy-swebench-bootstrap.sh
 ```
 
-Confirm its `summary.json` status is `dry_run` and its manifest binds the same
-candidate and install commit, Alloy and Pi versions, pinned Ollama model digest,
-and SWE-bench version. A dry-run does not execute Alloy or Docker evaluation and
-does not satisfy the real benchmark gate.
+The bootstrap fetches the explicit SHA directly from canonical GitHub, proves it
+is the current `main` tip, runs isolated Python, builds the exact evaluator, loads
+AppArmor, generates the Ed25519 gate key, and emits a receipt. Preserve that
+receipt with the release audit.
 
-Do not attempt a real release run yet. The command fails closed before candidate
-preflight:
+Provisioning refuses an existing authority. Replacement is an explicit audited
+operation from a freshly fetched canonical root-owned checkout of the new tip:
 
 ```bash
-bash scripts/run-swebench-release-smoke.sh release
+sudo /usr/bin/env -i \
+  HOME=<empty-root-owned-mode-0700-git-home> PATH=/usr/bin:/bin \
+  /usr/bin/python3 -I -E -s \
+  <fresh-root-owned-new-authority-checkout>/benchmarks/swebench/provision.py \
+  --replace-authority <old-sha> <new-sha>
 ```
 
-After the command is safely re-enabled, there is no automatic retry. A real
-attempt satisfies the execution portion of this gate only when `summary.json`
-has status `evaluated`, is backed by the
-persisted schema-v2 `evaluation/official-summary.json`, and reports the official
-one-instance verdict `resolved` or `unresolved`. Both are truthful completed
-outcomes; neither is an Alloy SWE-bench score.
+The empty Git HOME and checkout must satisfy the initial bootstrap's root
+ownership, mode, canonical remote, clean-tree, and exact-main-tip checks. Review
+the old and new SHAs and receipt. Replacement preserves the private gate key and
+protected attempt history.
+
+### Pinned Inputs
+
+Before the candidate exists, authority fixes these release inputs:
+
+- Dataset revision `b0dde1093fe417d83b7184254edf8199c1f0dff5`
+- Dataset parquet SHA-256
+  `438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3`
+- Selected row SHA-256
+  `36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153`
+- Agent image digest
+  `sha256:f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b`
+- Proxy image digest
+  `sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49`
+- Evaluator image digest
+  `sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3`
+- Evaluator confinement patch SHA-256
+  `88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68`
+
+The gate also verifies the exact model digest, Python 3.14.4 evaluator closure,
+requirements lock, patched evaluator source, seccomp/AppArmor policies, Docker
+daemon identity, and required container controls. Confirm outbound GitHub and
+codeload access, target repository clone access, Hugging Face dataset access,
+Python package index access, image and registry access required by SWE-bench, a
+reachable functioning Docker daemon, and the documented loopback Ollama model.
+
+### Exact Candidate Attempt
+
+The candidate must be a full lowercase commit SHA advertised as an exact ref tip
+on canonical GitHub. It may differ from authority only on the reviewed release
+metadata surfaces.
+
+```bash
+CANDIDATE_SHA=<40-character-release-candidate-sha>
+bash scripts/run-swebench-release-smoke.sh dry-run "$CANDIDATE_SHA"
+```
+
+The dry-run verifies the candidate install and every authority/input boundary in
+disposable containers. The dry-run does not consume an attempt, does not launch
+Alloy, and does not satisfy the execution gate.
+
+After independent evidence review and explicit maintainer authorization, run the
+signed first attempt once:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh release "$CANDIDATE_SHA"
+```
+
+There is no automatic retry. The signed first-attempt claim is consumed
+immediately before Docker create. A timeout, crash, create failure after
+consumption, `unresolved`, or infrastructure failure remains consumed. Do not
+turn it into an undocumented retry.
+
+Only an explicit new maintainer decision for a specific infrastructure reason
+may mint the audited, one-use retry claim:
+
+```bash
+bash scripts/run-swebench-release-smoke.sh authorize-retry "$CANDIDATE_SHA" \
+  "<specific audited infrastructure reason>"
+bash scripts/run-swebench-release-smoke.sh release "$CANDIDATE_SHA"
+```
+
+The ordinal-2 authorization cannot silently create a third attempt. Preserve the
+reason, signed claim, and separate result in the release audit.
+
+### Evidence And Verdicts
+
+Terminal evidence follows cleanup-before-sign ordering. The trusted coordinator
+proves agent and evaluator absence and removes every registered scratch,
+container, network, relay, firewall, and volume resource before persisting
+`manifest.json` and `manifest.signature.json`. Cleanup or signing uncertainty
+writes only unsigned `failure.json` and blocks release.
+
+Verify the Ed25519 signature over canonical `manifest.json` bytes with the
+provisioned public key. Verify that key's SHA-256 against both
+`gate_public_key_sha256` in `/etc/alloy/swebench-gate.json` and the provisioning
+receipt. Confirm the signed authority and candidate commits, attempt ordinal,
+input digests, container inspection and teardown proof, patch digest, evaluator
+summary digest, and terminal status.
 
 `resolved` is a valid official one-instance outcome. `unresolved` is a valid
 official one-instance outcome. Only a persisted schema-v2 official summary can
 complete the gate. `infrastructure_failure` means no valid official verdict
-exists. This includes agent, checkout, provenance, dataset, patch-capture,
-evaluator, or timeout failures and missing or invalid official summaries.
-`infrastructure_failure` blocks gate completion. It does not assert that an
-official evaluation completed. Preserve the result path and terminal status,
-and do not claim the manual gate ran when no official summary exists.
+exists. `infrastructure_failure` blocks gate completion. None of these outcomes
+is an Alloy SWE-bench score.
 
-The runner retains the explicit environment allowlist, disposable HOME/XDG
-state, dataset gold-field removal, and evaluator-scratch deletion described in
-the benchmark guide. It does not intentionally inject host credentials or
-environment variables, dataset gold fields, or evaluator scripts into
-persisted artifacts. Host mode is not a filesystem jail; Alloy runs as the
-maintainer's Unix user. Agent/evaluator stdout/stderr, model patches, and
-official summaries are untrusted and may contain sensitive content produced or
-read by those processes. Maintainers must inspect persisted artifacts before
-sharing, attaching, or releasing them.
+The runner does not intentionally inject host credentials or environment
+variables, dataset gold fields, or evaluator scripts into persisted artifacts.
+Agent/evaluator stdout/stderr, model patches, and official summaries are
+untrusted and may contain sensitive content produced or read by those
+processes. Maintainers must inspect persisted artifacts before sharing,
+attaching, or releasing them. Signature validity does not make untrusted content
+safe to disclose.
 
-Helper (from a clean `main` at the release commit, only after the real
-SWE-bench gate is safely re-enabled and completed):
+## Tag And Publish
+
+Only after the exact candidate has green CI and valid independently reviewed
+gate evidence:
 
 ```bash
-# after version bump is on main
-git tag -a "v$(node -p "require('./package.json').version")" \
-  -m "Alloy $(node -p "require('./package.json').version")"
-git push origin "v$(node -p "require('./package.json').version")"
-gh release create "v$(node -p "require('./package.json').version")" \
-  --title "Alloy $(node -p "require('./package.json').version")" \
-  --generate-notes
+VERSION=$(node -p "require('./package.json').version")
+git tag -a "v$VERSION" -m "Alloy $VERSION"
+git push origin "v$VERSION"
+gh release create "v$VERSION" --title "Alloy $VERSION" --generate-notes
 ```
 
-Tip-of-tree without a release (developers only):
+Wait for green tag CI before creating the GitHub Release. Publish only the
+source-only GitHub release and verify `releases/latest` plus a clean installer
+run at that tag.
+
+Tip-of-tree remains developer-only:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ccoussa717/alloy/main/install.sh \
   | ALLOY_CHANNEL=main bash
 ```
 
-## Public source launch
+## Public Source Launch
 
 Making the canonical GitHub repository public is separate from publishing an
 npm package. A public source pre-release may launch while `package.json` remains
-`private` and the npm release gate remains closed.
+private and the npm gate remains closed.
 
-Before changing repository visibility:
+Before changing visibility, require clean pushed green `main`; verify the public
+history boundary; run `npm run ci:local`, `npm run release:verify:source`, SBOM
+review, and tracked-tree/release-worktree/full-history secret scans; review all
+canonical identity and community files; and obtain explicit authorization. Do
+not create a tag or package artifact as part of the visibility change.
 
-1. Confirm `main` is clean, pushed, and green in GitHub Actions.
-2. Confirm history begins with the verified public release snapshot and excludes
-   private development history.
-3. Run `npm run ci:local`, `npm run release:verify:source`, and review the
-   generated SBOM. The source verifier must confirm npm publication is disabled.
-4. Run the tracked-tree, release-worktree, and full-history secret scan.
-5. Confirm canonical URLs, CODEOWNERS identity, support, security, contribution,
-   license, and attribution documents are present.
-6. Confirm known dependency advisories and other residual risks are accurately
-   disclosed in [SECURITY.md](./SECURITY.md).
-7. Do not create a release tag or package artifact during the visibility change.
-8. Obtain explicit maintainer authorization for the visibility change.
+Immediately after public launch, enable private vulnerability reporting, protect
+`main` with required CI and review/CODEOWNERS rules, reconfirm read-only workflow
+permissions and DCO enforcement, clone and test without existing credentials,
+and rerun hosted CI against the exact public commit.
 
-Immediately after the repository becomes public:
-
-1. Enable private vulnerability reporting and verify the root
-   [SECURITY.md](../SECURITY.md) advisory link opens the private form.
-2. Protect `main` and require the GitHub Actions `verify` status check. Apply
-   review and CODEOWNERS rules appropriate for the current maintainer team.
-3. Reconfirm read-only default workflow permissions, DCO sign-off, merge
-   methods, issue settings, Dependabot alerts, and automated security fixes.
-4. Clone the public URL without existing credentials, run the documented source
-   setup, and verify the rendered README and all public links.
-5. Run hosted CI again against the exact public `main` commit.
-
-GitHub Free does not expose branch protection for this private repository, and
-GitHub offers private vulnerability reporting only for public repositories. The
-pre-launch `403`/`404` responses are therefore expected; the controls must be
-enabled immediately after the authorized visibility flip.
-
-## Source-only GitHub releases
-
-Maintainers may publish a tagged GitHub source release while npm and packaged
-interactive installation remain blocked. A source release contains GitHub's
-automatically generated source archives and points users to the supported
-`install.sh` path pinned with `ALLOY_REF=vX.Y.Z`; it must not claim to provide an
-npm package or standalone binary.
-
-Before publishing a source release:
-
-1. Bump the root package, TUI package, shrinkwrap, and runtime fallback versions.
-2. Move the shipped changelog entries from `Unreleased` to a dated version.
-3. Run `npm run ci:local`, `npm run ci:release`, and independent review.
-4. Merge the release metadata through protected `main` and require green CI.
-5. Complete the manual SWE-bench gate. While real execution is disabled, stop
-   here and do not tag.
-6. Tag that exact `main` commit and wait for green tag CI before creating the
-   GitHub Release.
-7. Download and inspect the published source archive, verify the version, and
-   confirm the supported installer resolves the tag.
-
-## Package publication is blocked
+## Package Publication Is Blocked
 
 The supported distribution is the source installer. `package.json` remains
 private, `prepublishOnly` exits nonzero, and `release:verify:publish`
-intentionally fails. The packed artifact is generated only to verify its file
-boundary and bundled Pi runtime; it is not a supported interactive installation
-path because npm cannot install the Bun-managed native TUI graph safely.
+intentionally fails. `npm pack` is used only to verify the package file boundary
+and bundled Pi runtime; it is not a supported installation or release artifact.
 
-Do not create an npm release, publish or attach an npm package artifact, or add a
-trusted-publishing workflow until an explicit package-consumer Bun lifecycle has
-been designed, approved, and verified on clean Linux and macOS machines.
-Reopening package publication also requires changing the
-private/package-consumer metadata and their fail-closed tests, reviewing exact
-root and TUI dependency locks, running `npm run ci:release`, and obtaining
-independent review of the exact release diff.
-
-Publishing, repository visibility changes, and release announcements require
-explicit maintainer authorization.
+Do not publish or attach an npm package, standalone binary, or trusted-publishing
+workflow. Reopening npm requires a separately designed and approved Bun package
+lifecycle, clean Linux and macOS verification, updated fail-closed metadata and
+tests, exact root/TUI lock review, `npm run ci:release`, and independent review.
+Publishing, visibility changes, tags, and announcements require explicit
+maintainer authorization.

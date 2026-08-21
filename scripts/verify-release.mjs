@@ -8,6 +8,7 @@ function fail(message) {
 }
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+const tuiPkg = JSON.parse(readFileSync("tui/package.json", "utf8"));
 const lockPath = "npm-shrinkwrap.json";
 const publishGate = process.argv.includes("--publish");
 const sourceGate = process.argv.includes("--source");
@@ -22,6 +23,33 @@ let piForkShapeValid = true;
 
 if (pkg.name !== "alloy-agent") fail("package name must be alloy-agent");
 if (pkg.license !== "MIT") fail("package license must be MIT");
+if (tuiPkg.version !== pkg.version) {
+  fail("tui/package.json version must match package.json");
+}
+
+const runtimeFallbacks = [
+  {
+    path: "extensions/ui.ts",
+    pattern: /const\s+VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*;/g,
+  },
+  {
+    path: "lib/child-runner.mjs",
+    pattern: /out\.ALLOY_VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*out\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*;/g,
+  },
+  {
+    path: "lib/mcp-client.mjs",
+    pattern: /\{\s*name:\s*"alloy",\s*version:\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*\}/g,
+  },
+];
+
+for (const { path, pattern } of runtimeFallbacks) {
+  const matches = [...readFileSync(path, "utf8").matchAll(pattern)];
+  if (matches.length !== 1) {
+    fail(`${path} must contain exactly one executable version fallback`);
+  } else if (matches[0][1] !== pkg.version) {
+    fail(`${path} version fallback must match package.json`);
+  }
+}
 if (publishGate) fail("npm publication is blocked until package-consumer lifecycle design is explicit");
 if (sourceGate && pkg.private !== true) {
   fail("package must remain private for a source launch");
@@ -360,7 +388,12 @@ if (pkg.overrides?.undici !== "8.10.0") {
 if (existsSync(lockPath)) {
   const lock = JSON.parse(readFileSync(lockPath, "utf8"));
   if (lock.lockfileVersion !== 3) fail("npm-shrinkwrap.json must use lockfileVersion 3");
-  if (lock.name !== pkg.name || lock.version !== pkg.version) {
+  if (
+    lock.name !== pkg.name ||
+    lock.version !== pkg.version ||
+    lock.packages?.[""]?.name !== pkg.name ||
+    lock.packages?.[""]?.version !== pkg.version
+  ) {
     fail("package and shrinkwrap identity must match");
   }
   const rootDependencies = lock.packages?.[""]?.dependencies || {};

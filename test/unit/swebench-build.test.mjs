@@ -70,15 +70,11 @@ describe("SWE-bench build boundaries", () => {
     );
   });
 
-  it("documents the honest host-mode and untrusted-artifact boundary", () => {
+  it("documents the trusted authority, attempt, and artifact boundaries", () => {
     for (const document of [normalizedBenchmarkReadme, normalizedReleasing]) {
       assert.match(
         document,
         /does not intentionally inject host credentials or environment variables, dataset gold fields, or evaluator scripts into persisted artifacts/i,
-      );
-      assert.match(
-        document,
-        /Host mode is not a filesystem jail; Alloy runs as the maintainer's Unix user\./,
       );
       assert.match(
         document,
@@ -88,6 +84,43 @@ describe("SWE-bench build boundaries", () => {
         document,
         /inspect persisted artifacts before sharing, attaching, or releasing them/i,
       );
+      assert.doesNotMatch(document, /Host mode is not a filesystem jail/i);
+      assert.doesNotMatch(document, /real (?:attempt|release|execution).*disabled/i);
+    }
+
+    for (const path of [
+      "/usr/local/libexec/alloy-swebench-gate",
+      "/etc/alloy/swebench-gate.json",
+      "/var/lib/alloy-swebench-gate",
+    ]) {
+      assert.match(benchmarkReadme, new RegExp(path.replaceAll("/", "\\/")));
+      assert.match(releasing, new RegExp(path.replaceAll("/", "\\/")));
+    }
+
+    assert.match(normalizedBenchmarkReadme, /provision <authority-sha>` prints an operator-reviewed bootstrap command/i);
+    assert.match(normalizedBenchmarkReadme, /--replace-authority <old-sha> <new-sha>/);
+    assert.match(normalizedBenchmarkReadme, /dry-run does not consume an attempt/i);
+    assert.match(normalizedBenchmarkReadme, /signed first-attempt claim/i);
+    assert.match(normalizedBenchmarkReadme, /audited, one-use retry/i);
+    assert.match(normalizedBenchmarkReadme, /cleanup-before-sign/i);
+    assert.match(normalizedBenchmarkReadme, /manifest\.signature\.json/);
+    assert.match(normalizedBenchmarkReadme, /Ed25519/);
+  });
+
+  it("documents immutable inputs and the exact release-candidate sequence", () => {
+    for (const document of [normalizedBenchmarkReadme, normalizedReleasing]) {
+      assert.match(document, /b0dde1093fe417d83b7184254edf8199c1f0dff5/);
+      assert.match(document, /438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3/);
+      assert.match(document, /36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153/);
+      assert.match(document, /f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b/);
+      assert.match(document, /c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49/);
+      assert.match(document, /7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3/);
+      assert.match(document, /88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68/);
+      assert.match(document, /run-swebench-release-smoke\.sh dry-run ["']?[<$A-Z_]/);
+      assert.match(document, /run-swebench-release-smoke\.sh release ["']?[<$A-Z_]/);
+      assert.match(document, /run-swebench-release-smoke\.sh authorize-retry ["']?[<$A-Z_]/);
+      assert.match(document, /source-only GitHub release/i);
+      assert.match(document, /npm publication (?:is|remains) blocked/i);
     }
   });
 
@@ -209,6 +242,7 @@ describe("SWE-bench build boundaries", () => {
       ignoreLines.filter((line) => line.startsWith("benchmarks/")),
       [
         "benchmarks/swebench/.venv/",
+        "benchmarks/swebench/.cache/",
         "benchmarks/swebench/.work/",
         "benchmarks/swebench/results/",
         "benchmarks/swebench/__pycache__/",

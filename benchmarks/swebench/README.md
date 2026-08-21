@@ -1,189 +1,209 @@
 # SWE-bench Release Smoke
 
-The evaluator dependency input is an authority-owned, fully exact Python 3.14.4
-closure in `requirements.in`, including bootstrap `pip`. Authority upgrades must
-regenerate `requirements.lock` with hashes, verify exact input/lock project and
-version equality, and explicitly review and accept the new lock SHA-256 in
-`profile.json`. Runtime verification accepts only that recorded lock digest and
-never resolves or upgrades a package.
-
 This maintainer-only gate runs one pinned SWE-bench Lite instance against an
 exact Alloy release candidate. It is a one-instance smoke, not an Alloy
-SWE-bench score, and is not an end-user Alloy command or dependency.
+SWE-bench score, and it is not an end-user command or dependency.
+
+## Trust Anchors
+
+The official gate runs from root-owned authority installed before the release
+candidate exists:
+
+- Launcher: `/usr/local/libexec/alloy-swebench-gate`
+- Configuration: `/etc/alloy/swebench-gate.json`
+- Protected authority, signing keys, attempts, work, and results:
+  `/var/lib/alloy-swebench-gate`
+
+`bash scripts/run-swebench-release-smoke.sh provision <authority-sha>` prints an
+operator-reviewed bootstrap command. It does not execute worktree Python or
+invoke `sudo`. Save and inspect the printed ceremony, then execute it only for
+the full lowercase SHA of the just-merged canonical `main` tip:
+
+```bash
+AUTHORITY_SHA=<40-character-main-sha>
+bash scripts/run-swebench-release-smoke.sh provision "$AUTHORITY_SHA" \
+  > /tmp/alloy-swebench-bootstrap.sh
+less /tmp/alloy-swebench-bootstrap.sh
+/bin/sh /tmp/alloy-swebench-bootstrap.sh
+rm -f /tmp/alloy-swebench-bootstrap.sh
+```
+
+The ceremony fetches that SHA from the hardcoded canonical HTTPS repository in
+a fresh root-owned mode-0700 directory. Provisioning generates an Ed25519 gate
+key, builds the hash-locked evaluator with root Python 3.14.4, installs and loads
+the confinement policy, and emits a JSON receipt. Preserve and audit that
+receipt. It creates the fixed launcher, config, and protected state paths above.
+It never copies the unprivileged `.venv` prepared by `setup`.
+
+Provisioning is one-time and refuses implicit replacement. An authority update
+is a separate audited operation from a freshly fetched canonical root-owned
+checkout of the new `main` tip:
+
+```bash
+sudo /usr/bin/env -i \
+  HOME=<empty-root-owned-mode-0700-git-home> PATH=/usr/bin:/bin \
+  /usr/bin/python3 -I -E -s \
+  <fresh-root-owned-new-authority-checkout>/benchmarks/swebench/provision.py \
+  --replace-authority <old-sha> <new-sha>
+```
+
+The empty Git HOME and checkout must use the same root ownership, mode, canonical
+remote, clean-tree, and exact-main-tip checks as initial bootstrap. Verify both
+SHAs and the replacement receipt before running another candidate. Replacement
+preserves the gate key and protected attempt history; it cannot silently reset
+the no-retry policy.
+
+## Immutable Inputs
+
+The authority profile pins all release inputs:
+
+- Dataset revision: `b0dde1093fe417d83b7184254edf8199c1f0dff5`
+- Dataset parquet SHA-256:
+  `438e281d80587aa7be470896ce410557002fde02d2ceee3e099331d308f62dd3`
+- Selected row SHA-256:
+  `36373ba1246adbb171a59ae30b6b7fe4a1d437d5cd92cb1e2c3a51bc549b6153`
+- Agent image manifest digest:
+  `sha256:f2bf1588ef7e8dd183d9e4cb4330a0d952204b7348ead42afb1aab11f9c4911b`
+- Proxy image manifest digest:
+  `sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49`
+- Evaluator image manifest digest:
+  `sha256:7485c1e3c8861efd0c6a4a78b952857592e541031039000d25e9481f045dc4a3`
+- Ollama model digest:
+  `116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba`
+- Evaluator confinement patch SHA-256:
+  `88b8a58dfaf40afe73222fe92c7a1a738f0e7fa0450dd19ca525507632f19d68`
+
+The evaluator dependency closure is fully exact in `requirements.lock`, with
+hashes for every distribution and bootstrap `pip`. Provisioning verifies the
+lock digest, installed distribution set, upstream evaluator source hash, and the
+patched evaluator hash. The confinement patch removes `CAP_SYS_ADMIN`, disables
+networking, drops capabilities, and applies the pinned AppArmor and seccomp
+policies. Runtime verification never resolves or upgrades evaluator packages.
 
 ## Prerequisites
 
-- Python 3.11 or newer. CI uses Python 3.12 for the fast test suite.
-- A local Ollama service on loopback with `qwen3.8-alloy:latest` installed at
-  digest `116655dae3333016553c60bc7fec60f7a2cacfb7197630f0f176c6891962b6ba`.
-- A Git checkout with no tracked changes whose `HEAD` is a full commit SHA
-  pushed to the canonical credential-free GitHub remote. The default remote
-  name is `github`; set `ALLOY_BENCH_REMOTE` only when the same canonical URL
-  uses another name.
-- Outbound GitHub and codeload access for remote-tip verification and the exact
-  candidate install.
-- Outbound Hugging Face dataset access for `SWE-bench/SWE-bench_Lite` and Python
-  package index access for setup.
+- Python 3.11 or newer for fast tests. CI uses Python 3.12.
+- Root Python 3.14.4 and binary wheels for authority provisioning.
+- A reachable, functioning Docker daemon with AppArmor, seccomp, cgroup, and
+  internal-network controls available. An installed Docker CLI is insufficient.
+- A local Ollama service on loopback with `qwen3.8-alloy:latest` at the pinned
+  digest above.
+- Outbound GitHub and codeload access for authority and candidate verification.
+- Target repository clone access.
+- Hugging Face dataset access during setup/provisioning.
+- Image and registry access required by SWE-bench.
 
-When the real `release` command is re-enabled, it will also require a reachable, functioning Docker daemon
-that can start the official SWE-bench containers.
-Target repository clone access and the image and registry access required by
-SWE-bench's official evaluator will also be required. An installed Docker CLI
-alone is insufficient.
+## Setup And Tests
 
-Bootstrap the pinned `swebench==5.0.0` environment:
+`setup` is unprivileged convenience setup. It prepares local caches and the
+source-only benchmark environment but does not provision authority and is not
+consumed by the official root gate:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh setup
 ```
 
-The environment is created at the ignored path `benchmarks/swebench/.venv/`.
-It is release tooling only; Python and SWE-bench are not Alloy runtime
-dependencies.
-
-If the canonical GitHub remote has another local name, pass that name without
-changing its URL:
-
-```bash
-ALLOY_BENCH_REMOTE=origin bash scripts/run-swebench-release-smoke.sh dry-run
-```
-
-## Fast Tests
+Run the complete model-free benchmark suite with:
 
 ```bash
 bash scripts/run-swebench-release-smoke.sh test
 ```
 
-The fast suite validates the profile, command construction, provenance checks,
-privacy boundaries, artifact handling, failure reporting, and candidate wrapper
-with fixtures. It does not contact Ollama or the SWE-bench dataset, invoke an
-autonomous Alloy attempt, start Docker evaluation, install a real candidate, or
-produce an official verdict. Normal CI runs these tests only.
+The tests validate provenance, immutable pins, authority loading, attempt
+claims, cleanup ordering, artifact ownership, and container isolation fixtures.
+They do not run a model or consume the real release attempt.
 
 All benchmark commands are source-only wrapper subcommands. Root and packed
-`package.json` metadata intentionally contain no benchmark command. The
-release-only `benchmarks/` tree and
-`scripts/run-swebench-release-smoke.sh` are excluded from `npm pack`. The source
-installer also removes both from the installed application after validating the
-source snapshot, so benchmark tooling is not shipped in Alloy's runtime.
+`package.json` metadata contain no benchmark command. `benchmarks/` and
+`scripts/run-swebench-release-smoke.sh` are excluded from `npm pack` and removed
+by the source installer after source validation. npm publication is blocked.
+The supported release is a source-only GitHub release.
 
-## Candidate Gate
+## Exact Candidate Flow
 
-After green CI, push the exact candidate commit before either command. The
-wrapper rejects tracked changes, malformed SHAs, credentialed or noncanonical
-remote URLs, and commits that merely exist in remote history: local `HEAD` must
-equal an advertised non-peeled ref tip on the canonical GitHub remote.
+After the release metadata PR has merged with green CI, record the exact pushed
+candidate SHA. It must be a full lowercase commit advertised as a non-peeled ref
+tip by the canonical GitHub remote. The root-owned authority verifies that the
+candidate differs from the authority only by the reviewed root/TUI/shrinkwrap
+version fields, three runtime fallback literals, and changelog extraction.
 
-First verify candidate installation and provenance plus the model, evaluator,
-and dataset handoff without cloning the target repository, running the agent,
-or starting Docker evaluation:
+Run the candidate dry-run first:
 
 ```bash
-bash scripts/run-swebench-release-smoke.sh dry-run
+CANDIDATE_SHA=<40-character-release-candidate-sha>
+bash scripts/run-swebench-release-smoke.sh dry-run "$CANDIDATE_SHA"
 ```
 
-The real attempt is currently disabled. It must remain fail-closed until the
-agent is isolated from evaluator and result storage and the dataset and
-evaluator inputs have immutable integrity pins. Calling it exits nonzero before
-candidate preflight:
+The wrapper delegates with noninteractive sudo to the fixed root launcher. The
+dry-run validates authority, candidate, package installation, dataset, image,
+model, evaluator, and confinement provenance in disposable containers. A
+dry-run does not consume an attempt, does not launch Alloy, and cannot satisfy
+the release gate.
+
+After independent review of the dry-run evidence and explicit maintainer
+authorization, start the signed first attempt exactly once:
 
 ```bash
-bash scripts/run-swebench-release-smoke.sh release
+bash scripts/run-swebench-release-smoke.sh release "$CANDIDATE_SHA"
 ```
 
-After trusted isolation and integrity pinning are implemented, the one-attempt,
-no-retry policy below applies. Do not turn an infrastructure failure into an
-undocumented retry. Any additional attempt requires a new explicit maintainer
-decision and must be reported separately.
+The coordinator creates a signed first-attempt claim keyed to the candidate,
+instance, dataset revision and row, model, and authority profile. It consumes
+that claim immediately before the one Docker create request. There is no
+automatic retry. A crash, timeout, Docker create failure after consumption,
+`unresolved` verdict, or infrastructure failure does not make another launch
+available.
 
-## Candidate And State Isolation
+Only a new explicit maintainer decision may create the audited, one-use retry:
 
-The wrapper archives `package.json`, `install.sh`, and the complete benchmark
-tree from the exact candidate SHA. It executes that immutable installer and
-benchmark snapshot rather than mutable working-tree files. The installer is
-pinned to the same SHA and writes the candidate under a temporary `ALLOY_PREFIX`
-and temporary HOME/XDG directories; the wrapper verifies the installed package,
-CLI version, Pi version, and install-manifest commit before launch. That
-temporary candidate installation is removed when the wrapper exits.
-
-The autonomous process receives an explicit environment allowlist: terminal and
-locale values, `PATH`, a loopback-only `OLLAMA_HOST`, and fresh per-run HOME/XDG
-and temporary directories under the ignored `benchmarks/swebench/.work/` tree.
-Host credentials and unrelated environment variables are not intentionally
-forwarded. The dataset row is stripped of `patch` and `test_patch` before prompt
-construction.
-
-Host mode is not a filesystem jail; Alloy runs as the maintainer's Unix user.
-The disposable home and environment allowlist reduce ambient state, but they do
-not prevent the process from reading files that Unix user can access. The runner
-does not intentionally inject host credentials or environment variables,
-dataset gold fields, or evaluator scripts into persisted artifacts.
-
-That host-mode boundary does not protect evaluator or result integrity from the
-agent process. This is why the real `release` subcommand is disabled; a dry-run
-does not launch the agent and is unaffected.
-
-Before any attempt, the runner binds the manifest to the candidate commit,
-installed manifest, Alloy and Pi versions, exact Ollama digest, SWE-bench
-version, dataset, instance, and commands. Any provenance drift fails before the
-agent starts.
-
-## Artifacts
-
-Each invocation prints its newly created directory under:
-
-```text
-benchmarks/swebench/results/alloy-<version>-<UTC timestamp>/
+```bash
+bash scripts/run-swebench-release-smoke.sh authorize-retry "$CANDIDATE_SHA" \
+  "<specific audited infrastructure reason>"
+bash scripts/run-swebench-release-smoke.sh release "$CANDIDATE_SHA"
 ```
 
-The runner's intended result contract has this phase-dependent file set:
+The retry command emits the signed ordinal-2 claim. It cannot authorize an
+implicit third attempt, and its reason and separate result must remain in the
+release audit record.
 
-- Every attributable run has `manifest.json` and `summary.json`.
-- After dataset loading, `problem.md` contains only the public issue prompt.
-- A real agent attempt may add `alloy.stdout.log`, `alloy.stderr.log`,
-  `model_patch.diff`, and the official one-line `predictions.jsonl`.
-- Evaluation may add only `evaluation/official-summary.json`,
-  `evaluation/stdout.log`, and `evaluation/stderr.log`.
+## Results And Signatures
 
-After trusted isolation is implemented, evaluator scratch, including generated
-evaluator scripts such as `eval.sh` and hidden test material, must be deleted
-after the listed evaluation files are copied. The current wrapper validates the
-new result path and selected manifest provenance, but those checks are not an
-integrity boundary against a same-UID agent. Only dry-run is currently enabled.
+Results are root-owned beneath `/var/lib/alloy-swebench-gate/results/`. The
+trusted coordinator is their only writer; result storage, evaluator code, the
+dataset gold fields, signing keys, and the Docker socket are never mounted into
+the agent container. The runner does not intentionally inject host credentials
+or environment variables, dataset gold fields, or evaluator scripts into
+persisted artifacts.
+
+Terminal evidence uses cleanup-before-sign ordering. The coordinator proves the
+agent and evaluator absent and cleans every scratch directory, container,
+network, relay, firewall rule, and volume before writing `manifest.json` and
+`manifest.signature.json`. Any cleanup or signing uncertainty writes unsigned
+`failure.json` and blocks release; it cannot leave signed success evidence.
+
+Verify `manifest.signature.json` says `Ed25519`, verify its signature over the
+canonical bytes of `manifest.json` with the provisioned public key, and verify
+that public key's SHA-256 equals `gate_public_key_sha256` in
+`/etc/alloy/swebench-gate.json` and the provisioning receipt. Then inspect the
+signed authority/candidate commits, attempt ordinal, all input digests,
+container inspections, cleanup proof, terminal status, patch digest, and
+evaluator-summary digest.
 
 Agent/evaluator stdout/stderr, model patches, and official summaries are
 untrusted and may contain sensitive content produced or read by those
 processes. Maintainers must inspect persisted artifacts before sharing,
-attaching, or releasing them. The intended file contract is not currently a
-content-sanitization, confidentiality, or agent-tamper boundary.
+attaching, or releasing them. A valid signature proves gate origin and
+integrity, not that untrusted artifact content is safe to disclose.
 
-## Status And Verdicts
+## Verdicts
 
-The shell exit is authoritative. Exit `0` means either a completed `dry_run` or
-an `evaluated` summary with an official verdict; inspect `summary.json` to tell
-which. Wrapper preflight/install/pointer failures exit nonzero (invalid usage is
-`64`). Runner exits and terminal summary statuses are:
+`resolved` and `unresolved` are both valid official one-instance outcomes.
+Only a persisted schema-v2 official summary can complete the execution gate.
+`infrastructure_failure` means no valid official verdict exists and blocks gate
+completion. Logs, an exit code, or human interpretation cannot replace the
+official summary. This one result must never be presented as an Alloy SWE-bench
+score.
 
-| Exit | `summary.json` status | Meaning |
-|---:|---|---|
-| 0 | `dry_run` | Provenance and dataset handoff passed; no agent or evaluator ran. |
-| 0 | `evaluated` | Official evaluation completed; `verdict` is `resolved` or `unresolved`. |
-| 2 | `runtime_failure` | Candidate, install, version, model, or evaluator provenance failed. |
-| 3 | `dataset_failure` | The pinned dataset instance could not be loaded or matched. |
-| 4 | `checkout_failure` | The target repository/base commit could not be prepared. |
-| 5 | `agent_timeout` | The single Alloy attempt exceeded 1,800 seconds. |
-| 6 | `agent_failure` | The single Alloy attempt failed. |
-| 7 | `patch_capture_failure` | The candidate patch could not be safely captured. |
-| 8 | `evaluator_timeout` or `evaluator_failure` | Official evaluation timed out, failed, reported an infrastructure/error category, or supplied no valid verdict. |
-
-`resolved` and `unresolved` are both valid official outcomes for this
-one-instance release smoke. `unresolved` includes an official empty patch. They
-are derived only from the persisted schema-v2 official summary; logs, exit zero
-alone, and human interpretation cannot substitute for that summary.
-
-At the release-policy level, `infrastructure_failure` means no valid official
-`resolved` or `unresolved` verdict exists. This includes every non-evaluated
-terminal status and any missing, invalid, ambiguous, error, or infrastructure
-official summary. An `infrastructure_failure` is the truthful absence of an
-official verdict, never a third official evaluator verdict and never evidence
-that the gate ran successfully.
+After valid signed evidence is independently reviewed, tag the exact candidate,
+wait for green tag CI, and publish only the source-only GitHub release. Do not
+publish or attach an npm package or binary artifact.
