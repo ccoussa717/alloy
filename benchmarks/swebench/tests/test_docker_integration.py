@@ -1,7 +1,7 @@
 import dataclasses
+import ipaddress
 import json
 import os
-import signal
 import shutil
 import socket
 import subprocess
@@ -31,6 +31,12 @@ from benchmarks.swebench.evaluator import EvaluationResult, EvaluatorEnvironment
 from benchmarks.swebench.fetch import ArtifactFetcher
 from benchmarks.swebench.profile import load_profile
 from benchmarks.swebench.proxy import ProxyNetwork
+from benchmarks.swebench.tests.routed_endpoints import (
+    CausalProxyNetworkMixin,
+    DNS_ENDPOINT,
+    RoutedEndpointHarness,
+    TCP_ENDPOINTS,
+)
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -74,131 +80,10 @@ class _StaticEvaluator:
         )
 
 
-class _ControlNamespace:
-    TCP = {
-        "gateway_alternate": "192.0.2.1",
-        "rfc1918": "10.77.0.1",
-        "metadata": "169.254.169.254",
-        "public_ipv4": "1.1.1.1",
-        "private_ipv6": "fd00::10",
-        "public_ipv6": "2606:4700:4700::1111",
-    }
-    TCP_PORT = 18080
-    DNS = "192.0.2.53"
-    DNS_PORT = 15353
-
-    def __init__(self, root):
-        self.name = "alloy-task11-" + uuid.uuid4().hex[:12]
-        self.ready = root / "control-ready"
-        self.process = None
+class _ControlledGateway:
+    def __init__(self):
         self.closed = False
         self.gateway_servers = []
-        try:
-            self._initialize()
-        except BaseException:
-            self.close()
-            raise
-
-    def _initialize(self):
-        subprocess.run(["/usr/sbin/ip", "netns", "add", self.name], check=True)
-        subprocess.run(
-            ["/usr/sbin/ip", "-n", self.name, "link", "set", "lo", "up"], check=True
-        )
-        for address in (*self.TCP.values(), self.DNS):
-            prefix = "128" if ":" in address else "32"
-            subprocess.run(
-                ["/usr/sbin/ip", "-n", self.name, "address", "add", f"{address}/{prefix}", "dev", "lo"],
-                check=True,
-            )
-        server = r'''
-import os, selectors, socket
-addresses = os.environ["ADDRESSES"].split(",")
-selector = selectors.DefaultSelector()
-for address in addresses:
-    family = socket.AF_INET6 if ":" in address else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((address, int(os.environ["TCP_PORT"])))
-    sock.listen()
-    sock.setblocking(False)
-    selector.register(sock, selectors.EVENT_READ, "tcp")
-dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-dns.bind((os.environ["DNS"], int(os.environ["DNS_PORT"])))
-dns.setblocking(False)
-selector.register(dns, selectors.EVENT_READ, "dns")
-open(os.environ["READY"], "w").close()
-while True:
-    for key, _ in selector.select():
-        if key.data == "tcp":
-            connection, _ = key.fileobj.accept()
-            connection.sendall(b"controlled\n")
-            connection.close()
-        else:
-            data, peer = dns.recvfrom(4096)
-            dns.sendto(data[:2] + b"\x81\x83" + data[4:6] + b"\x00\x00\x00\x00\x00\x00" + data[12:], peer)
-'''
-        environment = {
-            **os.environ,
-            "ADDRESSES": ",".join(self.TCP.values()),
-            "TCP_PORT": str(self.TCP_PORT),
-            "DNS": self.DNS,
-            "DNS_PORT": str(self.DNS_PORT),
-            "READY": str(self.ready),
-        }
-        self.process = subprocess.Popen(
-            ["/usr/sbin/ip", "netns", "exec", self.name, "/usr/bin/python3", "-c", server],
-            env=environment,
-            start_new_session=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        deadline = time.monotonic() + 10
-        while not self.ready.exists() and time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                stdout, stderr = self.process.communicate()
-                raise RuntimeError(f"control namespace failed: {stdout}{stderr}")
-            time.sleep(0.05)
-        if not self.ready.exists():
-            raise RuntimeError("control namespace did not become ready")
-
-    def probe(self):
-        config = json.dumps(
-            {
-                "tcp": {name: [address, self.TCP_PORT] for name, address in self.TCP.items()},
-                "dns": [self.DNS, self.DNS_PORT],
-            },
-            separators=(",", ":"),
-        )
-        code = r'''
-import json, socket, sys
-config = json.loads(sys.argv[1]); result = {}
-for name, endpoint in config["tcp"].items():
-    family = socket.AF_INET6 if ":" in endpoint[0] else socket.AF_INET
-    try:
-        with socket.socket(family, socket.SOCK_STREAM) as sock:
-            sock.settimeout(2); sock.connect(tuple(endpoint)); result[name] = True
-    except OSError: result[name] = False
-try:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.settimeout(2); sock.sendto(b"\x12\x34\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00", tuple(config["dns"])); sock.recvfrom(512)
-    result["dns"] = True
-except OSError: result["dns"] = False
-print(json.dumps(result, sort_keys=True))
-'''
-        result = subprocess.run(
-            ["/usr/sbin/ip", "netns", "exec", self.name, "/usr/bin/python3", "-c", code, config],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return json.loads(result.stdout)
-
-    def config(self):
-        return {
-            "tcp": {name: [address, self.TCP_PORT] for name, address in self.TCP.items()},
-            "dns": [self.DNS, self.DNS_PORT],
-        }
 
     def add_gateway_alternate(self, host):
         server = ThreadingHTTPServer((host, 0), _Upstream)
@@ -217,24 +102,17 @@ print(json.dumps(result, sort_keys=True))
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-        if self.process is not None and self.process.poll() is None:
-            os.killpg(self.process.pid, signal.SIGKILL)
-            self.process.wait()
-        if self.process is not None and self.process.stdout is not None:
-            self.process.stdout.close()
-        if self.process is not None and self.process.stderr is not None:
-            self.process.stderr.close()
-        subprocess.run(
-            ["/usr/sbin/ip", "netns", "delete", self.name],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        inventory = subprocess.run(
-            ["/usr/sbin/ip", "netns", "list"], check=True, capture_output=True, text=True
-        ).stdout
-        if self.name in inventory:
-            raise AssertionError(f"control namespace leaked: {self.name}")
+
+    def assert_alive(self):
+        for server, thread in self.gateway_servers:
+            if not thread.is_alive():
+                raise AssertionError("controlled gateway listener died before denial probe")
+            with socket.create_connection(server.server_address, timeout=2):
+                pass
+
+
+class _CausalProxyNetwork(CausalProxyNetworkMixin, ProxyNetwork):
+    pass
 
 
 class _FixtureServices(TrustedRunServices):
@@ -247,6 +125,9 @@ class _FixtureServices(TrustedRunServices):
 
     def authority(self, candidate_commit, state):
         self._run_id = "docker-integration-" + uuid.uuid4().hex
+        endpoint_harness = getattr(self.config.proxy, "endpoint_harness", None)
+        if endpoint_harness is not None:
+            endpoint_harness.run_id = self.run_id
         self.writer = ResultWriter(self.config.results_root, self.run_id)
         state.run_dir = str(self.writer.run_dir)
         self.verified_candidate = self.fixture_candidate
@@ -274,8 +155,13 @@ class _FixtureServices(TrustedRunServices):
     def proxy_start(self, state):
         super().proxy_start(state)
         assert self.endpoint is not None
+        endpoint_harness = getattr(self.config.proxy, "endpoint_harness", None)
+        if endpoint_harness is None:
+            return
+        if endpoint_harness.baseline_observed is None:
+            raise AssertionError("routed endpoint baseline did not run before nft installation")
         probes = {
-            **self.control.config(),
+            **endpoint_harness.config(),
             "marker": "/agent-work/fixture-marker.json",
             "relay": [self.endpoint.host, self.endpoint.port],
         }
@@ -290,11 +176,88 @@ class _FixtureServices(TrustedRunServices):
             text=True,
         ).stdout.strip()
         probes["tcp"]["gateway_alternate"] = self.control.add_gateway_alternate(gateway)
+        boundaries = {
+            **{name: "internal-topology-no-route" for name in TCP_ENDPOINTS},
+            "dns": "internal-topology-no-route",
+            "gateway_alternate": "nft-agent-input",
+            "relay": "allowed-proxy-route",
+        }
+        probes["boundaries"] = boundaries
+        self.network_probes = probes
+        state.manifest["network_causality"] = {
+            "baseline_observed": endpoint_harness.baseline_observed,
+            "baseline_diagnostics": endpoint_harness.baseline_diagnostics,
+            "baseline_image_id": endpoint_harness.baseline_image_id,
+            "baseline_confinement": "apparmor=unconfined,seccomp=unconfined",
+            "denial_boundaries": boundaries,
+        }
         environment = (
             *self.config.agent_environment,
             ("NETWORK_CONFIG", json.dumps(probes, separators=(",", ":"))),
         )
         self.config = dataclasses.replace(self.config, agent_environment=environment)
+
+    def agent_start(self, state):
+        if not any(
+            mount.target == "/fixture/network-probes.py"
+            for mount in self.config.agent_mounts
+        ):
+            return super().agent_start(state)
+        results = []
+        errors = []
+
+        def probe_live_namespace():
+            try:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if self.agent is not None and self.endpoint is not None:
+                        inspected = json.loads(
+                            self.config.proxy._docker("inspect", self.agent.container_id).stdout
+                        )[0]
+                        if (
+                            inspected["State"]["Running"]
+                            and self.endpoint.network in inspected["NetworkSettings"]["Networks"]
+                        ):
+                            script = (
+                                Path(__file__).parent / "fixtures/agents/network-probes.py"
+                            ).read_text()
+                            config = {
+                                key: value for key, value in self.network_probes.items()
+                                if key != "marker"
+                            }
+                            probe = self.config.proxy.endpoint_harness.probe_network_namespace(
+                                self.agent, script, config,
+                            )
+                            if probe.returncode != 0:
+                                raise AssertionError(probe.stdout + probe.stderr)
+                            self.config.proxy.endpoint_harness.assert_endpoint_live()
+                            self.control.assert_alive()
+                            results.append(json.loads(probe.stdout))
+                            return
+                    time.sleep(0.05)
+                raise AssertionError("agent namespace was not available for causal probe")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                if self.agent is not None:
+                    self.config.proxy._docker(
+                        "exec", self.agent.container_id, "python3", "-c",
+                        "from pathlib import Path; Path('/agent-work/causal-probe-done').touch()",
+                        check=False,
+                    )
+
+        thread = threading.Thread(target=probe_live_namespace)
+        thread.start()
+        try:
+            super().agent_start(state)
+        finally:
+            thread.join(timeout=15)
+        if thread.is_alive():
+            raise AssertionError("agent namespace causal probe did not finish")
+        if errors:
+            raise errors[0]
+        state.manifest["network_causality"]["internal_namespace_probe"] = results[0]
+
 
 class DockerBoundaryIntegrationTests(unittest.TestCase):
     @classmethod
@@ -391,10 +354,8 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="alloy-docker-integration-")
         self.root = Path(self.temporary.name)
-        self.control = _ControlNamespace(self.root)
+        self.control = _ControlledGateway()
         self.addCleanup(self.control.close)
-        control = self.control.probe()
-        self.assertEqual(control, {name: True for name in control})
         self.host_paths = {}
         for name in ("HOST_SECRET", "RESULT_SECRET", "DATASET_SECRET", "EVALUATOR_SECRET"):
             path = self.root / name.lower()
@@ -509,20 +470,33 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
 
     def run_fixture(self, name, *, environment=None, timeout=False):
         runtime = DockerRuntime(self.profile, REPO_ROOT)
-        proxy = ProxyNetwork(
+        proxy_class = _CausalProxyNetwork if name == "network-probes.py" else ProxyNetwork
+        proxy = proxy_class(
             runtime,
             self.proxy_image_id,
             REPO_ROOT,
             f"http://127.0.0.1:{self.upstream.server_port}",
             install_signal_handlers=False,
         )
+        if name == "network-probes.py":
+            proxy.endpoint_harness = RoutedEndpointHarness(
+                runtime,
+                proxy,
+                "pending-run-id",
+                self.profile.proxy_image,
+                self.proxy_image_id,
+                self.profile.agent_image,
+                self.agent_image_id,
+            )
         fixture = FIXTURES / name
         if name == "network-probes.py":
             command = (
                 "/bin/bash",
                 "-euc",
                 "until (: >/dev/tcp/$PROXY_HOST/$PROXY_PORT) 2>/dev/null; do sleep 0.05; done; "
-                "python3 /fixture/network-probes.py \"$NETWORK_CONFIG\"",
+                "status=0; python3 /fixture/network-probes.py \"$NETWORK_CONFIG\" || status=$?; "
+                "until [ -f /agent-work/causal-probe-done ]; do sleep 0.05; done; "
+                "rm -f /agent-work/causal-probe-done; exit $status",
             )
             mount = MountSpec(fixture, "/fixture/network-probes.py", True, "bind")
         else:
@@ -588,8 +562,52 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         evidence = self.run_fixture("network-probes.py")
         self.assertEqual(evidence.status, "evaluated", evidence.error)
         marker, _patch = self.read_marker_from_patch(evidence)
-        self.assertTrue(marker.pop("relay"))
-        self.assertEqual(marker, {name: False for name in marker})
+        observed = marker["observed"]
+        self.assertTrue(observed.pop("relay"), marker)
+        expected_boundaries = evidence.manifest["network_causality"]["denial_boundaries"]
+        denied = {name: boundary for name, boundary in expected_boundaries.items() if name != "relay"}
+        self.assertEqual(observed, {name: False for name in denied}, marker)
+        self.assertEqual(marker["boundaries"], expected_boundaries)
+        internal_probe = evidence.manifest["network_causality"]["internal_namespace_probe"]
+        self.assertEqual(
+            internal_probe["observed"],
+            {name: boundary == "allowed-proxy-route" for name, boundary in expected_boundaries.items()},
+        )
+        self.assertEqual(internal_probe["boundaries"], expected_boundaries)
+        diagnostics = internal_probe["route_diagnostics"]
+
+        def ipv4_route_covers(address):
+            target = int(ipaddress.ip_address(address))
+            for line in diagnostics["ipv4_routes"].splitlines()[1:]:
+                fields = line.split()
+                destination = int.from_bytes(bytes.fromhex(fields[1]), "little")
+                mask = int.from_bytes(bytes.fromhex(fields[7]), "little")
+                flags = int(fields[3], 16)
+                if not flags & 0x200 and target & mask == destination:
+                    return True
+            return False
+
+        def ipv6_route_covers(address):
+            target = int(ipaddress.ip_address(address))
+            for line in diagnostics["ipv6_routes"].splitlines():
+                fields = line.split()
+                destination = int(fields[0], 16)
+                prefix = int(fields[1], 16)
+                flags = int(fields[8], 16)
+                if not flags & 0x200 and (
+                    prefix == 0 or target >> (128 - prefix) == destination >> (128 - prefix)
+                ):
+                    return True
+            return False
+
+        for name, (address, _port) in TCP_ENDPOINTS.items():
+            route_covers = ipv6_route_covers if ":" in address else ipv4_route_covers
+            self.assertFalse(route_covers(address), f"{name} had a covering internal route")
+        self.assertFalse(ipv4_route_covers(DNS_ENDPOINT[0]), "DNS had a covering internal route")
+        self.assertEqual(
+            evidence.manifest["network_causality"]["baseline_observed"],
+            {**{name: True for name in TCP_ENDPOINTS}, "dns": True},
+        )
 
     def test_summary_forgery_stays_patch_data_and_cannot_change_official_verdict(self):
         evidence = self.run_fixture("forge-results.sh")
@@ -640,7 +658,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         host_secret = self.root / "host-results" / "evaluator-secret.txt"
         host_secret.parent.mkdir()
         host_secret.write_text(secret)
-        endpoints = list(self.control.config()["tcp"].values())
+        endpoints = list(TCP_ENDPOINTS.values())
         probe = "\n".join([
             "import json, os, socket, time",
             "time.sleep(2)",

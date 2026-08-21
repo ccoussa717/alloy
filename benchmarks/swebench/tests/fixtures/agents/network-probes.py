@@ -44,10 +44,23 @@ observed = {name: tcp(endpoint) for name, endpoint in config["tcp"].items()}
 observed["dns"] = dns(config["dns"])
 observed["relay"] = relay_http(config["relay"])
 
-if "marker" in config:
-    Path(config["marker"]).write_text(json.dumps(observed, sort_keys=True) + "\n")
-print(json.dumps(observed, sort_keys=True))
+diagnostics = {
+    "ipv4_routes": Path("/proc/net/route").read_text(),
+    "ipv6_routes": Path("/proc/net/ipv6_route").read_text(),
+    "interfaces": [name for _index, name in socket.if_nameindex()],
+}
+result = {
+    "observed": observed,
+    "boundaries": config["boundaries"],
+    "route_diagnostics": diagnostics,
+}
 
-expected = {name: False for name in observed}
-expected["relay"] = True
+if "marker" in config:
+    Path(config["marker"]).write_text(json.dumps(result, sort_keys=True) + "\n")
+print(json.dumps(result, sort_keys=True))
+
+expected = {
+    name: boundary == "allowed-proxy-route"
+    for name, boundary in config["boundaries"].items()
+}
 raise SystemExit(0 if observed == expected else 1)

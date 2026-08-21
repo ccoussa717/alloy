@@ -23,6 +23,12 @@ from benchmarks.swebench.proxy import (
     ProxyPolicy,
     ProxyStateError,
 )
+from benchmarks.swebench.tests.routed_endpoints import (
+    CausalProxyNetworkMixin,
+    DNS_ENDPOINT,
+    RoutedEndpointHarness,
+    TCP_ENDPOINTS,
+)
 from benchmarks.swebench.proxy_server import create_server
 
 
@@ -663,6 +669,10 @@ class ProxyNetworkTests(unittest.TestCase):
             self.assertEqual(runtime.networks, set())
 
 
+class CausalProxyNetwork(CausalProxyNetworkMixin, ProxyNetwork):
+    pass
+
+
 class RootNetworkIntegrationTests(unittest.TestCase):
     def test_real_proxy_network_denies_every_nonrelay_egress_and_cleans(self):
         if os.environ.get("ALLOY_SWEBENCH_REQUIRE_ROOT_NETWORK") != "1":
@@ -680,12 +690,21 @@ class RootNetworkIntegrationTests(unittest.TestCase):
         upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         upstream_thread.start()
         run_id = "root-network-" + uuid.uuid4().hex
-        network = ProxyNetwork(
+        network = CausalProxyNetwork(
             runtime,
             proxy_image_id,
             REPO_ROOT,
             f"http://127.0.0.1:{upstream.server_port}",
             install_signal_handlers=False,
+        )
+        network.endpoint_harness = RoutedEndpointHarness(
+            runtime,
+            network,
+            run_id,
+            profile.proxy_image,
+            proxy_image_id,
+            profile.proxy_image,
+            proxy_image_id,
         )
         agent = None
         other_listener = None
@@ -710,6 +729,10 @@ class RootNetworkIntegrationTests(unittest.TestCase):
                     )
                     network._docker("exec", agent.container_id, "python3", "-c", agent_script)
 
+                    proxy_routes = network.endpoint_harness.configure_routes(
+                        endpoint.container
+                    )
+
                     relay_host, relay_port = network._relay.address
                     other_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     other_listener.bind((relay_host, 0))
@@ -717,21 +740,41 @@ class RootNetworkIntegrationTests(unittest.TestCase):
                     config = {
                         "relay": [relay_host, relay_port],
                         "tcp": {
+                            **TCP_ENDPOINTS,
                             "bridge_other_port": [relay_host, other_listener.getsockname()[1]],
-                            "rfc1918": ["10.255.255.1", 80],
-                            "metadata": ["169.254.169.254", 80],
-                            "public_ipv4": ["1.1.1.1", 80],
-                            "public_ipv6": ["2606:4700:4700::1111", 80],
                         },
+                        "dns": DNS_ENDPOINT,
                     }
-                    probe = (Path(__file__).parent / "fixtures/network_probe.py").read_text()
-                    result = network._docker(
-                        "exec", endpoint.container.container_id,
-                        "python3", "-c", probe, json.dumps(config, separators=(",", ":")),
+                    boundaries = {
+                        **{name: "nft-proxy-egress" for name in TCP_ENDPOINTS},
+                        "dns": "nft-proxy-egress",
+                        "bridge_other_port": "nft-proxy-egress",
+                        "relay": "allowed-proxy-route",
+                    }
+                    config["boundaries"] = boundaries
+                    probe = (
+                        Path(__file__).parent / "fixtures/agents/network-probes.py"
+                    ).read_text()
+                    result = network.endpoint_harness.probe_network_namespace(
+                        endpoint.container, probe, config,
                     )
-                    observed = json.loads(result.stdout)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    network.endpoint_harness.assert_endpoint_live()
+                    probe_result = json.loads(result.stdout)
+                    observed = probe_result["observed"]
                     self.assertTrue(observed.pop("relay"), observed)
-                    self.assertEqual(observed, {name: False for name in observed})
+                    denied = {name: boundary for name, boundary in boundaries.items() if name != "relay"}
+                    self.assertEqual(
+                        observed,
+                        {name: False for name in denied},
+                        {
+                            "boundaries": probe_result["boundaries"],
+                            "probe_routes": probe_result["route_diagnostics"],
+                            "baseline": network.endpoint_harness.baseline_observed,
+                            "baseline_routes": network.endpoint_harness.baseline_diagnostics,
+                            "proxy_routes": proxy_routes,
+                        },
+                    )
                 finally:
                     network._stop_proxy(agent)
                     agent = None
