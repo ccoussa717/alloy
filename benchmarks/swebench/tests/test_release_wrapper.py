@@ -62,7 +62,7 @@ class HostLauncherArgumentTests(unittest.TestCase):
         with mock.patch.object(
             host_launcher_module,
             "_run_git",
-            side_effect=[main, "", ""],
+            side_effect=[main, "", candidate, ""],
         ) as git:
             host_launcher_module._candidate_is_advertised(
                 repository, git_home, candidate
@@ -84,12 +84,29 @@ class HostLauncherArgumentTests(unittest.TestCase):
                 mock.call(
                     repository,
                     git_home,
+                    "rev-parse",
+                    "--verify",
+                    "FETCH_HEAD^{commit}",
+                ),
+                mock.call(
+                    repository,
+                    git_home,
                     "status",
                     "--porcelain=v1",
                     "--untracked-files=all",
                 ),
             ],
         )
+
+        with mock.patch.object(
+            host_launcher_module,
+            "_run_git",
+            side_effect=[main, "", "c" * 40],
+        ):
+            with self.assertRaisesRegex(ValueError, "fetched canonical main tip"):
+                host_launcher_module._candidate_is_advertised(
+                    repository, git_home, candidate
+                )
 
     def test_authorize_retry_rejects_missing_or_blank_reason_before_trust_and_git(self):
         cases = (

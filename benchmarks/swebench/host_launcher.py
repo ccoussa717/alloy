@@ -538,6 +538,11 @@ def _candidate_is_advertised(repository: Path, git_home: Path, candidate: str) -
     _run_git(
         repository, git_home, "fetch", "--no-tags", "github", "refs/heads/main"
     )
+    fetched = _run_git(
+        repository, git_home, "rev-parse", "--verify", "FETCH_HEAD^{commit}"
+    ).strip()
+    if fetched != candidate:
+        raise ValueError("fetched canonical main tip differs from candidate commit")
     if _run_git(
         repository, git_home, "status", "--porcelain=v1", "--untracked-files=all"
     ):
