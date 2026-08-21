@@ -525,11 +525,57 @@ globalThis.fetch = async (input, options) => {
       assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} version fallback must match package\\.json`));
     });
 
+    it(`accepts the executable version fallback in ${path} with CRLF line endings`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      writeFileSync(sourcePath, readFileSync(sourcePath, "utf8").replaceAll("\n", "\r\n"));
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
+    it(`accepts the executable version fallback in ${path} after regex syntax`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8");
+      writeFileSync(sourcePath, `const syntax = /^[!#$%&'*+.^_\`|~]$/;\n${source}`);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
     it(`requires exactly one executable version fallback in ${path}`, () => {
       const directory = releaseFixture();
       const sourcePath = join(directory, path);
       const source = readFileSync(sourcePath, "utf8");
       writeFileSync(sourcePath, source + source);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+    });
+
+    it(`does not treat a commented fallback in ${path} as executable`, () => {
+      for (const wrapComment of [
+        (source) => `// ${source}\n`,
+        (source) => `/*\n${source}\n*/\n`,
+      ]) {
+        const directory = releaseFixture();
+        const sourcePath = join(directory, path);
+        const source = readFileSync(sourcePath, "utf8").trim();
+        writeFileSync(sourcePath, wrapComment(source));
+        const result = run(process.execPath, [script], { cwd: directory });
+
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+      }
+    });
+
+    it(`does not treat a fallback string in ${path} as executable`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      writeFileSync(sourcePath, `const inert = \`\n${source}\n\`;\n`);
       const result = run(process.execPath, [script], { cwd: directory });
 
       assert.notEqual(result.status, 0);

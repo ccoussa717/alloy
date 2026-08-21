@@ -27,23 +27,92 @@ if (tuiPkg.version !== pkg.version) {
   fail("tui/package.json version must match package.json");
 }
 
+function startsRegexLiteral(source, offset) {
+  let index = offset - 1;
+  while (index >= 0 && /\s/.test(source[index])) index -= 1;
+  if (index < 0 || "([{:;,=!?&|+-*%^~<>".includes(source[index])) return true;
+
+  const prefix = source.slice(0, offset);
+  return /\b(?:await|case|delete|in|instanceof|new|of|return|throw|typeof|void|yield)\s*$/.test(
+    prefix,
+  );
+}
+
+function isCodeOffset(source, offset) {
+  let state = "code";
+  let regexCharacterClass = false;
+
+  for (let index = 0; index < offset; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+
+    if (state === "line-comment") {
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && next === "/") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "regex") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === "[") {
+        regexCharacterClass = true;
+      } else if (character === "]") {
+        regexCharacterClass = false;
+      } else if (character === "/" && !regexCharacterClass) {
+        state = "code";
+      }
+      continue;
+    }
+    if (state !== "code") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === state) {
+        state = "code";
+      }
+      continue;
+    }
+
+    if (character === "/" && next === "/") {
+      state = "line-comment";
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      state = "block-comment";
+      index += 1;
+    } else if (character === "/" && startsRegexLiteral(source, index)) {
+      state = "regex";
+      regexCharacterClass = false;
+    } else if (character === '"' || character === "'" || character === "`") {
+      state = character;
+    }
+  }
+
+  return state === "code";
+}
+
 const runtimeFallbacks = [
   {
     path: "extensions/ui.ts",
-    pattern: /const\s+VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*;/g,
+    pattern: /^[\t ]*const\s+VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*;[\t ]*$/gm,
   },
   {
     path: "lib/child-runner.mjs",
-    pattern: /out\.ALLOY_VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*out\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*;/g,
+    pattern: /^[\t ]*out\.ALLOY_VERSION\s*=\s*process\.env\.ALLOY_VERSION\s*\|\|\s*out\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*;[\t ]*$/gm,
   },
   {
     path: "lib/mcp-client.mjs",
-    pattern: /\{\s*name:\s*"alloy",\s*version:\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"]+)"\s*\}/g,
+    pattern: /^[\t ]*\{\s*name:\s*"alloy",\s*version:\s*process\.env\.ALLOY_VERSION\s*\|\|\s*"([^"\r\n]+)"\s*\},?[\t ]*$/gm,
   },
 ];
 
 for (const { path, pattern } of runtimeFallbacks) {
-  const matches = [...readFileSync(path, "utf8").matchAll(pattern)];
+  const source = readFileSync(path, "utf8");
+  const matches = [...source.matchAll(pattern)].filter((match) => isCodeOffset(source, match.index));
   if (matches.length !== 1) {
     fail(`${path} must contain exactly one executable version fallback`);
   } else if (matches[0][1] !== pkg.version) {
