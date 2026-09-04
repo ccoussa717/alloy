@@ -1,16 +1,16 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, dirname, parse, resolve } from "node:path";
 
-import { canonicalJson } from "../core/compiler.ts";
+import { canonicalJson, canonicalJsonSnapshotBounded } from "../core/compiler.ts";
 import {
   hashEvent,
   isProjectId,
   isRfc3339Utc,
   isRunId,
   isTerminalTeamEvent,
-  validateEventDraft,
+  snapshotEventDraft,
   validateEventHistory,
 } from "../core/events.ts";
 import { TEAM_LIMITS, ZERO_HASH } from "../core/limits.ts";
@@ -41,6 +41,7 @@ const APPEND_FLAGS = constants.O_WRONLY |
   constants.O_APPEND |
   constants.O_CREAT |
   (constants.O_NOFOLLOW ?? 0);
+const RUN_SNAPSHOT_KEYS = ["manifest", "projectId", "request", "runId"] as const;
 
 function storeError(code: string, message: string): Error {
   return new Error(`${code}:${message}`);
@@ -125,26 +126,76 @@ async function openDirectory(
 
 async function ensureRoot(fs: FileSystem, configuredRoot: string) {
   const root = resolve(configuredRoot);
-  await fs.mkdir(root, { recursive: true, mode: DIRECTORY_MODE });
-  const directory = await openDirectory(fs, root, "root");
-  await directory.handle.chmod(DIRECTORY_MODE);
-  return directory;
+  if (root === parse(root).root) {
+    throw storeError("event_directory_root", "filesystem root cannot be the event store root");
+  }
+
+  const missing: string[] = [];
+  let ancestor = root;
+  while (true) {
+    try {
+      await fs.lstat(ancestor);
+      break;
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      missing.unshift(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+
+  let current = await openDirectory(fs, ancestor, "root_parent");
+  try {
+    for (const component of missing) {
+      const childPath = `${current.descriptor}/${component}`;
+      await fs.mkdir(childPath, { mode: DIRECTORY_MODE });
+      const child = await openDirectory(fs, childPath, "root_component");
+      try {
+        await child.handle.chmod(DIRECTORY_MODE);
+        await child.handle.sync();
+        await current.handle.sync();
+      } catch (error) {
+        await child.handle.close();
+        throw error;
+      }
+      await current.handle.close();
+      current = child;
+    }
+    await current.handle.chmod(DIRECTORY_MODE);
+    await current.handle.sync();
+    return current;
+  } catch (error) {
+    await current.handle.close();
+    throw error;
+  }
 }
 
-async function ensureProjectDirectory(
+async function ensureChildDirectory(
   fs: FileSystem,
-  rootDescriptor: string,
-  projectId: string,
+  parent: { handle: FileHandle; descriptor: string },
+  name: string,
+  label: string,
+  exclusive: boolean,
 ) {
-  const path = `${rootDescriptor}/${projectId}`;
+  const path = `${parent.descriptor}/${name}`;
+  let created = false;
   try {
     await fs.mkdir(path, { mode: DIRECTORY_MODE });
+    created = true;
   } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
+    if (exclusive || errorCode(error) !== "EEXIST") throw error;
   }
-  const directory = await openDirectory(fs, path, "project");
-  await directory.handle.chmod(DIRECTORY_MODE);
-  return directory;
+  const directory = await openDirectory(fs, path, label);
+  try {
+    await directory.handle.chmod(DIRECTORY_MODE);
+    await directory.handle.sync();
+    if (created) await parent.handle.sync();
+    return directory;
+  } catch (error) {
+    await directory.handle.close();
+    throw error;
+  }
 }
 
 async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
@@ -170,11 +221,54 @@ async function createDurableFile(
 ): Promise<void> {
   const handle = await fs.open(path, EXCLUSIVE_WRITE_FLAGS, FILE_MODE);
   try {
+    await handle.chmod(FILE_MODE);
     await writeAll(handle, Buffer.from(`${canonicalJson(value)}\n`, "utf8"));
     await handle.sync();
   } finally {
     await handle.close();
   }
+}
+
+function captureRunSnapshot(value: unknown): {
+  projectId: unknown;
+  runId: unknown;
+  manifest: unknown;
+  request: unknown;
+} {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw storeError("event_run_snapshot", "run snapshot must be a plain object");
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    throw storeError("event_run_snapshot", "run snapshot must have the plain object prototype");
+  }
+  const propertyKeys = Reflect.ownKeys(value);
+  if (propertyKeys.some((key) => typeof key === "symbol")) {
+    throw storeError("event_run_snapshot", "run snapshot must not have symbol keys");
+  }
+  const names = (propertyKeys as string[]).slice().sort();
+  if (
+    names.length !== RUN_SNAPSHOT_KEYS.length ||
+    names.some((name, index) => name !== RUN_SNAPSHOT_KEYS[index])
+  ) {
+    throw storeError("event_run_snapshot", "run snapshot has an invalid shape");
+  }
+  const descriptors: Record<string, PropertyDescriptor & { value: unknown }> = Object.create(null);
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) {
+      throw storeError(
+        "event_run_snapshot",
+        "run snapshot properties must be enumerable data properties",
+      );
+    }
+    descriptors[name] = descriptor as PropertyDescriptor & { value: unknown };
+  }
+  return {
+    projectId: descriptors.projectId.value,
+    runId: descriptors.runId.value,
+    manifest: descriptors.manifest.value,
+    request: descriptors.request.value,
+  };
 }
 
 function validateStoreIdentifiers(projectId: unknown, runId?: unknown): void {
@@ -215,8 +309,7 @@ class FileEventWriter implements EventWriter {
   append(draft: EventDraft): Promise<TeamEvent> {
     let captured: EventDraft;
     try {
-      validateEventDraft(draft);
-      captured = JSON.parse(canonicalJson(draft)) as EventDraft;
+      captured = snapshotEventDraft(draft);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -250,17 +343,24 @@ class FileEventWriter implements EventWriter {
       payload: draft.payload,
       prevHash: this.lastHash,
     };
-    const event: TeamEvent = {
+    const eventWithHash: TeamEvent = {
       ...eventWithoutHash,
       hash: hashEvent(eventWithoutHash),
     };
-    const line = Buffer.from(`${canonicalJson(event)}\n`, "utf8");
-    if (line.byteLength > TEAM_LIMITS.eventLineBytes) {
-      throw storeError(
-        "event_line_bytes",
-        `event exceeds ${TEAM_LIMITS.eventLineBytes} bytes`,
-      );
+    let canonical;
+    try {
+      canonical = canonicalJsonSnapshotBounded(eventWithHash, TEAM_LIMITS.eventLineBytes - 1);
+    } catch (error) {
+      if (error instanceof RangeError && String(error).includes("canonical_json:exceeds")) {
+        throw storeError(
+          "event_line_bytes",
+          `event exceeds ${TEAM_LIMITS.eventLineBytes} bytes`,
+        );
+      }
+      throw error;
     }
+    const event = canonical.value as TeamEvent;
+    const line = Buffer.from(`${canonical.json}\n`, "utf8");
     if (this.historyBytes + line.byteLength > TEAM_LIMITS.eventHistoryBytes) {
       throw storeError(
         "event_history_bytes",
@@ -419,11 +519,12 @@ export function createFileEventStore(input: FileEventStoreOptions): EventStore {
 
   return {
     async createRun(snapshot: RunSnapshotInput): Promise<EventWriter> {
-      validateStoreIdentifiers(snapshot?.projectId, snapshot?.runId);
-      const projectId = snapshot.projectId;
-      const runId = snapshot.runId;
-      const manifest = JSON.parse(canonicalJson(snapshot.manifest)) as RunSnapshotInput["manifest"];
-      const request = JSON.parse(canonicalJson(snapshot.request)) as RunSnapshotInput["request"];
+      const captured = captureRunSnapshot(snapshot);
+      validateStoreIdentifiers(captured.projectId, captured.runId);
+      const projectId = captured.projectId as string;
+      const runId = captured.runId as string;
+      const manifest = JSON.parse(canonicalJson(captured.manifest)) as RunSnapshotInput["manifest"];
+      const request = JSON.parse(canonicalJson(captured.request)) as RunSnapshotInput["request"];
       const claimedAt = now();
       const writerId = randomUUID();
       if (!isRfc3339Utc(claimedAt)) {
@@ -441,20 +542,17 @@ export function createFileEventStore(input: FileEventStoreOptions): EventStore {
       try {
         const root = await ensureRoot(fs, configuredRoot);
         rootHandle = root.handle;
-        const project = await ensureProjectDirectory(fs, root.descriptor, projectId);
+        const project = await ensureChildDirectory(fs, root, projectId, "project", false);
         projectHandle = project.handle;
-        await rootHandle.sync();
-        const runPath = `${project.descriptor}/${runId}`;
+        let run;
         try {
-          await fs.mkdir(runPath, { mode: DIRECTORY_MODE });
+          run = await ensureChildDirectory(fs, project, runId, "run", true);
         } catch (error) {
           if (errorCode(error) === "EEXIST") {
             throw storeError("event_writer_claimed", "run ID has already been claimed");
           }
           throw error;
         }
-        await projectHandle.sync();
-        const run = await openDirectory(fs, runPath, "run");
         runHandle = run.handle;
 
         lockHandle = await fs.open(
@@ -462,6 +560,7 @@ export function createFileEventStore(input: FileEventStoreOptions): EventStore {
           EXCLUSIVE_WRITE_FLAGS,
           FILE_MODE,
         );
+        await lockHandle.chmod(FILE_MODE);
         await writeAll(
           lockHandle,
           Buffer.from(`${canonicalJson({ claimedAt, writerId })}\n`, "utf8"),
@@ -473,12 +572,20 @@ export function createFileEventStore(input: FileEventStoreOptions): EventStore {
           manifest,
         );
         await createDurableFile(fs, `${run.descriptor}/request.json`, request);
-        await fs.mkdir(`${run.descriptor}/artifacts`, { mode: DIRECTORY_MODE });
+        const artifacts = await ensureChildDirectory(
+          fs,
+          run,
+          "artifacts",
+          "artifacts",
+          true,
+        );
+        await artifacts.handle.close();
         eventHandle = await fs.open(
           `${run.descriptor}/events.jsonl`,
           APPEND_FLAGS,
           FILE_MODE,
         );
+        await eventHandle.chmod(FILE_MODE);
         await eventHandle.sync();
         await runHandle.sync();
 

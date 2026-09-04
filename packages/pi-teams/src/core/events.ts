@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson } from "./compiler.ts";
+import { canonicalJsonSnapshotBounded } from "./compiler.ts";
 import { TEAM_LIMITS, ZERO_HASH } from "./limits.ts";
 import type { Actor, EventDraft, TeamEvent, TeamEventType } from "./types.ts";
 
@@ -32,23 +32,54 @@ function eventError(code: string, message: string): never {
   throw new Error(`${code}:${message}`);
 }
 
+function captureExactPlainDataShape(
+  value: unknown,
+  expectedKeys: readonly string[],
+  code: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return eventError(code, "record must be a plain object");
+  }
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return eventError(code, "record must have the plain object prototype");
+  }
+  const propertyKeys = Reflect.ownKeys(value);
+  if (propertyKeys.some((key) => typeof key === "symbol")) {
+    return eventError(code, "record must not have symbol keys");
+  }
+  const names = (propertyKeys as string[]).slice().sort();
+  if (
+    names.length !== expectedKeys.length ||
+    names.some((name, index) => name !== expectedKeys[index])
+  ) {
+    return eventError(code, "record has an invalid shape");
+  }
+  const captured: Record<string, unknown> = {};
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) {
+      return eventError(code, "record properties must be enumerable data properties");
+    }
+    Object.defineProperty(captured, name, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return captured;
+}
+
 function hasExactPlainDataShape(
   value: unknown,
   expectedKeys: readonly string[],
 ): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-  if (Object.getOwnPropertySymbols(value).length !== 0) return false;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const names = Object.getOwnPropertyNames(value).sort();
-  if (
-    names.length !== expectedKeys.length ||
-    names.some((name, index) => name !== expectedKeys[index])
-  ) return false;
-  return names.every((name) => {
-    const descriptor = descriptors[name];
-    return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
-  });
+  try {
+    captureExactPlainDataShape(value, expectedKeys, "event_shape");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isPlainDataObject(value: unknown): value is Record<string, unknown> {
@@ -107,10 +138,19 @@ function validatePayload(value: unknown): asserts value is Record<string, unknow
   if (!isPlainDataObject(value)) {
     eventError("event_payload", "payload must be a plain data object");
   }
+}
+
+function boundedSnapshot(value: unknown): { json: string; value: unknown; bytes: number } {
   try {
-    canonicalJson(value);
-  } catch {
-    eventError("event_payload", "payload must contain only canonical JSON values");
+    return canonicalJsonSnapshotBounded(value, TEAM_LIMITS.eventLineBytes - 1);
+  } catch (error) {
+    if (error instanceof RangeError && String(error).startsWith("RangeError: canonical_json:exceeds")) {
+      return eventError(
+        "event_line_bytes",
+        `event exceeds ${TEAM_LIMITS.eventLineBytes} bytes`,
+      );
+    }
+    throw error;
   }
 }
 
@@ -120,21 +160,37 @@ function validateType(value: unknown): asserts value is TeamEventType {
   }
 }
 
-export function validateEventDraft(value: unknown): asserts value is EventDraft {
-  if (!hasExactPlainDataShape(value, DRAFT_KEYS)) {
-    eventError("event_draft", "event draft has an invalid shape");
-  }
+function validateCapturedEventDraft(value: Record<string, unknown>): EventDraft {
   validateType(value.type);
   validateActor(value.actor);
   if (!isRfc3339Utc(value.occurredAt)) {
     eventError("event_timestamp", "occurredAt must be an RFC 3339 UTC timestamp");
   }
   validatePayload(value.payload);
+  return value as unknown as EventDraft;
+}
+
+export function snapshotEventDraft(value: unknown): EventDraft {
+  const captured = captureExactPlainDataShape(value, DRAFT_KEYS, "event_draft");
+  let snapshot: unknown;
+  try {
+    snapshot = boundedSnapshot(captured).value;
+  } catch (error) {
+    if (String(error).includes("canonical_json:")) {
+      return eventError("event_payload", "payload must contain only canonical JSON values");
+    }
+    throw error;
+  }
+  if (!hasExactPlainDataShape(snapshot, DRAFT_KEYS)) {
+    return eventError("event_draft", "canonical snapshot has an invalid shape");
+  }
+  return validateCapturedEventDraft(snapshot);
 }
 
 export function hashEvent(eventWithoutHash: Omit<TeamEvent, "hash">): string {
+  const canonical = boundedSnapshot(eventWithoutHash).json;
   return createHash("sha256")
-    .update(`${canonicalJson(eventWithoutHash)}\n`, "utf8")
+    .update(`${canonical}\n`, "utf8")
     .digest("hex");
 }
 
@@ -161,9 +217,19 @@ export function validateEventHistory(
   const validated: TeamEvent[] = [];
 
   for (let index = 0; index < events.length; index += 1) {
-    const value = events[index];
+    const captured = captureExactPlainDataShape(events[index], EVENT_KEYS, "event_shape");
+    let canonical;
+    try {
+      canonical = boundedSnapshot(captured);
+    } catch (error) {
+      if (String(error).includes("canonical_json:")) {
+        return eventError("event_payload", `event ${index + 1} is not canonical JSON`);
+      }
+      throw error;
+    }
+    const value = canonical.value;
     if (!hasExactPlainDataShape(value, EVENT_KEYS)) {
-      eventError("event_shape", `event ${index + 1} has an invalid shape`);
+      eventError("event_shape", `event ${index + 1} canonical snapshot has an invalid shape`);
     }
     if (value.v !== 1) {
       eventError("event_version", `event ${index + 1} has an unsupported version`);
@@ -205,13 +271,7 @@ export function validateEventHistory(
       eventError("event_hash", `event ${index + 1} hash does not match its content`);
     }
 
-    const lineBytes = Buffer.byteLength(`${canonicalJson(value)}\n`, "utf8");
-    if (lineBytes > TEAM_LIMITS.eventLineBytes) {
-      eventError(
-        "event_line_bytes",
-        `event ${index + 1} exceeds ${TEAM_LIMITS.eventLineBytes} bytes`,
-      );
-    }
+    const lineBytes = canonical.bytes + 1;
     historyBytes += lineBytes;
     if (historyBytes > TEAM_LIMITS.eventHistoryBytes) {
       eventError(

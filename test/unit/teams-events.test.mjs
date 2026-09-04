@@ -251,9 +251,11 @@ test("allows at most one terminal event and only at the end", () => {
 test("rejects empty, oversized-event, and over-count histories", () => {
   assert.throws(() => validateEventHistory([], RUN_ID), /event_history:/);
 
-  const oversized = chainedEvent(undefined, {
+  const oversized = {
+    ...validHistory()[0],
     payload: { text: "x".repeat(65_536) },
-  });
+    hash: "0".repeat(64),
+  };
   assert.throws(() => validateEventHistory([oversized], RUN_ID), /event_line_bytes:/);
 
   const repeated = Array.from({ length: 4_097 }, (_, index) => ({
@@ -427,6 +429,55 @@ test("createRun snapshots input at the call boundary", async () => {
   });
 });
 
+// Break caught: accessors or repeated reads substitute path identifiers after validation.
+test("createRun captures exact snapshot data properties once before path use", async () => {
+  await withStoreFixture(async ({ root, store }) => {
+    let getterCalls = 0;
+    const accessorSnapshot = runSnapshotInput();
+    Object.defineProperty(accessorSnapshot, "projectId", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error("project getter invoked");
+      },
+    });
+    await assert.rejects(
+      () => store.createRun(accessorSnapshot),
+      /event_run_snapshot:/,
+    );
+    assert.equal(getterCalls, 0);
+    await assert.rejects(() => realFs.stat(root), { code: "ENOENT" });
+
+    const target = runSnapshotInput();
+    let propertyReads = 0;
+    let ownKeyReads = 0;
+    let descriptorReads = 0;
+    const proxySnapshot = new Proxy(target, {
+      ownKeys(object) {
+        ownKeyReads += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, property) {
+        descriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(object, property);
+      },
+      get(object, property, receiver) {
+        propertyReads += 1;
+        if (property === "projectId") return "b".repeat(64);
+        if (property === "runId") return OTHER_RUN_ID;
+        return Reflect.get(object, property, receiver);
+      },
+    });
+    const writer = await store.createRun(proxySnapshot);
+    assert.equal(propertyReads, 0);
+    assert.equal(ownKeyReads, 1);
+    assert.equal(descriptorReads, 4);
+    assert.ok((await realFs.stat(join(root, PROJECT_ID, RUN_ID))).isDirectory());
+    await assert.rejects(() => realFs.stat(join(root, "b".repeat(64))), { code: "ENOENT" });
+    await writer.close();
+  });
+});
+
 // Break caught: pre-existing store directories retain group/world permissions.
 test("file event store tightens existing authority directories to mode 0700", async () => {
   await withStoreFixture(async ({ root, store }) => {
@@ -439,6 +490,111 @@ test("file event store tightens existing authority directories to mode 0700", as
     assert.equal((await realFs.stat(join(root, PROJECT_ID))).mode & 0o777, 0o700);
     await writer.close();
   });
+});
+
+// Break caught: restrictive umask leaves created files/directories less permissive than exact modes.
+test("creation fchmods every file and descriptor-verifies/chmods every authority directory", async () => {
+  const chmods = [];
+  const observedFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "chmod") {
+            return async (requestedMode) => {
+              chmods.push({ path: String(path), mode: requestedMode });
+              return target.chmod(requestedMode);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+
+  await withStoreFixture(async ({ root, store }) => {
+    const writer = await store.createRun(runSnapshotInput());
+    const requiredDirectories = ["store", PROJECT_ID, RUN_ID, "artifacts"];
+    const requiredFiles = [
+      "writer.lock", "manifest.snapshot.json", "request.json", "events.jsonl",
+    ];
+    for (const suffix of requiredDirectories) {
+      assert.ok(chmods.some(({ path, mode }) => path.endsWith(suffix) && mode === 0o700), suffix);
+    }
+    for (const suffix of requiredFiles) {
+      assert.ok(chmods.some(({ path, mode }) => path.endsWith(suffix) && mode === 0o600), suffix);
+    }
+    await writer.close();
+  }, { fs: observedFs });
+});
+
+// Break caught: newly created nested root entries are not synced through each parent in order.
+test("creation fsyncs each new directory before its parent entry boundary", async () => {
+  const operations = [];
+  const observedFs = {
+    ...realFs,
+    async mkdir(path, options) {
+      operations.push(`mkdir:${String(path)}`);
+      return realFs.mkdir(path, options);
+    },
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "chmod") {
+            return async (requestedMode) => {
+              operations.push(`chmod:${String(path)}:${requestedMode.toString(8)}`);
+              return target.chmod(requestedMode);
+            };
+          }
+          if (property === "sync") {
+            return async () => {
+              operations.push(`sync:${String(path)}`);
+              return target.sync();
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+
+  const parent = await realFs.mkdtemp(join(tmpdir(), "teams-events-sync-"));
+  const root = join(parent, "level-one", "level-two", "store");
+  try {
+    const store = createFileEventStore({
+      root,
+      now: () => OCCURRED_AT,
+      randomUUID: () => OTHER_RUN_ID,
+      fs: observedFs,
+    });
+    const writer = await store.createRun(runSnapshotInput());
+
+    for (const child of ["level-one", "level-two", "store", PROJECT_ID, RUN_ID, "artifacts"]) {
+      const mkdirIndex = operations.findIndex((entry) =>
+        entry.startsWith("mkdir:") && entry.endsWith(child)
+      );
+      const chmodIndex = operations.findIndex((entry) =>
+        entry.startsWith("chmod:") && entry.includes(child) && entry.endsWith(":700")
+      );
+      const childSyncIndex = operations.findIndex((entry) =>
+        entry.startsWith("sync:") && entry.endsWith(child)
+      );
+      assert.ok(mkdirIndex >= 0, `mkdir ${child}`);
+      assert.ok(chmodIndex > mkdirIndex, `chmod after mkdir ${child}`);
+      assert.ok(childSyncIndex > chmodIndex, `child fsync after chmod ${child}`);
+    }
+
+    const levelOneMkdir = operations.findIndex((entry) => entry.startsWith("mkdir:") && entry.endsWith("level-one"));
+    const parentSync = operations.findIndex((entry) => entry === `sync:${parent}`);
+    assert.ok(parentSync > levelOneMkdir, "new root entry is synced through its pre-existing parent");
+    await writer.close();
+  } finally {
+    await realFs.rm(parent, { recursive: true, force: true });
+  }
 });
 
 // Break caught: append rewrites a prefix, omits newline/fsync, or races sequence assignment.
@@ -471,6 +627,54 @@ test("writer serializes concurrent canonical appends without changing existing p
   }, { fs: trackingFs(syncPaths, opened) });
 });
 
+// Break caught: validation and canonical capture observe different proxy descriptor values.
+test("writer canonically snapshots a draft once before validating the immutable copy", async () => {
+  await withStoreFixture(async ({ store }) => {
+    let nestedDescriptorReads = 0;
+    let nestedOwnKeys = 0;
+    const payload = new Proxy({ value: "original" }, {
+      ownKeys(object) {
+        nestedOwnKeys += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, property) {
+        nestedDescriptorReads += 1;
+        const descriptor = Reflect.getOwnPropertyDescriptor(object, property);
+        if (nestedDescriptorReads > 1) return { ...descriptor, value: "substituted" };
+        return descriptor;
+      },
+    });
+    const target = draft("run.requested", { payload });
+    let descriptorReads = 0;
+    let propertyReads = 0;
+    const proxyDraft = new Proxy(target, {
+      getOwnPropertyDescriptor(object, property) {
+        descriptorReads += 1;
+        const descriptor = Reflect.getOwnPropertyDescriptor(object, property);
+        if (descriptorReads > 4 && property === "payload") {
+          return { ...descriptor, value: { value: "substituted" } };
+        }
+        return descriptor;
+      },
+      get(object, property, receiver) {
+        propertyReads += 1;
+        return Reflect.get(object, property, receiver);
+      },
+    });
+
+    const writer = await store.createRun(runSnapshotInput());
+    const event = await writer.append(proxyDraft);
+    assert.equal(descriptorReads, 4);
+    assert.equal(propertyReads, 0);
+    assert.equal(nestedOwnKeys, 1);
+    assert.equal(nestedDescriptorReads, 1);
+    assert.deepEqual(event.payload, { value: "original" });
+    assert.ok(Object.isFrozen(event.payload));
+    assert.ok(Object.isFrozen(event.actor));
+    await writer.close();
+  });
+});
+
 // Break caught: caller mutation after append changes the queued authority record.
 test("writer snapshots a draft at the append call boundary", async () => {
   await withStoreFixture(async ({ store }) => {
@@ -484,6 +688,40 @@ test("writer snapshots a draft at the append call boundary", async () => {
     assert.deepEqual(event.payload, { value: "original" });
     assert.deepEqual(event.actor, { kind: "system", id: "teams" });
     assert.deepEqual(await store.read(PROJECT_ID, RUN_ID), [event]);
+    await writer.close();
+  });
+});
+
+// Break caught: oversized/deep payloads are fully serialized or traversed past the byte budget.
+test("writer rejects huge and deeply nested events during bounded canonical traversal", async () => {
+  await withStoreFixture(async ({ root, store }) => {
+    const writer = await store.createRun(runSnapshotInput());
+    const eventPath = join(root, PROJECT_ID, RUN_ID, "events.jsonl");
+    let lateTraversal = 0;
+    const lateValue = new Proxy({ value: true }, {
+      ownKeys(target) {
+        lateTraversal += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    await assert.rejects(
+      () => writer.append(draft("run.requested", {
+        payload: {
+          a: "x".repeat(TEAM_LIMITS.eventLineBytes * 64),
+          z: lateValue,
+        },
+      })),
+      /event_line_bytes:/,
+    );
+    assert.equal(lateTraversal, 0);
+
+    let nested = { value: true };
+    for (let depth = 0; depth < 20_000; depth += 1) nested = { child: nested };
+    await assert.rejects(
+      () => writer.append(draft("run.requested", { payload: nested })),
+      /event_line_bytes:/,
+    );
+    assert.equal((await realFs.stat(eventPath)).size, 0);
     await writer.close();
   });
 });

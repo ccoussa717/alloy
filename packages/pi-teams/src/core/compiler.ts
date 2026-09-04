@@ -98,6 +98,240 @@ export function canonicalJson(value: unknown): string {
   return serializeCanonical(value, new WeakSet<object>());
 }
 
+export interface BoundedCanonicalSnapshot {
+  readonly json: string;
+  readonly value: unknown;
+  readonly bytes: number;
+}
+
+type CanonicalTask =
+  | {
+      kind: "value";
+      source: unknown;
+      parent?: Record<string, unknown> | unknown[];
+      key?: string | number;
+    }
+  | { kind: "text"; text: string }
+  | { kind: "string"; text: string }
+  | { kind: "exit"; source: object; clone: Record<string, unknown> | unknown[] };
+
+function canonicalLimitError(maximumBytes: number): never {
+  throw new RangeError(`canonical_json:exceeds ${maximumBytes} UTF-8 bytes`);
+}
+
+export function canonicalJsonSnapshotBounded(
+  value: unknown,
+  maximumBytes: number,
+): BoundedCanonicalSnapshot {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+    throw new TypeError("canonical_json:maximumBytes must be a nonnegative safe integer");
+  }
+
+  const chunks: string[] = [];
+  let bytes = 0;
+  let snapshot: unknown;
+  const ancestors = new WeakSet<object>();
+  const tasks: CanonicalTask[] = [{ kind: "value", source: value }];
+
+  const append = (text: string, byteLength = Buffer.byteLength(text, "utf8")): void => {
+    if (bytes + byteLength > maximumBytes) canonicalLimitError(maximumBytes);
+    chunks.push(text);
+    bytes += byteLength;
+  };
+
+  const appendString = (text: string): void => {
+    append("\"");
+    let ordinary = "";
+    let ordinaryBytes = 0;
+    const flush = (): void => {
+      if (ordinary.length === 0) return;
+      append(ordinary, ordinaryBytes);
+      ordinary = "";
+      ordinaryBytes = 0;
+    };
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      let escaped: string | undefined;
+      if (code === 0x22) escaped = "\\\"";
+      else if (code === 0x5c) escaped = "\\\\";
+      else if (code === 0x08) escaped = "\\b";
+      else if (code === 0x0c) escaped = "\\f";
+      else if (code === 0x0a) escaped = "\\n";
+      else if (code === 0x0d) escaped = "\\r";
+      else if (code === 0x09) escaped = "\\t";
+      else if (code < 0x20) escaped = `\\u${code.toString(16).padStart(4, "0")}`;
+
+      if (escaped !== undefined) {
+        flush();
+        append(escaped, escaped.length);
+        continue;
+      }
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const low = text.charCodeAt(index + 1);
+        if (!(low >= 0xdc00 && low <= 0xdfff)) {
+          canonicalError("strings must contain well-formed Unicode");
+        }
+        ordinary += text.slice(index, index + 2);
+        ordinaryBytes += 4;
+        index += 1;
+      } else {
+        if (code >= 0xdc00 && code <= 0xdfff) {
+          canonicalError("strings must contain well-formed Unicode");
+        }
+        ordinary += text[index];
+        ordinaryBytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+      }
+      if (ordinary.length >= 1_024) flush();
+    }
+    flush();
+    append("\"");
+  };
+
+  const assign = (
+    task: Extract<CanonicalTask, { kind: "value" }>,
+    captured: unknown,
+  ): void => {
+    if (task.parent === undefined) {
+      snapshot = captured;
+    } else if (Array.isArray(task.parent)) {
+      task.parent[task.key as number] = captured;
+    } else {
+      Object.defineProperty(task.parent, task.key as string, {
+        value: captured,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  };
+
+  while (tasks.length > 0) {
+    const task = tasks.pop()!;
+    if (task.kind === "text") {
+      append(task.text, task.text.length);
+      continue;
+    }
+    if (task.kind === "string") {
+      appendString(task.text);
+      continue;
+    }
+    if (task.kind === "exit") {
+      Object.freeze(task.clone);
+      ancestors.delete(task.source);
+      continue;
+    }
+
+    const source = task.source;
+    if (source === null) {
+      assign(task, null);
+      append("null", 4);
+      continue;
+    }
+    if (typeof source === "string") {
+      assign(task, source);
+      appendString(source);
+      continue;
+    }
+    if (typeof source === "boolean") {
+      assign(task, source);
+      append(source ? "true" : "false", source ? 4 : 5);
+      continue;
+    }
+    if (typeof source === "number") {
+      if (!Number.isFinite(source)) canonicalError("numbers must be finite");
+      assign(task, source);
+      const encoded = JSON.stringify(source);
+      append(encoded, encoded.length);
+      continue;
+    }
+    if (typeof source !== "object") {
+      canonicalError(`unsupported ${typeof source} value`);
+    }
+    if (ancestors.has(source)) canonicalError("cyclic values are not supported");
+
+    const propertyKeys = Reflect.ownKeys(source);
+    if (propertyKeys.some((key) => typeof key === "symbol")) {
+      canonicalError("symbol keys are not supported");
+    }
+    const ownNames = propertyKeys as string[];
+    const descriptors: Record<string, PropertyDescriptor> = Object.create(null);
+    for (const name of ownNames) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, name);
+      if (descriptor === undefined) {
+        canonicalError("property identity changed during canonical capture");
+      }
+      if (!("value" in descriptor)) canonicalError("accessor properties are not supported");
+      descriptors[name] = descriptor;
+    }
+    ancestors.add(source);
+
+    if (Array.isArray(source)) {
+      const lengthDescriptor = descriptors.length;
+      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) {
+        canonicalError("array length must be a data property");
+      }
+      const length = lengthDescriptor.value as number;
+      for (let index = 0; index < length; index += 1) {
+        if (descriptors[String(index)] === undefined) {
+          canonicalError("sparse arrays are not supported");
+        }
+      }
+      if (ownNames.some((name) => {
+        if (name === "length") return false;
+        const index = Number(name);
+        return !Number.isInteger(index) || index < 0 || index >= length || String(index) !== name;
+      })) {
+        canonicalError("array properties are not supported");
+      }
+      const clone: unknown[] = new Array(length);
+      assign(task, clone);
+      append("[", 1);
+      tasks.push({ kind: "exit", source, clone });
+      tasks.push({ kind: "text", text: "]" });
+      for (let index = length - 1; index >= 0; index -= 1) {
+        tasks.push({
+          kind: "value",
+          source: (descriptors[String(index)] as PropertyDescriptor & { value: unknown }).value,
+          parent: clone,
+          key: index,
+        });
+        if (index > 0) tasks.push({ kind: "text", text: "," });
+      }
+      continue;
+    }
+
+    const prototype = Object.getPrototypeOf(source);
+    if (prototype !== Object.prototype && prototype !== null) {
+      canonicalError("only plain objects are supported");
+    }
+    if (ownNames.some((name) => !descriptors[name]!.enumerable)) {
+      canonicalError("non-enumerable properties are not supported");
+    }
+    const keys = [...ownNames].sort();
+    const clone = prototype === null
+      ? Object.create(null) as Record<string, unknown>
+      : {} as Record<string, unknown>;
+    assign(task, clone);
+    append("{", 1);
+    tasks.push({ kind: "exit", source, clone });
+    tasks.push({ kind: "text", text: "}" });
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index];
+      tasks.push({
+        kind: "value",
+        source: (descriptors[key] as PropertyDescriptor & { value: unknown }).value,
+        parent: clone,
+        key,
+      });
+      tasks.push({ kind: "text", text: ":" });
+      tasks.push({ kind: "string", text: key });
+      if (index > 0) tasks.push({ kind: "text", text: "," });
+    }
+  }
+
+  return Object.freeze({ json: chunks.join(""), value: snapshot, bytes });
+}
+
 export function sha256Canonical(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 }
