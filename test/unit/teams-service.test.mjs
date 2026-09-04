@@ -441,6 +441,110 @@ test("preflight converts every host failure into a complete terminal block after
   assert.match(reasons[1], /async denial/);
 });
 
+// Break caught: hostile Error.message values coerce or invoke accessors before durable blocking.
+test("preflight safely falls back for hostile error messages without coercion or traps", async () => {
+  const cases = [
+    {
+      name: "number message",
+      create() {
+        const error = new Error("ignored");
+        error.message = 42;
+        return { rejection: error, traps: () => 0 };
+      },
+    },
+    {
+      name: "symbol message",
+      create() {
+        const error = new Error("ignored");
+        error.message = Symbol("secret");
+        return { rejection: error, traps: () => 0 };
+      },
+    },
+    {
+      name: "accessor message",
+      create() {
+        let traps = 0;
+        const error = new Error("ignored");
+        Object.defineProperty(error, "message", {
+          configurable: true,
+          get() {
+            traps += 1;
+            throw new Error("message getter invoked");
+          },
+        });
+        return { rejection: error, traps: () => traps };
+      },
+    },
+    {
+      name: "hostile object message",
+      create() {
+        let traps = 0;
+        const message = {
+          get [Symbol.toPrimitive]() {
+            traps += 1;
+            throw new Error("message coercion invoked");
+          },
+          toString() {
+            traps += 1;
+            throw new Error("message toString invoked");
+          },
+        };
+        const error = new Error("ignored");
+        error.message = message;
+        return { rejection: error, traps: () => traps };
+      },
+    },
+    {
+      name: "proxy message",
+      create() {
+        let traps = 0;
+        const message = new Proxy({}, {
+          get() { traps += 1; throw new Error("proxy message get invoked"); },
+          getPrototypeOf() { traps += 1; throw new Error("proxy message prototype invoked"); },
+        });
+        const error = new Error("ignored");
+        error.message = message;
+        return { rejection: error, traps: () => traps };
+      },
+    },
+    {
+      name: "proxy error",
+      create() {
+        let traps = 0;
+        const error = new Proxy(new Error("secret"), {
+          get() { traps += 1; throw new Error("proxy error get invoked"); },
+          getPrototypeOf() { traps += 1; throw new Error("proxy error prototype invoked"); },
+        });
+        return { rejection: error, traps: () => traps };
+      },
+    },
+  ];
+
+  for (const { name, create } of cases) {
+    const hostile = create();
+    const run = fixture({
+      preflight(input, _context, index) {
+        return index === 0
+          ? Promise.reject(hostile.rejection)
+          : admitted(input, 120_000);
+      },
+    });
+    const view = await request(run);
+    assert.equal(view.status, "blocked", name);
+    const events = run.eventStore.runs.get(RUN_ID).events;
+    assert.deepEqual(events.map(({ type }) => type), [
+      "run.requested", "manifest.snapshotted", "policy.blocked", "run.blocked",
+    ], name);
+    assert.equal(
+      events[2].payload.reasons[0],
+      "preflight_architecture:host preflight failed",
+      name,
+    );
+    assert.equal(events[3].payload.reason, events[2].payload.reasons[0], name);
+    assert.equal(hostile.traps(), 0, name);
+  }
+});
+
 // Break caught: UTF-16 truncation splits a supplementary character and prevents durable blocking.
 test("preflight bounds supplementary-character errors by code point and UTF-8 bytes", async () => {
   const run = fixture({

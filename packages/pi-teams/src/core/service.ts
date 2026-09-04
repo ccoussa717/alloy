@@ -251,18 +251,30 @@ function publicAdmission(admission: AdmittedMember): Extract<PublicAdmission, { 
   }) as Extract<PublicAdmission, { ok: true }>;
 }
 
+function safeFailureDetail(error: unknown): string {
+  let detail: unknown = typeof error === "string" ? error : undefined;
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    !nodeUtilTypes.isProxy(error) &&
+    nodeUtilTypes.isNativeError(error)
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "message");
+    if (descriptor !== undefined && "value" in descriptor) detail = descriptor.value;
+  }
+  if (
+    typeof detail !== "string" ||
+    Buffer.from(detail, "utf8").toString("utf8") !== detail ||
+    detail.trim().length === 0
+  ) {
+    return "host preflight failed";
+  }
+  return detail;
+}
+
 function boundedFailureReason(memberId: string, error: unknown): string {
   const prefix = `preflight_${memberId}:`;
-  let detail: string;
-  try {
-    detail = error instanceof Error ? error.message : String(error);
-  } catch {
-    detail = "host preflight failed";
-  }
-  if (Buffer.from(detail, "utf8").toString("utf8") !== detail || detail.trim().length === 0) {
-    detail = "host preflight failed";
-  }
-
+  const detail = safeFailureDetail(error);
   const remainingBytes = TEAM_LIMITS.descriptionBytes - Buffer.byteLength(prefix, "utf8");
   const characters: string[] = [];
   let bytes = 0;
