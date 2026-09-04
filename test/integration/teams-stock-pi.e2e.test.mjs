@@ -38,7 +38,8 @@ function run(command, args, options = {}) {
 
 const smokeSource = String.raw`
 import assert from "node:assert/strict";
-import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as stockSdk from "@earendil-works/pi-coding-agent";
@@ -50,7 +51,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false, tryNative: false 
 const portableModule = await jiti.import("@alloy/pi-teams");
 const extensionModule = await jiti.import("@alloy/pi-teams/extension");
 const portableTeams = extensionModule.default;
-const { createStockPiHost } = portableModule;
+const { createStockPiHost, registerTeams } = portableModule;
 
 for (const name of [
   "createAgentSession", "DefaultResourceLoader", "SettingsManager",
@@ -77,11 +78,59 @@ assert.deepEqual(commands.map(({ name }) => name), ["team"]);
 assert.deepEqual(tools.map(({ name }) => name), ["team"]);
 
 const cwd = realpathSync(process.cwd());
+const model = {
+  id: "smoke-model",
+  name: "Smoke Model",
+  api: "anthropic-messages",
+  provider: "smoke-provider",
+  baseUrl: "https://example.invalid",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 100000,
+  maxTokens: 1000,
+};
+const authorityCalls = { auth: 0, provider: 0, native: 0, config: 0, stream: 0 };
+const provider = {
+  id: model.provider,
+  name: "Smoke Provider",
+  models: [model],
+  streamSimple() {
+    authorityCalls.stream += 1;
+    throw new Error("provider stream must not run in controlled smoke");
+  },
+};
+const authStatus = { configured: true, source: "smoke" };
+const registry = {
+  find(providerId, modelId) {
+    return providerId === model.provider && modelId === model.id ? model : undefined;
+  },
+  getProviderAuthStatus(providerId) {
+    return providerId === model.provider ? authStatus : { configured: false };
+  },
+  getProvider(providerId) {
+    authorityCalls.provider += 1;
+    return providerId === model.provider ? provider : undefined;
+  },
+  getRegisteredNativeProvider(providerId) {
+    authorityCalls.native += 1;
+    return providerId === model.provider ? provider : undefined;
+  },
+  getRegisteredProviderConfig() {
+    authorityCalls.config += 1;
+    return undefined;
+  },
+  async getProviderAuth(providerId) {
+    authorityCalls.auth += 1;
+    assert.equal(providerId, model.provider);
+    return { auth: { apiKey: "synthetic-smoke-key" }, source: "smoke" };
+  },
+};
 const notices = [];
 const context = {
   cwd,
-  model: undefined,
-  modelRegistry: {},
+  model,
+  modelRegistry: registry,
   isProjectTrusted: () => false,
   signal: undefined,
   hasUI: false,
@@ -95,54 +144,89 @@ assert.match(notices[1], /architecture/);
 const executeTool = (params) => tools[0].execute("smoke", params, undefined, undefined, context);
 const listed = await executeTool({ action: "list" });
 const inspected = await executeTool({ action: "inspect", team: "builtin/investigate" });
-const requested = await executeTool({
-  action: "request",
-  team: "builtin/investigate",
-  objective: "Inspect package compatibility without provider execution.",
-});
 assert.match(listed.content[0].text, /builtin\/investigate/);
 assert.match(inspected.content[0].text, /lead/);
-assert.equal(requested.details.status, "blocked");
+
+const blocked = await tools[0].execute(
+  "blocked-smoke",
+  { action: "request", team: "builtin/investigate", objective: "Prove blocked request coverage." },
+  undefined,
+  undefined,
+  { ...context, model: undefined, modelRegistry: {} },
+);
+assert.equal(blocked.details.status, "blocked");
+
+const requestSdkCalls = { agentDir: 0, modelRuntime: 0, session: 0 };
+const requestSdk = {
+  ...stockSdk,
+  getAgentDir() {
+    requestSdkCalls.agentDir += 1;
+    return join(process.env.HOME, ".pi", "unexpected-request-agent");
+  },
+  ModelRuntime: {
+    async create(options) {
+      requestSdkCalls.modelRuntime += 1;
+      return stockSdk.ModelRuntime.create(options);
+    },
+  },
+  async createAgentSession() {
+    requestSdkCalls.session += 1;
+    throw new Error("request must not create a child session");
+  },
+};
+const requestRoot = join(process.env.HOME, ".pi", "request-runs");
+const requestCommands = [];
+const requestTools = [];
+const requestApi = {
+  registerCommand(name, definition) { requestCommands.push({ name, definition }); },
+  registerTool(definition) { requestTools.push(definition); },
+};
+registerTeams(requestApi, {
+  host: createStockPiHost({ sdk: requestSdk }),
+  agentDir: process.env.PI_CODING_AGENT_DIR,
+  teamsRoot: requestRoot,
+});
+assert.deepEqual(requestCommands.map(({ name }) => name), ["team"]);
+assert.deepEqual(requestTools.map(({ name }) => name), ["team"]);
+const requested = await requestTools[0].execute(
+  "request-smoke",
+  {
+    action: "request",
+    team: "builtin/investigate",
+    objective: "Inspect package compatibility without provider execution.",
+  },
+  undefined,
+  undefined,
+  context,
+);
+assert.equal(requested.details.status, "approval_required");
+assert.match(
+  requested.details.runId,
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+);
+assert.deepEqual(Object.keys(requested.details.binding).sort(), [
+  "manifestDigest", "planDigest", "policyDigest", "requestedAction", "runId",
+]);
+assert.equal(requested.details.binding.runId, requested.details.runId);
+assert.equal(requested.details.binding.requestedAction, "execute");
+for (const name of ["manifestDigest", "planDigest", "policyDigest"]) {
+  assert.match(requested.details.binding[name], /^[0-9a-f]{64}$/);
+}
+assert.deepEqual(authorityCalls, { auth: 0, provider: 0, native: 0, config: 0, stream: 0 });
+assert.deepEqual(requestSdkCalls, { agentDir: 0, modelRuntime: 0, session: 0 });
+const projectId = createHash("sha256").update(cwd, "utf8").digest("hex");
+const eventPath = join(requestRoot, projectId, requested.details.runId, "events.jsonl");
+const events = readFileSync(eventPath, "utf8").trim().split("\n").map(JSON.parse);
+assert.deepEqual(events.map(({ type }) => type), [
+  "run.requested",
+  "manifest.snapshotted",
+  "policy.admitted",
+  "run.awaiting_approval",
+]);
+assert.deepEqual(events.at(-1).payload.binding, requested.details.binding);
+assert.equal(events.some(({ type }) => type === "approval.granted" || type === "run.started"), false);
 assert.equal(networkCalls, 0);
 
-const model = {
-  id: "smoke-model",
-  name: "Smoke Model",
-  api: "anthropic-messages",
-  provider: "smoke-provider",
-  baseUrl: "https://example.invalid",
-  reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 100000,
-  maxTokens: 1000,
-};
-const provider = {
-  id: model.provider,
-  name: "Smoke Provider",
-  models: [model],
-  streamSimple() { throw new Error("provider stream must not run in controlled smoke"); },
-};
-const authStatus = { configured: true, source: "smoke" };
-const registry = {
-  find(providerId, modelId) {
-    return providerId === model.provider && modelId === model.id ? model : undefined;
-  },
-  getProviderAuthStatus(providerId) {
-    return providerId === model.provider ? authStatus : { configured: false };
-  },
-  getProvider(providerId) {
-    return providerId === model.provider ? provider : undefined;
-  },
-  getRegisteredNativeProvider(providerId) {
-    return providerId === model.provider ? provider : undefined;
-  },
-  getRegisteredProviderConfig() { return undefined; },
-  async getProviderAuth(providerId) {
-    assert.equal(providerId, model.provider);
-    return { auth: { apiKey: "synthetic-smoke-key" }, source: "smoke" };
-  },
-};
 const runContext = {
   cwd,
   projectId: "a".repeat(64),
@@ -159,8 +243,22 @@ const member = {
   instructions: "Read repository evidence.",
 };
 let composed;
+let getAgentDirCalls = 0;
+let resourceLoaderOptions;
+const expectedSdkAgentDir = join(process.env.HOME, ".pi", "stock-sdk-agent");
+class ObservedResourceLoader extends stockSdk.DefaultResourceLoader {
+  constructor(options) {
+    resourceLoaderOptions = options;
+    super(options);
+  }
+}
 const controlledSdk = {
   ...stockSdk,
+  DefaultResourceLoader: ObservedResourceLoader,
+  getAgentDir() {
+    getAgentDirCalls += 1;
+    return expectedSdkAgentDir;
+  },
   async createAgentSession(options) {
     composed = options;
     const listeners = new Set();
@@ -188,7 +286,7 @@ const controlledSdk = {
     }};
   },
 };
-const host = createStockPiHost({ sdk: controlledSdk, agentDir: join(process.env.HOME, ".pi", "agent") });
+const host = createStockPiHost({ sdk: controlledSdk });
 const admission = await host.preflightMember({ member, maxCostUsd: 1, timeoutMs: 30000 }, runContext);
 assert.equal(admission.ok, true, admission.reason);
 const execution = host.runMember({
@@ -203,6 +301,10 @@ const execution = host.runMember({
 const result = await execution.result;
 assert.equal(result.ok, true, result.error);
 assert.equal(result.text, "Controlled stock composition passed.");
+assert.equal(getAgentDirCalls, 1);
+assert.notEqual(expectedSdkAgentDir, process.env.PI_CODING_AGENT_DIR);
+assert.equal(resourceLoaderOptions.agentDir, expectedSdkAgentDir);
+assert.equal(resourceLoaderOptions.cwd, cwd);
 assert.equal(composed.noTools, "all");
 assert.deepEqual(composed.tools, ["read", "grep", "find", "ls"]);
 assert.deepEqual(composed.customTools.map(({ name }) => name), ["read", "grep", "find", "ls"]);

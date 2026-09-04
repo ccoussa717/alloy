@@ -6,10 +6,11 @@ Portable, read-only team orchestration for Pi. Slice 1 ships one team,
 surface of Alloy's pinned Pi fork **0.82.1** and stock Pi **0.84.2** on Node
 22.19 or newer.
 
-## Install as a Pi package
+## Stock Pi setup
 
-This repository currently marks the package private, so install a reviewed local
-checkout or packed artifact rather than assuming it is published:
+For stock Pi 0.84.2, install this standalone Pi package. This repository
+currently marks the package private, so install a reviewed local checkout or
+packed artifact rather than assuming it is published:
 
 ```bash
 # User setting: records the absolute package path in ~/.pi/agent/settings.json
@@ -25,6 +26,15 @@ Pi package settings may also use a future pinned registry source such as
 `npm:@alloy/pi-teams@0.1.0` after an authorized publication. Pi packages execute
 extension code with the user's authority: review and pin the artifact before
 adding it to settings.
+
+## Alloy setup
+
+Alloy root already registers Teams once through its root extension. When running
+Alloy 0.82.1 from this repository or its normal distribution, you **must not add the standalone package again**
+to user or project Pi package settings. There is
+no second Teams install step: launch Alloy normally, then use `/team list` or
+`/help teams`. Duplicate standalone registration is unsupported and fails
+closed rather than creating a second service or execution path.
 
 The package declares these peer ranges:
 

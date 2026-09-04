@@ -62,6 +62,16 @@ test("portable package documentation states compatibility, operation, authority,
   }
 });
 
+test("portable documentation separates stock Pi setup from Alloy's built-in registration", () => {
+  const text = source(packageReadme);
+  requiresPhrases(text, [
+    "## Stock Pi setup",
+    "## Alloy setup",
+    "Alloy root already registers Teams",
+    "must not add the standalone package again",
+  ], "package README setup");
+});
+
 test("root README links the portable Teams Slice 1 documentation and states both targets", () => {
   const text = source(rootReadme);
   requiresPhrases(text, [
