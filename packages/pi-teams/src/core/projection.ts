@@ -541,6 +541,12 @@ function applyEvent(state: FoldState, event: TeamEvent, index: number): void {
       const memberId = parseMemberId(event.payload, event.type);
       const member = memberFor(state, memberId);
       if (member.status !== "ready") lifecycleError(`${memberId} cannot start from ${member.status}`);
+      const running = state.memberOrder.filter((id) =>
+        state.members[id]!.status === "running"
+      ).length;
+      if (running >= state.limits!.maxConcurrency) {
+        lifecycleError(`${memberId} cannot start beyond maxConcurrency`);
+      }
       member.status = "running";
       return;
     }
@@ -664,7 +670,9 @@ function applyEvent(state: FoldState, event: TeamEvent, index: number): void {
       }
       const record = inspectRecord(event.payload, ["reason"], event.type).values;
       requireString(record.reason, "run.failed.reason", TEAM_LIMITS.descriptionBytes);
-      if (hasRunningMember(state)) lifecycleError("run cannot fail while a member is running");
+      if (state.phase === "started" && hasRunningMember(state)) {
+        lifecycleError("run cannot fail while a member is running before cancellation");
+      }
       state.phase = "terminal";
       state.status = "failed";
       return;
@@ -689,9 +697,9 @@ function applyEvent(state: FoldState, event: TeamEvent, index: number): void {
       requireEmptyPayload(event.payload, event.type);
       if (state.memberOrder.some((id) => {
         const status = state.members[id]!.status;
-        return status === "pending" || status === "ready" || status === "running";
+        return status === "pending" || status === "ready" || status === "running" || status === "failed";
       })) {
-        lifecycleError("run cannot be cancelled while a member remains active");
+        lifecycleError("run cannot be cancelled while a member is active or failed");
       }
       state.phase = "terminal";
       state.status = "cancelled";

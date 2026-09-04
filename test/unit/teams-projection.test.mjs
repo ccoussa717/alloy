@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashEvent } from "../../packages/pi-teams/src/core/events.ts";
+import {
+  hashEvent,
+  validateEventHistory,
+} from "../../packages/pi-teams/src/core/events.ts";
 import {
   projectTeamRun,
   validateTeamLifecycle,
@@ -68,6 +71,14 @@ function event(previous, type, payload = {}) {
 
 function append(events, type, payload = {}) {
   return [...events, event(events.at(-1), type, payload)];
+}
+
+function rehashHistory(events) {
+  const rehashed = [];
+  for (const entry of events) {
+    rehashed.push(event(rehashed.at(-1), entry.type, entry.payload));
+  }
+  return rehashed;
 }
 
 function requested() {
@@ -217,6 +228,70 @@ test("projects blocked, awaiting approval, failed, and cancelled terminal states
   cancelled = append(cancelled, "member.cancelled", { memberId: "lead" });
   cancelled = append(cancelled, "run.cancelled");
   assert.equal(projectTeamRun(cancelled, { live: true }).status, "cancelled");
+});
+
+// Break caught: containment failure cannot be recorded truthfully while an uncontained member remains live.
+test("permits run.failed with running members only after cancellation was requested", () => {
+  let containmentFailed = append(started(), "member.ready", { memberId: "researcher" });
+  containmentFailed = append(containmentFailed, "member.started", { memberId: "researcher" });
+  containmentFailed = append(containmentFailed, "cancel.requested");
+  containmentFailed = append(containmentFailed, "run.failed", { reason: "containment_failed" });
+
+  const validated = validateEventHistory(containmentFailed, RUN_ID);
+  const view = projectTeamRun(validated, { live: false });
+  assert.equal(view.status, "failed");
+  assert.equal(view.members.researcher.status, "running");
+  assert.equal(view.members.lead.status, "pending");
+
+  const ordinaryFailure = append(containmentFailed.slice(0, -2), "run.failed", {
+    reason: "provider failed",
+  });
+  assert.throws(
+    () => projectTeamRun(ordinaryFailure, { live: false }),
+    /event_transition:/,
+  );
+});
+
+// Break caught: event history starts more members than its snapshotted concurrency authority.
+test("rejects member start when the concurrency limit is already full", () => {
+  const history = started();
+  history[1].payload = {
+    ...history[1].payload,
+    limits: { ...LIMITS, maxConcurrency: 1 },
+    members: MEMBERS.map(({ id }) => ({ id, needs: [] })),
+  };
+  let overConcurrency = append(rehashHistory(history), "member.ready", { memberId: "researcher" });
+  overConcurrency = append(overConcurrency, "member.started", { memberId: "researcher" });
+  overConcurrency = append(overConcurrency, "member.ready", { memberId: "lead" });
+  overConcurrency = append(overConcurrency, "member.started", { memberId: "lead" });
+
+  assert.throws(
+    () => validateEventHistory(overConcurrency, RUN_ID),
+    /event_transition:/,
+  );
+});
+
+// Break caught: a failed member is hidden beneath cancellation, or prior success is erased.
+test("run.cancelled rejects failed members but preserves succeeded members", () => {
+  let history = append(started(), "member.ready", { memberId: "researcher" });
+  history = append(history, "member.started", { memberId: "researcher" });
+  history = append(history, "member.failed", {
+    memberId: "researcher",
+    error: "provider failed",
+  });
+  history = append(history, "cancel.requested");
+  history = append(history, "member.cancelled", { memberId: "lead" });
+  history = append(history, "run.cancelled");
+
+  assert.throws(() => validateEventHistory(history, RUN_ID), /event_transition:/);
+
+  let partialSuccess = append(withResearcherSucceeded(), "cancel.requested");
+  partialSuccess = append(partialSuccess, "member.cancelled", { memberId: "lead" });
+  partialSuccess = append(partialSuccess, "run.cancelled");
+  const view = projectTeamRun(validateEventHistory(partialSuccess, RUN_ID), { live: false });
+  assert.equal(view.status, "cancelled");
+  assert.equal(view.members.researcher.status, "succeeded");
+  assert.equal(view.members.lead.status, "cancelled");
 });
 
 // Break caught: member success can occur without ready/start/artifact state transitions.
