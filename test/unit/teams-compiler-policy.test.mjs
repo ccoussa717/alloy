@@ -547,6 +547,30 @@ test("policy digest hashes canonical public admissions and effective limits with
   }, compiled));
 });
 
+// Break caught: effective team limits can widen authority beyond the compiled manifest.
+for (const [name, limits, admissions] of [
+  [
+    "cost",
+    { ...definition().spec.limits, maxCostUsd: 3 },
+    admissionsForTeam().map((admission) => ({ ...admission, maxCostUsd: 1 })),
+  ],
+  [
+    "concurrency",
+    { ...definition().spec.limits, maxConcurrency: 3 },
+    admissionsForTeam(),
+  ],
+  [
+    "timeout",
+    { ...definition().spec.limits, timeoutMs: 300_001 },
+    admissionsForTeam(),
+  ],
+]) {
+  test(`policy digest rejects effective ${name} limits wider than compiled limits`, () => {
+    const compiled = compileTeam(entry());
+    assert.throws(() => policyDigest(admissions, limits, compiled), /policy_admission/);
+  });
+}
+
 // Break caught: policy hashing accepts admissions that do not correspond exactly to compiled members.
 test("policy digest requires one admission per compiled member and binds declaration order", () => {
   const compiled = compileTeam(entry());
@@ -564,6 +588,23 @@ test("policy digest requires one admission per compiled member and binds declara
   for (const value of invalid) {
     assert.throws(() => policyDigest(value, limits, compiled), /policy_admission/);
   }
+});
+
+// Break caught: equivalent authority array order produces different approval policy digests.
+test("policy digest canonicalizes capability and tool authority to compiled order", () => {
+  const compiled = compileTeam(entry());
+  const limits = definition().spec.limits;
+  const declaredOrder = admissionsForTeam();
+  const reordered = clone(declaredOrder);
+  for (const admission of reordered) {
+    admission.effectiveCapabilities.reverse();
+    admission.effectiveTools.reverse();
+  }
+
+  assert.equal(
+    policyDigest(reordered, limits, compiled),
+    policyDigest(declaredOrder, limits, compiled),
+  );
 });
 
 // Break caught: well-shaped admissions can contradict compiled member and effective-limit authority.

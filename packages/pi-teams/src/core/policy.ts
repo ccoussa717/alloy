@@ -364,14 +364,20 @@ export function policyDigest(
     return shapeError("policy_admission", "admissions must match the compiled member count");
   }
 
+  const compiledLimits = team.definition.spec.limits;
   if (
+    !Number.isInteger(limits.maxConcurrency) ||
+    limits.maxConcurrency <= 0 ||
+    limits.maxConcurrency > compiledLimits.maxConcurrency ||
     typeof limits.maxCostUsd !== "number" ||
     !Number.isFinite(limits.maxCostUsd) ||
     limits.maxCostUsd <= 0 ||
+    limits.maxCostUsd > compiledLimits.maxCostUsd ||
     !Number.isInteger(limits.timeoutMs) ||
-    limits.timeoutMs <= 0
+    limits.timeoutMs <= 0 ||
+    limits.timeoutMs > compiledLimits.timeoutMs
   ) {
-    return shapeError("policy_admission", "effective cost and timeout limits must be positive");
+    return shapeError("policy_admission", "effective limits must positively narrow compiled limits");
   }
   const memberAllocation = limits.maxCostUsd / team.definition.spec.limits.maxMembers;
   const timeoutCeiling = Math.min(limits.timeoutMs, team.definition.spec.limits.timeoutMs);
@@ -397,7 +403,11 @@ export function policyDigest(
     ) {
       return shapeError("policy_admission", "effective member authority exceeds compiled limits");
     }
-    normalizedById.set(admission.memberId, admission);
+    normalizedById.set(admission.memberId, admission.ok ? {
+      ...admission,
+      effectiveCapabilities: [...expected.capabilities],
+      effectiveTools: [...expected.tools],
+    } : admission);
   }
   const orderedAdmissions = expectedMembers.map((member) => normalizedById.get(member.id));
   if (orderedAdmissions.some((admission) => admission === undefined)) {
