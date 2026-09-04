@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import { test } from "node:test";
+import { Check } from "typebox/value";
 
 import { parseTeamManifest } from "../../packages/pi-teams/src/core/manifest.ts";
 import {
@@ -13,6 +15,10 @@ import {
   formatTeamList,
   formatTeamRun,
 } from "../../packages/pi-teams/src/extension/presentation.ts";
+import { registerTeamTool } from "../../packages/pi-teams/src/extension/tool.ts";
+import portableTeamsExtension, {
+  registerTeams,
+} from "../../packages/pi-teams/src/extension/index.ts";
 
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const OTHER_RUN_ID = "123e4567-e89b-42d3-a456-426614174001";
@@ -509,4 +515,280 @@ test("cancel calls only cancel with the human actor", async () => {
   assert.deepEqual(operational, [[
     "cancel", OTHER_RUN_ID, { kind: "human", id: "pi-user" }, harness.commandContext,
   ]]);
+});
+
+function toolHarness() {
+  const calls = [];
+  const requested = runView();
+  const cancelled = runView({ status: "cancelled", approvalBinding: undefined });
+  const service = {
+    async list(context) {
+      calls.push(["list", context]);
+      return [{
+        ref: "builtin/investigate", description: "Investigate", members: 3,
+        limits: { maxConcurrency: 2, maxCostUsd: 2, timeoutMs: 300_000, maxMembers: 3 },
+      }];
+    },
+    async inspect(teamRef, context) {
+      calls.push(["inspect", teamRef, context]);
+      return compiledTeam();
+    },
+    async request(input) {
+      calls.push(["request", input]);
+      return requested;
+    },
+    async approve(input) {
+      calls.push(["approve", input]);
+      throw new Error("approve must not be called by the model tool");
+    },
+    async execute(runId, context) {
+      calls.push(["execute", runId, context]);
+      throw new Error("execute must not be called by the model tool");
+    },
+    async status(runId, context) {
+      calls.push(["status", runId, context]);
+      return requested;
+    },
+    async view(runId, memberId, context) {
+      calls.push(["view", runId, memberId, context]);
+      return memberId === undefined ? requested : {
+        run: requested,
+        member: { id: memberId, status: "succeeded" },
+        text: "safe evidence\u001b]0;hidden\u0007\u202e",
+        result: {
+          ok: false,
+          text: "safe evidence\u001b]0;hidden\u0007\u202e",
+          model: null,
+          usage: { input: 1, output: 0, costUsd: 0 },
+          error: "provider_error: sk-secret-must-not-render",
+        },
+      };
+    },
+    async cancel(runId, actor, context) {
+      calls.push(["cancel", runId, actor, context]);
+      return cancelled;
+    },
+  };
+  let tool;
+  const pi = {
+    registerTool(definition) {
+      assert.equal(tool, undefined, "registered once");
+      tool = definition;
+    },
+  };
+  const toolContext = { marker: "tool-context" };
+  const contexts = [];
+  registerTeamTool(pi, service, (ctx, source) => {
+    contexts.push([ctx, source]);
+    return toolContext;
+  });
+  const ctx = {
+    cwd: "/repo",
+    model: { provider: "provider", id: "parent-model" },
+    modelRegistry: {},
+    isProjectTrusted: () => true,
+    signal: undefined,
+    hasUI: false,
+    ui: {},
+  };
+  const execute = (params) => tool.execute("call", params, undefined, undefined, ctx);
+  return { calls, service, tool, ctx, contexts, toolContext, execute };
+}
+
+const VALID_TOOL_INPUTS = [
+  { action: "list" },
+  { action: "inspect", team: "builtin/investigate" },
+  { action: "request", team: "builtin/investigate", objective: "map auth" },
+  { action: "run", team: "investigate", objective: "map auth" },
+  { action: "status" },
+  { action: "status", runId: RUN_ID },
+  { action: "view", runId: RUN_ID },
+  { action: "view", runId: RUN_ID, memberId: "architecture" },
+  { action: "cancel", runId: RUN_ID },
+];
+
+test("team tool has an exact closed action-specific bounded schema with no approval authority", () => {
+  const { tool } = toolHarness();
+  assert.equal(tool.name, "team");
+  assert.equal(tool.parameters.additionalProperties, false);
+  const branches = tool.parameters.anyOf;
+  assert.ok(Array.isArray(branches));
+  assert.ok(branches.every((branch) => branch.additionalProperties === false));
+  assert.deepEqual(branches.map((branch) => branch.properties.action.const), [
+    "list", "inspect", "request", "run", "status", "view", "cancel",
+  ]);
+  assert.equal(branches.some((branch) => branch.properties.action.const === "approve"), false);
+
+  for (const input of VALID_TOOL_INPUTS) assert.equal(Check(tool.parameters, input), true, JSON.stringify(input));
+  for (const input of [
+    {}, { action: "approve", runId: RUN_ID }, { action: "list", team: "investigate" },
+    { action: "inspect" }, { action: "inspect", team: "investigate", objective: "x" },
+    { action: "request", team: "investigate" },
+    { action: "request", team: "investigate", objective: "x", runId: RUN_ID },
+    { action: "run", objective: "x" }, { action: "run", team: "investigate", objective: "" },
+    { action: "status", memberId: "lead" }, { action: "status", runId: "not-a-uuid" },
+    { action: "view" }, { action: "view", runId: RUN_ID, team: "investigate" },
+    { action: "view", runId: RUN_ID, memberId: "INVALID_MEMBER" },
+    { action: "cancel" }, { action: "cancel", runId: RUN_ID, objective: "x" },
+    { action: "list", approved: true }, { action: "list", authorization: "human" },
+    { action: "list", actor: { kind: "human", id: "pi-user" } },
+  ]) assert.equal(Check(tool.parameters, input), false, JSON.stringify(input));
+
+  const requestBranch = branches.find((branch) => branch.properties.action.const === "request");
+  assert.equal(requestBranch.properties.team.minLength, 1);
+  assert.ok(requestBranch.properties.team.maxLength <= 1_024);
+  assert.equal(requestBranch.properties.objective.minLength, 1);
+  assert.ok(requestBranch.properties.objective.maxLength <= 16_384);
+});
+
+test("team tool dispatches exact actions and request/run can only request approval", async () => {
+  const harness = toolHarness();
+  for (const input of VALID_TOOL_INPUTS) {
+    const result = await harness.execute(input);
+    assert.equal(result.content.length, 1);
+    assert.equal(result.content[0].type, "text");
+    assert.equal(typeof result.content[0].text, "string");
+    if (input.action === "request" || input.action === "run") {
+      assert.equal(result.details.status, "approval_required");
+      assert.equal(result.details.runId, RUN_ID);
+      assert.strictEqual(result.details.binding, BINDING);
+      assert.match(result.content[0].text, /approval_required/);
+    }
+  }
+
+  const operational = harness.calls.map(([name]) => name);
+  assert.deepEqual(operational, [
+    "list", "inspect", "request", "request", "status", "status", "view", "view", "cancel",
+  ]);
+  assert.equal(operational.filter((name) => name === "approve").length, 0);
+  assert.equal(operational.filter((name) => name === "execute").length, 0);
+  assert.equal(harness.contexts.length, VALID_TOOL_INPUTS.length);
+  assert.ok(harness.contexts.every(([, source]) => source === "tool"));
+  assert.ok(harness.calls.every((call) => {
+    if (call[0] === "request") return call[1].context === harness.toolContext;
+    return call.at(-1) === harness.toolContext;
+  }));
+  for (const call of harness.calls.filter(([name]) => ["request", "cancel"].includes(name))) {
+    const actor = call[0] === "request" ? call[1].actor : call[2];
+    assert.deepEqual(actor, { kind: "model", id: "provider/parent-model" });
+  }
+
+  harness.ctx.model = undefined;
+  await harness.execute({ action: "cancel", runId: RUN_ID });
+  assert.deepEqual(harness.calls.at(-1)[2], { kind: "model", id: "no-active-model" });
+});
+
+test("team tool rejects direct-call proxy accessor and authority arguments before dispatch", async () => {
+  const harness = toolHarness();
+  let getterCalls = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, "action", {
+    enumerable: true,
+    get() { getterCalls += 1; return "list"; },
+  });
+  const proxy = new Proxy({ action: "list" }, {
+    get() { throw new Error("proxy trap must not be invoked"); },
+  });
+
+  for (const input of [
+    accessor,
+    proxy,
+    Object.assign(Object.create(null), { action: "list" }),
+    { action: "status", runId: undefined },
+    { action: "list", approved: true },
+    { action: "list", authorization: "human" },
+    { action: "list", actor: { kind: "human", id: "pi-user" } },
+  ]) await assert.rejects(harness.execute(input), /team_tool_input/);
+  assert.equal(getterCalls, 0);
+  assert.equal(harness.calls.length, 0);
+});
+
+test("team tool preserves terminal-safe text and withholds service error details", async () => {
+  const harness = toolHarness();
+  const result = await harness.execute({ action: "view", runId: RUN_ID, memberId: "architecture" });
+  assert.ok(result.content[0].text.includes("\\u001b]0;hidden\\u0007\\u202e"));
+  assert.doesNotMatch(result.content[0].text, /sk-secret-must-not-render/);
+  assert.match(result.content[0].text, /Result error code: "provider_error"/);
+  assert.deepEqual(result.details, { status: "ok" });
+
+  harness.service.list = async () => {
+    throw new Error("provider_error: sk-secret-must-not-render\u001b]0;hidden\u0007");
+  };
+  await assert.rejects(
+    harness.execute({ action: "list" }),
+    (error) => error.message === "team_tool_failed:provider_error",
+  );
+});
+
+function registrationApi() {
+  const commands = [];
+  const tools = [];
+  return {
+    commands,
+    tools,
+    pi: {
+      registerCommand(name, options) { commands.push({ name, options }); },
+      registerTool(tool) { tools.push(tool); },
+    },
+  };
+}
+
+function registrationOptions(contexts = []) {
+  const host = { id: "stock-pi" };
+  const eventStore = {};
+  const artifactStore = {};
+  const catalogFor = async (context) => {
+    contexts.push(context);
+    return { list: () => [], resolve: () => { throw new Error("unused"); } };
+  };
+  return { host, eventStore, artifactStore, catalogFor };
+}
+
+test("registerTeams constructs one shared service and rejects duplicate API registration", () => {
+  const harness = registrationApi();
+  const service = registerTeams(harness.pi, registrationOptions());
+  assert.ok(service && typeof service === "object");
+  assert.equal(harness.commands.length, 1);
+  assert.equal(harness.commands[0].name, "team");
+  assert.equal(harness.tools.length, 1);
+  assert.throws(() => registerTeams(harness.pi, registrationOptions()), /teams_already_registered/);
+});
+
+test("registerTeams shares canonical trusted runtime context with command and tool", async () => {
+  const harness = registrationApi();
+  const contexts = [];
+  const service = registerTeams(harness.pi, registrationOptions(contexts));
+  const signal = new AbortController().signal;
+  const ctx = {
+    cwd: process.cwd(),
+    model: undefined,
+    modelRegistry: { marker: "registry" },
+    isProjectTrusted: () => false,
+    signal,
+    hasUI: true,
+    ui: { notify() {} },
+  };
+  await harness.tools[0].execute("call", { action: "list" }, signal, undefined, ctx);
+  await harness.commands[0].options.handler("list", ctx);
+
+  assert.ok(service && typeof service === "object");
+  assert.equal(contexts.length, 2);
+  assert.deepEqual(contexts.map(({ source }) => source), ["tool", "command"]);
+  const canonical = await realpath(process.cwd());
+  const expectedProject = createHash("sha256").update(canonical, "utf8").digest("hex");
+  for (const context of contexts) {
+    assert.equal(context.cwd, canonical);
+    assert.equal(context.projectId, expectedProject);
+    assert.equal(context.projectTrusted, false);
+    assert.strictEqual(context.signal, signal);
+    assert.strictEqual(context.runtime, ctx);
+  }
+});
+
+test("portable default extension registers one command and one tool around its one service", () => {
+  const harness = registrationApi();
+  assert.equal(portableTeamsExtension(harness.pi), undefined);
+  assert.deepEqual(harness.commands.map(({ name }) => name), ["team"]);
+  assert.deepEqual(harness.tools.map(({ name }) => name), ["team"]);
+  assert.throws(() => portableTeamsExtension(harness.pi), /teams_already_registered/);
 });
