@@ -20,11 +20,17 @@ function canonicalError(message: string): never {
   throw new TypeError(`canonical_json:${message}`);
 }
 
+function isWellFormedUnicode(value: string): boolean {
+  return Buffer.from(value, "utf8").toString("utf8") === value;
+}
+
 function serializeCanonical(value: unknown, ancestors: WeakSet<object>): string {
   if (value === null) return "null";
-  if (typeof value === "string" || typeof value === "boolean") {
+  if (typeof value === "string") {
+    if (!isWellFormedUnicode(value)) canonicalError("strings must contain well-formed Unicode");
     return JSON.stringify(value);
   }
+  if (typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "number") {
     if (!Number.isFinite(value)) canonicalError("numbers must be finite");
     return JSON.stringify(value);
@@ -36,30 +42,42 @@ function serializeCanonical(value: unknown, ancestors: WeakSet<object>): string 
 
   ancestors.add(value);
   try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Object.values(descriptors).some((descriptor) => !("value" in descriptor))) {
+      canonicalError("accessor properties are not supported");
+    }
+    if (Object.getOwnPropertySymbols(value).length > 0) {
+      canonicalError("symbol keys are not supported");
+    }
+
     if (Array.isArray(value)) {
-      for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index)) canonicalError("sparse arrays are not supported");
+      const lengthDescriptor = descriptors.length;
+      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) {
+        canonicalError("array length must be a data property");
       }
-      const ownNames = Object.getOwnPropertyNames(value);
+      const length = lengthDescriptor.value as number;
+      for (let index = 0; index < length; index += 1) {
+        if (descriptors[String(index)] === undefined) {
+          canonicalError("sparse arrays are not supported");
+        }
+      }
+      const ownNames = Object.keys(descriptors);
       if (ownNames.some((name) => {
         if (name === "length") return false;
         const index = Number(name);
-        return !Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== name;
+        return !Number.isInteger(index) || index < 0 || index >= length || String(index) !== name;
       })) {
         canonicalError("array properties are not supported");
       }
-      if (Object.getOwnPropertySymbols(value).length > 0) {
-        canonicalError("symbol keys are not supported");
-      }
-      return `[${value.map((item) => serializeCanonical(item, ancestors)).join(",")}]`;
+      const items = Array.from({ length }, (_, index) =>
+        serializeCanonical(descriptors[String(index)]!.value, ancestors)
+      );
+      return `[${items.join(",")}]`;
     }
 
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       canonicalError("only plain objects are supported");
-    }
-    if (Object.getOwnPropertySymbols(value).length > 0) {
-      canonicalError("symbol keys are not supported");
     }
     const ownNames = Object.getOwnPropertyNames(value);
     const keys = Object.keys(value);
@@ -67,9 +85,10 @@ function serializeCanonical(value: unknown, ancestors: WeakSet<object>): string 
       canonicalError("non-enumerable properties are not supported");
     }
     keys.sort();
-    return `{${keys.map((key) =>
-      `${JSON.stringify(key)}:${serializeCanonical((value as Record<string, unknown>)[key], ancestors)}`
-    ).join(",")}}`;
+    return `{${keys.map((key) => {
+      if (!isWellFormedUnicode(key)) canonicalError("keys must contain well-formed Unicode");
+      return `${JSON.stringify(key)}:${serializeCanonical(descriptors[key]!.value, ancestors)}`;
+    }).join(",")}}`;
   } finally {
     ancestors.delete(value);
   }

@@ -120,6 +120,28 @@ function policyInput(overrides = {}) {
   };
 }
 
+function admissionsForTeam() {
+  return [
+    admitted({ memberId: "architecture", effectiveRoute: "research" }),
+    admitted({ memberId: "risks", effectiveRoute: "review" }),
+    admitted({ memberId: "lead", effectiveRoute: "planning" }),
+  ];
+}
+
+function blockedAdmission(memberId, overrides = {}) {
+  return {
+    ok: false,
+    memberId,
+    effectiveRoute: null,
+    effectiveModel: null,
+    effectiveCapabilities: [],
+    effectiveTools: [],
+    maxCostUsd: 2 / 3,
+    reason: "operator_denied",
+    ...overrides,
+  };
+}
+
 // Break caught: key insertion order accidentally changes canonical hashes.
 test("canonical JSON recursively sorts mapping keys and preserves array order", () => {
   const left = { z: { b: 2, a: 1 }, a: [3, 2, 1] };
@@ -156,6 +178,34 @@ test("canonical JSON rejects undefined, nonfinite, and non-JSON values", () => {
   for (const value of invalid) {
     assert.throws(() => canonicalJson(value), /canonical_json/);
   }
+});
+
+// Break caught: canonicalization executes accessors or replaces malformed Unicode.
+test("canonical JSON rejects accessors and malformed Unicode without invoking getters", () => {
+  let getterCalls = 0;
+  const objectAccessor = {};
+  Object.defineProperty(objectAccessor, "value", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "secret";
+    },
+  });
+  const arrayAccessor = [];
+  Object.defineProperty(arrayAccessor, "0", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "secret";
+    },
+  });
+  arrayAccessor.length = 1;
+
+  assert.throws(() => canonicalJson(objectAccessor), /canonical_json/);
+  assert.throws(() => canonicalJson(arrayAccessor), /canonical_json/);
+  assert.throws(() => canonicalJson("\ud800"), /canonical_json/);
+  assert.throws(() => canonicalJson({ "\udfff": "value" }), /canonical_json/);
+  assert.equal(getterCalls, 0);
 });
 
 // Break caught: a ready member is selected by map/set order instead of declaration order.
@@ -416,39 +466,120 @@ test("policy blocks zero, negative, fractional, nonfinite, and larger timeouts",
 
 // Break caught: opaque host tokens or insertion order affect public approval policy.
 test("policy digest hashes canonical public admissions and effective limits without tokens", () => {
+  const compiled = compileTeam(entry());
   const limits = {
     maxConcurrency: Math.min(definition().spec.limits.maxConcurrency, host().maxConcurrency),
     maxCostUsd: 2,
     timeoutMs: 300_000,
     maxMembers: 3,
   };
-  const first = admitted({ token: { secret: "first" } });
-  const second = admitted({ token: { secret: "second" } });
+  const first = admissionsForTeam();
+  const second = clone(first);
+  second.forEach((admission) => { admission.token = { secret: "different" }; });
 
-  assert.equal(policyDigest([first], limits), policyDigest([second], {
+  assert.equal(policyDigest(first, limits, compiled), policyDigest(second.reverse(), {
     timeoutMs: 300_000,
     maxMembers: 3,
     maxCostUsd: 2,
     maxConcurrency: 2,
-  }));
-  assert.notEqual(policyDigest([first], limits), policyDigest([first], {
+  }, compiled));
+  assert.notEqual(policyDigest(first, limits, compiled), policyDigest(first, {
     ...limits,
     maxConcurrency: 1,
-  }));
+  }, compiled));
+});
+
+// Break caught: policy hashing accepts admissions that do not correspond exactly to compiled members.
+test("policy digest requires one admission per compiled member and binds declaration order", () => {
+  const compiled = compileTeam(entry());
+  const limits = definition().spec.limits;
+  const admissions = admissionsForTeam();
+  const expected = policyDigest(admissions, limits, compiled);
+
+  assert.equal(policyDigest([...admissions].reverse(), limits, compiled), expected);
+  const invalid = [
+    admissions.slice(0, 2),
+    [...admissions, admitted({ memberId: "unknown" })],
+    [admissions[0], clone(admissions[0]), admissions[2]],
+    [admissions[0], admissions[1], admitted({ memberId: "unknown" })],
+  ];
+  for (const value of invalid) {
+    assert.throws(() => policyDigest(value, limits, compiled), /policy_admission/);
+  }
+});
+
+// Break caught: malformed or extended successful admission objects are normalized and hashed.
+test("policy digest rejects malformed successful public admission shapes", () => {
+  const compiled = compileTeam(entry());
+  const limits = definition().spec.limits;
+  const base = admissionsForTeam();
+  const malformed = [
+    { ...base[0], unknown: true },
+    { ...base[0], ok: "true" },
+    { ...base[0], memberId: 1 },
+    { ...base[0], effectiveRoute: null },
+    { ...base[0], effectiveModel: 1 },
+    { ...base[0], effectiveCapabilities: ["repo.write"] },
+    { ...base[0], effectiveTools: ["bash"] },
+    { ...base[0], maxCostUsd: Number.NaN },
+    { ...base[0], timeoutMs: 1.5 },
+    (() => { const value = { ...base[0] }; delete value.timeoutMs; return value; })(),
+  ];
+  const symbolExtended = { ...base[0] };
+  symbolExtended[Symbol("unknown")] = true;
+  malformed.push(symbolExtended);
+  const toolsWithProperty = [...base[0].effectiveTools];
+  toolsWithProperty.unknown = true;
+  malformed.push({ ...base[0], effectiveTools: toolsWithProperty });
+
+  for (const value of malformed) {
+    assert.throws(
+      () => policyDigest([value, base[1], base[2]], limits, compiled),
+      /policy_admission/,
+    );
+  }
+});
+
+// Break caught: blocked admissions bypass runtime validation or leak an opaque token into the digest.
+test("policy digest validates blocked admission shapes and excludes forbidden tokens", () => {
+  const compiled = compileTeam(entry());
+  const limits = definition().spec.limits;
+  const success = admissionsForTeam();
+  const valid = blockedAdmission("architecture");
+  assert.doesNotThrow(() => policyDigest([valid, success[1], success[2]], limits, compiled));
+
+  const malformed = [
+    { ...valid, token: { opaque: true } },
+    { ...valid, unknown: true },
+    { ...valid, effectiveRoute: "research" },
+    { ...valid, effectiveModel: "provider/model" },
+    { ...valid, effectiveCapabilities: ["repo.read"] },
+    { ...valid, effectiveTools: ["read"] },
+    { ...valid, maxCostUsd: Number.POSITIVE_INFINITY },
+    { ...valid, reason: "" },
+    (() => { const value = { ...valid }; delete value.reason; return value; })(),
+  ];
+  for (const value of malformed) {
+    assert.throws(
+      () => policyDigest([value, success[1], success[2]], limits, compiled),
+      /policy_admission/,
+    );
+  }
 });
 
 // Break caught: changing only one effective member timeout can reuse stale approval.
 test("policy digest and approval bind every admitted effective timeout", () => {
   const compiled = compileTeam(entry());
   const limits = definition().spec.limits;
-  const admissions = [
-    admitted({ memberId: "architecture", timeoutMs: 120_000 }),
-    admitted({ memberId: "risks", timeoutMs: 120_000 }),
-  ];
-  const original = approvalBinding("run-1", compiled, policyDigest(admissions, limits));
+  const admissions = admissionsForTeam();
+  const original = approvalBinding("run-1", compiled, policyDigest(admissions, limits, compiled));
   const changedAdmissions = clone(admissions);
   changedAdmissions[1].timeoutMs = 60_000;
-  const actual = approvalBinding("run-1", compiled, policyDigest(changedAdmissions, limits));
+  const actual = approvalBinding(
+    "run-1",
+    compiled,
+    policyDigest(changedAdmissions, limits, compiled),
+  );
 
   assert.notEqual(original.policyDigest, actual.policyDigest);
   assert.throws(() => verifyApprovalBinding(original, actual), /approval_binding/);
@@ -473,4 +604,47 @@ test("approval verification rejects every independently changed binding field", 
       /approval_binding/,
     );
   }
+});
+
+// Break caught: structurally malformed bindings reach value comparison as valid approvals.
+test("approval verification requires exact primitive canonical binding shapes", () => {
+  const compiled = compileTeam(entry());
+  const expected = approvalBinding("run-1", compiled, "a".repeat(64));
+  const malformed = [
+    { ...expected, unknown: true },
+    (() => { const value = { ...expected }; delete value.runId; return value; })(),
+    { ...expected, runId: 1 },
+    { ...expected, runId: "" },
+    { ...expected, manifestDigest: "A".repeat(64) },
+    { ...expected, planDigest: "a".repeat(63) },
+    { ...expected, policyDigest: `${"a".repeat(63)}g` },
+    { ...expected, policyDigest: new String("a".repeat(64)) },
+    { ...expected, requestedAction: "inspect" },
+  ];
+  const symbolExtended = { ...expected };
+  symbolExtended[Symbol("unknown")] = true;
+  malformed.push(symbolExtended);
+  const hiddenExtended = { ...expected };
+  Object.defineProperty(hiddenExtended, "hidden", { value: true });
+  malformed.push(hiddenExtended);
+
+  let getterCalls = 0;
+  const accessor = { ...expected };
+  Object.defineProperty(accessor, "policyDigest", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return "a".repeat(64);
+    },
+  });
+  malformed.push(accessor);
+
+  for (const actual of malformed) {
+    assert.throws(() => verifyApprovalBinding(expected, actual), /approval_binding/);
+  }
+  assert.throws(
+    () => verifyApprovalBinding({ ...expected, manifestDigest: "invalid" }, expected),
+    /approval_binding/,
+  );
+  assert.equal(getterCalls, 0);
 });
