@@ -234,7 +234,7 @@ test("presentation formatters return plain truthful strings without opaque or ra
     `Approval run ID: "${RUN_ID}"`, `Policy digest: "${BINDING.policyDigest}"`,
   ]) assert.match(run, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(run, /must-not-render|secretRawPayload|lastEvent|token/i);
-  assert.match(member, /Text:\nEvidence found\./);
+  assert.match(member, /Text: "Evidence found\."/);
 
   const requestedOnly = runView({
     status: "incomplete",
@@ -249,6 +249,98 @@ test("presentation formatters return plain truthful strings without opaque or ra
   const incomplete = formatTeamRun(requestedOnly);
   assert.match(incomplete, /Status: "incomplete"/);
   assert.doesNotMatch(incomplete, /undefined|Manifest digest|Plan digest|Policy digest|Effective max concurrency|Maximum cost USD|Approval run ID/);
+});
+
+test("presentation escapes model text control and bidi characters as one JSON-safe scalar", () => {
+  const hostileText = "before\u001b]8;;https://attacker.invalid\u0007link\u001b]8;;\u0007\rrewritten\nnext\u009b31mred\u202egnp.exe\u2066isolated\u2069";
+  const output = formatMemberView({
+    run: runView({ status: "completed" }),
+    member: { id: "architecture", status: "succeeded" },
+    text: hostileText,
+    result: {
+      ok: true,
+      text: hostileText,
+      model: "provider/research-model",
+      usage: { input: 1, output: 1, costUsd: 0 },
+    },
+  });
+
+  assert.match(output, /Text: "before/);
+  assert.ok(output.includes("\\u001b]8;;https://attacker.invalid\\u0007"));
+  assert.ok(output.includes("\\rrewritten\\nnext\\u009b31mred\\u202egnp.exe\\u2066isolated\\u2069"));
+  assert.doesNotMatch(output, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
+});
+
+test("presentation emits only strict stable error codes and withholds raw error details", () => {
+  const secrets = [
+    "sk-live-SUPERSECRET",
+    "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+    "-----BEGIN PRIVATE " + "KEY-----",
+    "https://credentials.invalid/token?api_key=SECRET",
+    "provider diagnostic must stay private",
+  ];
+  const errorRun = runView({
+    status: "failed",
+    admissions: [{
+      ok: false,
+      memberId: "architecture",
+      effectiveRoute: null,
+      effectiveModel: null,
+      effectiveCapabilities: [],
+      effectiveTools: [],
+      maxCostUsd: 2 / 3,
+      reason: `stock_auth: ${secrets[0]} ${secrets[1]}\u001b]0;owned\u0007`,
+    }],
+    members: {
+      architecture: {
+        id: "architecture",
+        status: "failed",
+        error: `member_failed: ${secrets[2]}\r${secrets[3]}`,
+      },
+      risks: {
+        id: "risks",
+        status: "failed",
+        error: `Uppercase_invalid: ${secrets[4]}`,
+      },
+    },
+  });
+  const runOutput = formatTeamRun(errorRun);
+  const memberOutput = formatMemberView({
+    run: errorRun,
+    member: errorRun.members.architecture,
+    text: "safe evidence",
+    result: {
+      ok: false,
+      text: "safe evidence",
+      model: null,
+      usage: { input: 1, output: 0, costUsd: 0 },
+      error: `provider_error: ${secrets.join(" ")}\u202e`,
+    },
+  });
+  const malformedMember = { id: "lead", status: "failed", error: `${"a".repeat(65)}: too long` };
+  const malformedOutput = formatMemberView({
+    run: runView({ status: "failed", members: { lead: malformedMember } }),
+    member: malformedMember,
+    text: "safe evidence",
+    result: {
+      ok: false,
+      text: "safe evidence",
+      model: null,
+      usage: { input: 0, output: 0, costUsd: null },
+      error: `missing prefix ${secrets[0]}`,
+    },
+  });
+
+  assert.match(runOutput, /Reason code: "stock_auth"/);
+  assert.match(runOutput, /Member error code: "member_failed"/);
+  assert.match(runOutput, /Member error code: "details_withheld"/);
+  assert.match(memberOutput, /Result error code: "provider_error"/);
+  assert.match(malformedOutput, /Member error code: "details_withheld"/);
+  assert.match(malformedOutput, /Result error code: "details_withheld"/);
+  for (const output of [runOutput, memberOutput, malformedOutput]) {
+    for (const secret of secrets) assert.doesNotMatch(output, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(output, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/u);
+  }
 });
 
 function commandHarness({ confirm = true, hasUI = true } = {}) {

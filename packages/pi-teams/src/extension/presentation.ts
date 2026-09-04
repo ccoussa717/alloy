@@ -6,12 +6,28 @@ import type {
   TeamSummary,
 } from "../core/types.ts";
 
+const TERMINAL_CONTROL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const ERROR_CODE = /^([a-z][a-z0-9_]{0,63}):/;
+
+function unicodeEscape(character: string): string {
+  const codePoint = character.codePointAt(0)!;
+  if (codePoint <= 0xffff) return `\\u${codePoint.toString(16).padStart(4, "0")}`;
+  const value = codePoint - 0x10000;
+  const high = 0xd800 + (value >> 10);
+  const low = 0xdc00 + (value & 0x3ff);
+  return `\\u${high.toString(16)}\\u${low.toString(16)}`;
+}
+
 function scalar(value: string | number | boolean | null): string {
-  return JSON.stringify(value);
+  return JSON.stringify(value).replace(TERMINAL_CONTROL, unicodeEscape);
 }
 
 function stringArray(values: readonly string[]): string {
-  return JSON.stringify(values);
+  return `[${values.map((value) => scalar(value)).join(",")}]`;
+}
+
+function safeErrorCode(error: string): string {
+  return ERROR_CODE.exec(error)?.[1] ?? "details_withheld";
 }
 
 function formatLimits(
@@ -37,7 +53,7 @@ function formatAdmission(admission: PublicAdmission): string[] {
     `Maximum member cost USD: ${scalar(admission.maxCostUsd)}`,
   ];
   if (admission.ok) lines.push(`Timeout ms: ${scalar(admission.timeoutMs)}`);
-  else lines.push(`Reason: ${scalar(admission.reason)}`);
+  else lines.push(`Reason code: ${scalar(safeErrorCode(admission.reason))}`);
   return lines;
 }
 
@@ -95,7 +111,9 @@ export function formatTeamRun(run: TeamRunView): string {
     lines.push("");
     for (const member of members) {
       lines.push(`Member status: ${scalar(member.id)} ${scalar(member.status)}`);
-      if (member.error !== undefined) lines.push(`Member error: ${scalar(member.error)}`);
+      if (member.error !== undefined) {
+        lines.push(`Member error code: ${scalar(safeErrorCode(member.error))}`);
+      }
     }
   }
   lines.push(
@@ -129,7 +147,9 @@ export function formatMemberView(view: MemberView): string {
     `Result output: ${scalar(view.result.usage.output)}`,
     `Result cost USD: ${scalar(view.result.usage.costUsd)}`,
   ];
-  if (view.result.error !== undefined) lines.push(`Result error: ${scalar(view.result.error)}`);
-  lines.push("Text:", view.text);
+  if (view.result.error !== undefined) {
+    lines.push(`Result error code: ${scalar(safeErrorCode(view.result.error))}`);
+  }
+  lines.push(`Text: ${scalar(view.text)}`);
   return lines.join("\n");
 }
