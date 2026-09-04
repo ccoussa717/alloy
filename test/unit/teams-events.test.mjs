@@ -247,6 +247,30 @@ test("allows at most one terminal event and only at the end", () => {
   );
 });
 
+// Break caught: a proxy history varies length or exposes event getters during validation.
+test("rejects proxy histories before reading length or event traps", () => {
+  const history = validHistory();
+  let lengthReads = 0;
+  let eventReads = 0;
+  const proxyHistory = new Proxy(history, {
+    get(target, property, receiver) {
+      if (property === "length") {
+        lengthReads += 1;
+        return lengthReads === 1 ? 1 : 4_097;
+      }
+      eventReads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  assert.throws(
+    () => validateEventHistory(proxyHistory, RUN_ID),
+    /event_history:/,
+  );
+  assert.equal(lengthReads, 0);
+  assert.equal(eventReads, 0);
+});
+
 // Break caught: empty or resource-unbounded in-memory histories are validated.
 test("rejects empty, oversized-event, and over-count histories", () => {
   assert.throws(() => validateEventHistory([], RUN_ID), /event_history:/);
@@ -821,6 +845,29 @@ test("bounded canonicalization rejects very wide arrays and objects before descr
       () => writer.append(draft("run.requested", { payload: { wideArray } })),
       /event_line_bytes:/,
     );
+
+    const customWideArray = [0];
+    for (let index = 0; index < 40_000; index += 1) {
+      customWideArray[`custom-${String(index).padStart(5, "0")}`] = 0;
+    }
+    const getOwnPropertyNames = Object.getOwnPropertyNames;
+    let customArrayNameLists = 0;
+    Object.getOwnPropertyNames = function (value) {
+      if (value === customWideArray) {
+        customArrayNameLists += 1;
+        throw new Error("wide custom array reached own-name allocation");
+      }
+      return getOwnPropertyNames(value);
+    };
+    try {
+      await assert.rejects(
+        () => writer.append(draft("run.requested", { payload: { customWideArray } })),
+        /event_line_bytes:/,
+      );
+    } finally {
+      Object.getOwnPropertyNames = getOwnPropertyNames;
+    }
+    assert.equal(customArrayNameLists, 0);
 
     const wideObject = {};
     for (let index = 0; index < 14_000; index += 1) {

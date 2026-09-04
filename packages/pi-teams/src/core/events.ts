@@ -205,10 +205,17 @@ export function validateEventHistory(
   if (!isRunId(expectedRunId)) {
     eventError("event_run_id", "expected run ID must be a lowercase UUID");
   }
-  if (!Array.isArray(events) || events.length === 0) {
+  if (nodeUtilTypes.isProxy(events)) {
+    eventError("event_history", "event history must not be a proxy");
+  }
+  if (!Array.isArray(events)) {
+    eventError("event_history", "event history must be an array");
+  }
+  const eventCount = events.length;
+  if (eventCount === 0) {
     eventError("event_history", "event history must not be empty");
   }
-  if (events.length > TEAM_LIMITS.eventHistoryEvents) {
+  if (eventCount > TEAM_LIMITS.eventHistoryEvents) {
     eventError(
       "event_history_events",
       `event history exceeds ${TEAM_LIMITS.eventHistoryEvents} events`,
@@ -220,7 +227,7 @@ export function validateEventHistory(
   let terminalSeen = false;
   const validated: TeamEvent[] = [];
 
-  for (let index = 0; index < events.length; index += 1) {
+  for (let index = 0; index < eventCount; index += 1) {
     const captured = captureExactPlainDataShape(events[index], EVENT_KEYS, "event_shape");
     let canonical;
     try {

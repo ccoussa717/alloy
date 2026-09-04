@@ -308,6 +308,31 @@ export function canonicalJsonSnapshotBounded(
     if (Array.isArray(source)) {
       const length = source.length;
       if (length > maximumArrayLength) canonicalLimitError(maximumBytes);
+
+      let enumerableKeyCount = 0;
+      let minimumEnumerableBytes = 1;
+      let customPropertyBytes = 0;
+      let hasCustomProperty = false;
+      for (const key in source) {
+        if (!Object.hasOwn(source, key)) continue;
+        if (enumerableKeyCount >= maximumArrayLength) canonicalLimitError(maximumBytes);
+        enumerableKeyCount += 1;
+        minimumEnumerableBytes += 2;
+        if (minimumEnumerableBytes > maximumBytes) canonicalLimitError(maximumBytes);
+
+        const index = Number(key);
+        if (
+          Number.isInteger(index) && index >= 0 && index < length && String(index) === key
+        ) {
+          continue;
+        }
+        hasCustomProperty = true;
+        if (key.length > maximumBytes) canonicalLimitError(maximumBytes);
+        const keyBytes = Buffer.byteLength(key, "utf8");
+        if (customPropertyBytes > maximumBytes - keyBytes) canonicalLimitError(maximumBytes);
+        customPropertyBytes += keyBytes;
+      }
+      if (hasCustomProperty) canonicalError("array properties are not supported");
       if (Object.getOwnPropertySymbols(source).length > 0) {
         canonicalError("symbol keys are not supported");
       }
