@@ -62,22 +62,47 @@ interface CapturedRecord {
   values: Record<string, unknown>;
 }
 
-interface StopRequest {
-  readonly promise: Promise<{ kind: "cancel" }>;
-  resolve(value: { kind: "cancel" }): void;
-}
+type StopCause =
+  | { kind: "cancel"; actor: Actor }
+  | {
+      kind: "failure";
+      actor: Actor;
+      reason: string;
+      memberId?: string;
+      result?: MemberResult;
+    };
 
-interface RunningExecution {
-  readonly execution: MemberExecution;
-  readonly controller: AbortController;
-  readonly outcome: Promise<MemberOutcome>;
-  cleanup(): void;
+interface StopRequest {
+  readonly promise: Promise<StopCause>;
+  resolve(value: StopCause): void;
 }
 
 type MemberOutcome =
   | { kind: "succeeded"; memberId: string; ref: ArtifactRef; verified: { text: string; result: MemberResult } }
-  | { kind: "failed"; memberId: string; error: unknown; result?: MemberResult }
-  | { kind: "timeout"; memberId: string };
+  | { kind: "failed"; memberId: string }
+  | { kind: "stopped"; memberId: string };
+
+interface LaunchState {
+  readonly memberId: string;
+  readonly controller: AbortController;
+  execution?: MemberExecution;
+  hostSettled: boolean;
+  localStarted: boolean;
+  rawSettlement?: Promise<void>;
+  outcome?: Promise<MemberOutcome>;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+interface ContainmentBatch {
+  readonly active: LaunchState[];
+  readonly outcomes: Promise<Array<{ ok: boolean } | typeof BOUNDED_TIMEOUT>>;
+}
+
+interface ObservedUsage {
+  input: number;
+  output: number;
+  costUsd: number | null;
+}
 
 interface LiveRun {
   readonly runId: string;
@@ -89,19 +114,17 @@ interface LiveRun {
   scheduler: ScheduleState;
   readonly abortControllers: Map<string, AbortController>;
   readonly executions: Map<string, MemberExecution>;
-  readonly running: Map<string, RunningExecution>;
-  readonly outcomes: Map<string, Promise<MemberOutcome>>;
   readonly verifiedArtifacts: Map<string, { ref: ArtifactRef; text: string; result: MemberResult }>;
   readonly readyEmitted: Set<string>;
+  readonly launchStates: Map<string, LaunchState>;
   readonly events: TeamEvent[];
   readonly stop: StopRequest;
+  observedUsage: ObservedUsage;
+  stopCause?: StopCause;
+  containmentBatch?: ContainmentBatch;
+  operationPromise?: Promise<TeamRunView>;
   approvalPromise?: Promise<TeamRunView>;
-  executionPromise?: Promise<TeamRunView>;
-  cancelPromise?: Promise<TeamRunView>;
-  cancelActor?: Actor;
   approved: boolean;
-  cancelling: boolean;
-  stopRequested: boolean;
 }
 
 function serviceError(code: string, message: string): never {
@@ -376,7 +399,7 @@ function eventDraft(
 
 function createStopRequest(): StopRequest {
   let resolve!: StopRequest["resolve"];
-  const promise = new Promise<{ kind: "cancel" }>((settle) => { resolve = settle; });
+  const promise = new Promise<StopCause>((settle) => { resolve = settle; });
   return { promise, resolve };
 }
 
@@ -467,11 +490,12 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
     run.admissions.splice(0, run.admissions.length);
     run.abortControllers.clear();
     run.executions.clear();
-    for (const entry of run.running.values()) entry.cleanup();
-    run.running.clear();
-    run.outcomes.clear();
     run.verifiedArtifacts.clear();
     run.readyEmitted.clear();
+    for (const state of run.launchStates.values()) {
+      if (state.timer !== undefined) clearTimeout(state.timer);
+    }
+    run.launchStates.clear();
     run.approvalPromise = undefined;
     await run.writer.close().catch(() => undefined);
   };
@@ -512,128 +536,186 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
     }
   };
 
-  const settleStoppedRun = async (
-    run: LiveRun,
-    terminal: { kind: "cancel" } | { kind: "failure"; reason: string },
-    actor: Actor,
-  ): Promise<TeamRunView> => {
-    if (!run.cancelling) {
-      await append(run, "cancel.requested", actor, {});
-      run.cancelling = true;
-      run.scheduler = requestCancellation(run.scheduler);
-    }
+  const latchStop = (run: LiveRun, cause: StopCause): boolean => {
+    if (run.stopCause !== undefined) return false;
+    run.stopCause = cause;
 
-    const active = run.team.topologicalOrder
-      .map((memberId) => run.running.get(memberId))
-      .filter((entry): entry is RunningExecution => entry !== undefined);
+    const states = run.team.topologicalOrder
+      .map((memberId) => run.launchStates.get(memberId))
+      .filter((state): state is LaunchState => state !== undefined);
 
-    // All child controllers are aborted before any containment call starts.
-    for (const entry of active) entry.controller.abort();
+    // The latch and every registered abort happen before the first containment call.
+    for (const state of states) state.controller.abort();
 
+    const active = states.filter((state) => state.execution !== undefined && !state.hostSettled);
     const containmentControllers: AbortController[] = [];
-    const containment = active.map((entry) => {
+    const containment = active.map((state) => {
       const controller = new AbortController();
       containmentControllers.push(controller);
       try {
         return Promise.resolve(dependencies.host.containMember({
           runId: run.runId,
-          memberId: entry.execution.memberId,
-          handle: entry.execution.handle,
+          memberId: state.memberId,
+          handle: state.execution!.handle,
         }, copyMemberContext(run.context, controller.signal), controller.signal)).then(
-          () => ({ ok: true as const }),
-          () => ({ ok: false as const }),
+          () => ({ ok: true }),
+          () => ({ ok: false }),
         );
       } catch {
-        return Promise.resolve({ ok: false as const });
+        return Promise.resolve({ ok: false });
       }
     });
+    run.containmentBatch = {
+      active,
+      outcomes: boundedOutcomes(
+        containment,
+        TEAM_LIMITS.containmentTimeoutMs,
+        () => { for (const controller of containmentControllers) controller.abort(); },
+      ),
+    };
+    run.stop.resolve(cause);
+    return true;
+  };
 
-    const containmentOutcomes = await boundedOutcomes(
-      containment,
-      TEAM_LIMITS.containmentTimeoutMs,
-      () => { for (const controller of containmentControllers) controller.abort(); },
-    );
+  const aggregateUsage = (
+    run: LiveRun,
+    usage: MemberResult["usage"],
+  ): ObservedUsage | undefined => {
+    const input = run.observedUsage.input + usage.input;
+    const output = run.observedUsage.output + usage.output;
+    if (!Number.isSafeInteger(input) || !Number.isSafeInteger(output)) return undefined;
+    const costUsd = run.observedUsage.costUsd === null || usage.costUsd === null
+      ? null
+      : run.observedUsage.costUsd + usage.costUsd;
+    if (
+      costUsd !== null &&
+      (!Number.isFinite(costUsd) || costUsd < 0 || costUsd > run.scheduler.team.definition.spec.limits.maxCostUsd)
+    ) {
+      return undefined;
+    }
+    return { input, output, costUsd };
+  };
+
+  const settleLatchedRun = async (run: LiveRun): Promise<TeamRunView> => {
+    const cause = run.stopCause;
+    if (cause === undefined) return serviceError("execution_stop", "settlement requires a stop latch");
+    const batch = run.containmentBatch ?? { active: [], outcomes: Promise.resolve([]) };
+    const containmentOutcomes = await batch.outcomes;
     const containmentTimedOut = containmentOutcomes.some((outcome) => outcome === BOUNDED_TIMEOUT);
     const containmentFailed = containmentOutcomes.some((outcome) =>
       outcome !== BOUNDED_TIMEOUT && !outcome.ok
     );
 
-    const settlement = active.map((entry) => entry.execution.result.then(
-      () => ({ settled: true as const }),
-      () => ({ settled: true as const }),
-    ));
+    // Result settlement starts only after every bounded containment outcome is known.
     const settlementOutcomes = await boundedOutcomes(
-      settlement,
+      batch.active.map((state) => state.rawSettlement!),
       TEAM_LIMITS.containmentTimeoutMs,
       () => undefined,
     );
     const settlementTimedOut = settlementOutcomes.some((outcome) => outcome === BOUNDED_TIMEOUT);
 
-    for (const entry of active) {
-      const memberId = entry.execution.memberId;
-      entry.cleanup();
-      run.running.delete(memberId);
-      run.outcomes.delete(memberId);
-      run.executions.delete(memberId);
-      run.abortControllers.delete(memberId);
-    }
+    // Local artifact processing has no cancellation port. Never terminalize while it can append.
+    const local = [...run.launchStates.values()]
+      .filter((state) => state.localStarted && state.outcome !== undefined)
+      .map((state) => state.outcome!);
+    await Promise.all(local);
 
     let containmentReason: string | undefined;
     if (containmentFailed) containmentReason = "containment_failed";
     else if (containmentTimedOut) containmentReason = "containment_timeout";
     else if (settlementTimedOut) containmentReason = "member_settlement_timeout";
 
-    if (containmentReason === undefined) {
-      let members = run.scheduler.members;
-      for (const entry of active) {
-        const memberId = entry.execution.memberId;
-        if (members[memberId]?.status !== "running") continue;
-        if (members === run.scheduler.members) members = { ...members };
-        members[memberId] = { ...members[memberId]!, status: "cancelled" };
+    const failedMemberId = cause.kind === "failure" ? cause.memberId : undefined;
+    if (cause.kind === "failure" && failedMemberId !== undefined) {
+      const member = run.scheduler.members[failedMemberId];
+      const state = run.launchStates.get(failedMemberId);
+      const failureProven = state?.execution === undefined || state.hostSettled;
+      if (member?.status === "running" && failureProven) {
+        run.scheduler = markFailed(run.scheduler, failedMemberId);
+        await append(run, "member.failed", systemActor, {
+          memberId: failedMemberId,
+          error: cause.reason,
+        });
+        if (cause.result !== undefined) {
+          const usage = validatedUsage(
+            cause.result,
+            run.admissions.find((candidate) => candidate.memberId === failedMemberId)!.maxCostUsd,
+          );
+          const aggregate = aggregateUsage(run, usage);
+          if (aggregate === undefined) containmentReason = "budget_overflow";
+          else {
+            await append(run, "budget.observed", systemActor, {
+              memberId: failedMemberId,
+              input: usage.input,
+              output: usage.output,
+              costUsd: usage.costUsd,
+            });
+            run.observedUsage = aggregate;
+          }
+        }
       }
-      if (members !== run.scheduler.members) run.scheduler = { ...run.scheduler, members };
-      await appendCancelledMembers(run);
-    } else {
-      // Pending and ready work was conclusively cancelled even if a live child was not contained.
-      await appendCancelledMembers(run);
     }
 
-    const reason = containmentReason ?? (terminal.kind === "failure" ? terminal.reason : undefined);
+    await append(run, "cancel.requested", cause.actor, {});
+    run.scheduler = requestCancellation(run.scheduler);
+
+    const uncontained = new Set<string>();
+    if (containmentFailed || containmentTimedOut) {
+      for (const state of batch.active) uncontained.add(state.memberId);
+    } else if (settlementTimedOut) {
+      for (const state of batch.active) {
+        if (!state.hostSettled) uncontained.add(state.memberId);
+      }
+    }
+
+    let members = run.scheduler.members;
+    for (const state of run.launchStates.values()) {
+      if (members[state.memberId]?.status !== "running" || uncontained.has(state.memberId)) continue;
+      if (members === run.scheduler.members) members = { ...members };
+      members[state.memberId] = { ...members[state.memberId]!, status: "cancelled" };
+    }
+    if (members !== run.scheduler.members) run.scheduler = { ...run.scheduler, members };
+    await appendCancelledMembers(run);
+
+    const reason = containmentReason ?? (cause.kind === "failure" ? cause.reason : undefined);
     if (reason !== undefined) return finishRun(run, "run.failed", { reason });
     return finishRun(run, "run.cancelled", {});
   };
 
-  const emergencyAbandon = async (run: LiveRun): Promise<void> => {
-    const active = [...run.running.values()];
-    for (const entry of active) entry.controller.abort();
-    const containmentControllers: AbortController[] = [];
-    const containment = active.map((entry) => {
-      const controller = new AbortController();
-      containmentControllers.push(controller);
-      try {
-        return Promise.resolve(dependencies.host.containMember({
-          runId: run.runId,
-          memberId: entry.execution.memberId,
-          handle: entry.execution.handle,
-        }, copyMemberContext(run.context, controller.signal), controller.signal)).then(
-          () => undefined,
-          () => undefined,
-        );
-      } catch {
-        return Promise.resolve();
-      }
-    });
+  const drainAfterAbnormalFailure = async (run: LiveRun): Promise<void> => {
+    const batch = run.containmentBatch ?? { active: [], outcomes: Promise.resolve([]) };
+    await batch.outcomes;
     await boundedOutcomes(
-      containment,
-      TEAM_LIMITS.containmentTimeoutMs,
-      () => { for (const controller of containmentControllers) controller.abort(); },
-    );
-    await boundedOutcomes(
-      active.map((entry) => entry.execution.result.then(() => undefined, () => undefined)),
+      batch.active.map((state) => state.rawSettlement!),
       TEAM_LIMITS.containmentTimeoutMs,
       () => undefined,
     );
+    const local = [...run.launchStates.values()]
+      .filter((state) => state.localStarted && state.outcome !== undefined)
+      .map((state) => state.outcome!);
+    await Promise.all(local);
     await abandonLiveRun(run.runId, run);
+  };
+
+  const guardedOperation = (
+    run: LiveRun,
+    operation: () => Promise<TeamRunView>,
+  ): Promise<TeamRunView> => {
+    const promise = (async () => {
+      try {
+        return await operation();
+      } catch (error) {
+        latchStop(run, {
+          kind: "failure",
+          actor: systemActor,
+          reason: "event_append_failed",
+        });
+        await drainAfterAbnormalFailure(run);
+        throw error;
+      }
+    })();
+    run.operationPromise = promise;
+    return promise;
   };
 
   const driveExecution = async (run: LiveRun, executeContext: TeamRunContext): Promise<TeamRunView> => {
@@ -641,42 +723,66 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
     const admissions = new Map(run.admissions.map((admission) => [admission.memberId, admission]));
     let signalListener: (() => void) | undefined;
     if (executeContext.signal !== undefined) {
-      signalListener = () => {
-        run.stopRequested = true;
-        run.stop.resolve({ kind: "cancel" });
-      };
+      signalListener = () => latchStop(run, { kind: "cancel", actor: systemActor });
       if (executeContext.signal.aborted) signalListener();
       else executeContext.signal.addEventListener("abort", signalListener, { once: true });
     }
 
+    const awaitLaunchStage = async <T>(promise: Promise<T>): Promise<T | typeof LAUNCH_STOPPED> => {
+      const completed = promise.then((value) => ({ kind: "completed" as const, value }));
+      const stopped = run.stop.promise.then(() => ({ kind: "stopped" as const }));
+      const outcome = await Promise.race([completed, stopped]);
+      if (outcome.kind === "completed") return outcome.value;
+      await promise;
+      return LAUNCH_STOPPED;
+    };
+
     const launch = async (memberId: string): Promise<void> => {
-      if (run.stopRequested) return;
+      if (run.stopCause !== undefined) return;
+      const controller = new AbortController();
+      const state: LaunchState = {
+        memberId,
+        controller,
+        hostSettled: false,
+        localStarted: false,
+      };
+      run.launchStates.set(memberId, state);
+      run.abortControllers.set(memberId, controller);
+
       if (!run.readyEmitted.has(memberId)) {
-        await append(run, "member.ready", systemActor, { memberId });
+        const ready = await awaitLaunchStage(
+          append(run, "member.ready", systemActor, { memberId }),
+        );
+        if (ready === LAUNCH_STOPPED || run.stopCause !== undefined) return;
         run.readyEmitted.add(memberId);
       }
-      if (run.stopRequested) return;
-      await append(run, "member.started", systemActor, { memberId });
-      run.scheduler = markStarted(run.scheduler, memberId);
+
+      const started = await awaitLaunchStage(
+        append(run, "member.started", systemActor, { memberId }),
+      );
+      if (started !== LAUNCH_STOPPED) run.scheduler = markStarted(run.scheduler, memberId);
+      else {
+        // The append completed while stop was latched; mirror its durable transition.
+        run.scheduler = markStarted(run.scheduler, memberId);
+        return;
+      }
+      if (run.stopCause !== undefined) return;
+
       const member = run.team.definition.spec.members.find((candidate) => candidate.id === memberId)!;
       const admission = admissions.get(memberId)!;
-      const controller = new AbortController();
-      run.abortControllers.set(memberId, controller);
-      const memberContext = copyMemberContext(run.context, controller.signal);
-
-      let execution: MemberExecution;
+      const dependencyRecords = [];
       try {
-        const dependencyRecords = [];
         for (const dependencyId of member.needs) {
           const dependency = run.verifiedArtifacts.get(dependencyId);
           if (dependency === undefined) {
             return serviceError("dependency_artifact", `${dependencyId} has no verified artifact`);
           }
-          const verified = await dependencies.artifactStore.readVerified(
+          const verified = await awaitLaunchStage(dependencies.artifactStore.readVerified(
             run.context.projectId,
             run.runId,
             dependency.ref,
-          );
+          ));
+          if (verified === LAUNCH_STOPPED || run.stopCause !== undefined) return;
           if (verified.text !== dependency.text || verified.result.ok !== true) {
             return serviceError("artifact_integrity", `${dependencyId} artifact changed before use`);
           }
@@ -686,6 +792,19 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
             text: verified.text,
           });
         }
+      } catch (error) {
+        latchStop(run, {
+          kind: "failure",
+          actor: systemActor,
+          memberId,
+          reason: boundedRuntimeReason(`member_${memberId}:`, error),
+        });
+        return;
+      }
+      if (run.stopCause !== undefined) return;
+
+      let execution: MemberExecution;
+      try {
         execution = dependencies.host.runMember({
           runId: run.runId,
           objective,
@@ -694,7 +813,7 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
           admission,
           maxCostUsd: admission.maxCostUsd,
           timeoutMs: admission.timeoutMs,
-        }, memberContext, controller.signal);
+        }, copyMemberContext(run.context, controller.signal), controller.signal);
         if (
           execution === null || typeof execution !== "object" ||
           execution.runId !== run.runId || execution.memberId !== memberId ||
@@ -703,43 +822,88 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
           return serviceError("member_execution", "host returned a contradictory execution handle");
         }
       } catch (error) {
-        run.outcomes.set(
+        latchStop(run, {
+          kind: "failure",
+          actor: systemActor,
           memberId,
-          Promise.resolve({ kind: "failed", memberId, error } as MemberOutcome),
-        );
+          reason: boundedRuntimeReason(`member_${memberId}:`, error),
+        });
         return;
       }
 
+      state.execution = execution;
       run.executions.set(memberId, execution);
       const maximumCostUsd = admission.maxCostUsd;
-      let acceptResult = true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<MemberOutcome>((resolve) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          resolve({ kind: "timeout", memberId });
-        }, admission.timeoutMs);
-      });
-      const result: Promise<MemberOutcome> = (async () => {
+      const raw = execution.result.then(
+        (result) => {
+          state.hostSettled = true;
+          if (state.timer !== undefined) clearTimeout(state.timer);
+          state.timer = undefined;
+          return { status: "fulfilled" as const, result };
+        },
+        (error) => {
+          state.hostSettled = true;
+          if (state.timer !== undefined) clearTimeout(state.timer);
+          state.timer = undefined;
+          return { status: "rejected" as const, error };
+        },
+      );
+      state.rawSettlement = raw.then(() => undefined);
+      state.timer = setTimeout(() => {
+        latchStop(run, {
+          kind: "failure",
+          actor: systemActor,
+          memberId,
+          reason: `member_timeout:${memberId}`,
+        });
+      }, admission.timeoutMs);
+
+      state.outcome = (async (): Promise<MemberOutcome> => {
+        const rawResult = await raw;
+        if (run.stopCause !== undefined) return { kind: "stopped", memberId };
+        if (rawResult.status === "rejected") {
+          latchStop(run, {
+            kind: "failure",
+            actor: systemActor,
+            memberId,
+            reason: boundedRuntimeReason(`member_${memberId}:`, rawResult.error),
+          });
+          return { kind: "failed", memberId };
+        }
+
+        let usage: MemberResult["usage"];
         try {
-          const memberResult = await execution.result;
-          if (!acceptResult) {
-            return { kind: "failed", memberId, error: "member result arrived after stop" };
-          }
-          const usage = validatedUsage(memberResult, maximumCostUsd);
-          if (memberResult.ok !== true) {
-            return {
-              kind: "failed",
-              memberId,
-              error: memberResult.error ?? "member failed",
-              result: memberResult,
-            };
-          }
+          usage = validatedUsage(rawResult.result, maximumCostUsd);
+        } catch (error) {
+          latchStop(run, {
+            kind: "failure",
+            actor: systemActor,
+            memberId,
+            reason: boundedRuntimeReason(`member_${memberId}:`, error),
+          });
+          return { kind: "failed", memberId };
+        }
+        if (rawResult.result.ok !== true) {
+          latchStop(run, {
+            kind: "failure",
+            actor: systemActor,
+            memberId,
+            result: rawResult.result,
+            reason: boundedRuntimeReason(
+              `member_${memberId}:`,
+              rawResult.result.error ?? "member failed",
+            ),
+          });
+          return { kind: "failed", memberId };
+        }
+
+        state.localStarted = true;
+        try {
           const ref = await dependencies.artifactStore.writeMember(
             run.context.projectId,
             run.runId,
             memberId,
-            memberResult,
+            rawResult.result,
           );
           const verified = await dependencies.artifactStore.readVerified(
             run.context.projectId,
@@ -747,94 +911,89 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
             ref,
           );
           validatedUsage(verified.result, maximumCostUsd);
-          if (verified.result.ok !== true || verified.text !== memberResult.text) {
+          if (verified.result.ok !== true || verified.text !== rawResult.result.text) {
             return serviceError("artifact_integrity", "verified artifact contradicts member result");
           }
           void usage;
+          if (run.stopCause !== undefined) return { kind: "stopped", memberId };
           return { kind: "succeeded", memberId, ref, verified };
         } catch (error) {
-          return { kind: "failed", memberId, error };
+          if (run.stopCause === undefined) {
+            latchStop(run, {
+              kind: "failure",
+              actor: systemActor,
+              memberId,
+              reason: boundedRuntimeReason(`member_${memberId}:`, error),
+            });
+          }
+          return { kind: "failed", memberId };
         }
       })();
-      const cleanup = () => {
-        acceptResult = false;
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-      };
-      const outcome = Promise.race([result, timeout]).finally(cleanup);
-      run.running.set(memberId, { execution, controller, outcome, cleanup });
-      run.outcomes.set(memberId, outcome);
     };
 
     try {
       await append(run, "run.started", systemActor, {});
+      if (run.stopCause !== undefined) return settleLatchedRun(run);
+
       while (true) {
-        if (!run.cancelling) {
-          for (const memberId of readyMembers(run.scheduler)) {
-            if (run.stopRequested) break;
-            await launch(memberId);
-          }
+        for (const memberId of readyMembers(run.scheduler)) {
+          if (run.stopCause !== undefined) break;
+          await launch(memberId);
         }
+        if (run.stopCause !== undefined) return settleLatchedRun(run);
+
         const allSucceeded = run.team.topologicalOrder.every((memberId) =>
           run.scheduler.members[memberId]?.status === "succeeded"
         );
-        if (allSucceeded) return finishRun(run, "run.completed", {});
-
-        const pending = [...run.outcomes.values()];
-        const outcome = await Promise.race([...pending, run.stop.promise]);
-        if (outcome.kind === "cancel") {
-          return settleStoppedRun(run, { kind: "cancel" }, run.cancelActor ?? systemActor);
+        if (allSucceeded) {
+          if (run.stopCause !== undefined) return settleLatchedRun(run);
+          return finishRun(run, "run.completed", {});
         }
 
-        if (!run.outcomes.has(outcome.memberId)) continue;
-        if (outcome.kind === "succeeded") {
-          run.running.get(outcome.memberId)?.cleanup();
-          run.running.delete(outcome.memberId);
-          run.outcomes.delete(outcome.memberId);
-          run.executions.delete(outcome.memberId);
-          run.abortControllers.delete(outcome.memberId);
-          const usage = validatedUsage(outcome.verified.result, admissions.get(outcome.memberId)!.maxCostUsd);
-          await append(run, "member.artifact_recorded", systemActor, { ...outcome.ref });
-          await append(run, "member.succeeded", systemActor, { memberId: outcome.memberId });
-          await append(run, "budget.observed", systemActor, {
+        const outcomes = [...run.launchStates.values()]
+          .filter((state) => state.outcome !== undefined)
+          .map((state) => state.outcome!);
+        const outcome = await Promise.race([...outcomes, run.stop.promise]);
+        if (run.stopCause !== undefined || outcome.kind === "cancel" || outcome.kind === "failure") {
+          return settleLatchedRun(run);
+        }
+        if (outcome.kind !== "succeeded") continue;
+
+        const state = run.launchStates.get(outcome.memberId);
+        if (state === undefined) continue;
+        const admission = admissions.get(outcome.memberId)!;
+        const usage = validatedUsage(outcome.verified.result, admission.maxCostUsd);
+        const aggregate = aggregateUsage(run, usage);
+        if (aggregate === undefined) {
+          latchStop(run, {
+            kind: "failure",
+            actor: systemActor,
             memberId: outcome.memberId,
-            input: usage.input,
-            output: usage.output,
-            costUsd: usage.costUsd,
+            reason: "budget_overflow",
           });
-          run.scheduler = markSucceeded(run.scheduler, outcome.memberId);
-          run.verifiedArtifacts.set(outcome.memberId, {
-            ref: outcome.ref,
-            text: outcome.verified.text,
-            result: outcome.verified.result,
-          });
-          continue;
+          return settleLatchedRun(run);
         }
 
-        const reason = outcome.kind === "timeout"
-          ? `member_timeout:${outcome.memberId}`
-          : boundedRuntimeReason(`member_${outcome.memberId}:`, outcome.error);
-        if (outcome.kind === "failed") {
-          run.running.get(outcome.memberId)?.cleanup();
-          run.running.delete(outcome.memberId);
-          run.outcomes.delete(outcome.memberId);
-          run.executions.delete(outcome.memberId);
-          run.abortControllers.delete(outcome.memberId);
-          run.scheduler = markFailed(run.scheduler, outcome.memberId);
-          await append(run, "member.failed", systemActor, { memberId: outcome.memberId, error: reason });
-          if (outcome.result !== undefined) {
-            const usage = validatedUsage(outcome.result, admissions.get(outcome.memberId)!.maxCostUsd);
-            await append(run, "budget.observed", systemActor, {
-              memberId: outcome.memberId,
-              input: usage.input,
-              output: usage.output,
-              costUsd: usage.costUsd,
-            });
-          }
-        }
-        return settleStoppedRun(run, { kind: "failure", reason }, systemActor);
+        // Once durable success processing begins it remains serialized and completes as one pipeline.
+        await append(run, "member.artifact_recorded", systemActor, { ...outcome.ref });
+        await append(run, "member.succeeded", systemActor, { memberId: outcome.memberId });
+        run.scheduler = markSucceeded(run.scheduler, outcome.memberId);
+        await append(run, "budget.observed", systemActor, {
+          memberId: outcome.memberId,
+          input: usage.input,
+          output: usage.output,
+          costUsd: usage.costUsd,
+        });
+        run.observedUsage = aggregate;
+        run.verifiedArtifacts.set(outcome.memberId, {
+          ref: outcome.ref,
+          text: outcome.verified.text,
+          result: outcome.verified.result,
+        });
+        run.launchStates.delete(outcome.memberId);
+        run.executions.delete(outcome.memberId);
+        run.abortControllers.delete(outcome.memberId);
+        if (run.stopCause !== undefined) return settleLatchedRun(run);
       }
     } finally {
       if (executeContext.signal !== undefined && signalListener !== undefined) {
@@ -842,6 +1001,8 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       }
     }
   };
+
+  const LAUNCH_STOPPED = Symbol("launch stopped");
 
   const service: TeamService = {
     async list(rawContext): Promise<TeamSummary[]> {
@@ -988,15 +1149,13 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
           scheduler: scheduleWithLimits(team, limits),
           abortControllers: new Map(),
           executions: new Map(),
-          running: new Map(),
-          outcomes: new Map(),
           verifiedArtifacts: new Map(),
           readyEmitted: new Set(),
+          launchStates: new Map(),
           events: runBase.events,
           stop: createStopRequest(),
+          observedUsage: { input: 0, output: 0, costUsd: 0 },
           approved: false,
-          cancelling: false,
-          stopRequested: false,
         };
         liveRuns.set(runId, live);
         return projectTeamRun(live.events, { live: true });
@@ -1020,6 +1179,9 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       }
       const actor = captureActor(captured.actor, true) as Extract<Actor, { kind: "human" }>;
       const context = captureContext(captured.context);
+      if (context.source !== "command") {
+        return serviceError("approval_source", "approval requires command-origin context");
+      }
       const run = liveRuns.get(captured.runId);
       if (run === undefined) {
         try {
@@ -1075,16 +1237,11 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       if (!sameRunContext(run.context, context)) {
         return serviceError("context_binding", "execution context does not match the requested run");
       }
+      if (run.operationPromise !== undefined) return run.operationPromise;
       if (!run.approved) {
         return serviceError("execute_approval", "run has not received exact human approval");
       }
-      if (run.executionPromise === undefined) {
-        run.executionPromise = driveExecution(run, context).catch(async (error) => {
-          if (liveRuns.get(rawRunId) === run) await emergencyAbandon(run);
-          throw error;
-        });
-      }
-      return run.executionPromise;
+      return guardedOperation(run, () => driveExecution(run, context));
     },
 
     async cancel(rawRunId, rawActor, rawContext): Promise<TeamRunView> {
@@ -1102,20 +1259,11 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       if (!sameRunContext(run.context, context)) {
         return serviceError("context_binding", "cancellation context does not match the requested run");
       }
-      if (run.cancelPromise === undefined) {
-        if (run.executionPromise !== undefined) {
-          run.cancelActor = actor;
-          run.stopRequested = true;
-          run.stop.resolve({ kind: "cancel" });
-          run.cancelPromise = run.executionPromise;
-        } else {
-          run.cancelPromise = settleStoppedRun(run, { kind: "cancel" }, actor).catch(async (error) => {
-            if (liveRuns.get(rawRunId) === run) await emergencyAbandon(run);
-            throw error;
-          });
-        }
+      latchStop(run, { kind: "cancel", actor });
+      if (run.operationPromise === undefined) {
+        return guardedOperation(run, () => settleLatchedRun(run));
       }
-      return run.cancelPromise;
+      return run.operationPromise;
     },
 
     async status(rawRunId, rawContext): Promise<TeamRunView> {
