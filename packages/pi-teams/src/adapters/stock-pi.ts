@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 import { TEAM_LIMITS } from "../core/limits.ts";
 import { createRepoReadOnlyTools } from "./repo-read-tools.ts";
 import type {
@@ -53,8 +55,6 @@ interface ParentAuthState {
 interface ParentRuntimeState {
   auth: ParentAuthState;
   provider: Record<string, unknown>;
-  nativeProvider?: Record<string, unknown>;
-  registeredConfig?: Record<string, unknown>;
 }
 
 interface StockPiSession {
@@ -204,7 +204,9 @@ function isFiniteNonnegative(value: unknown): value is number {
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) || utilTypes.isProxy(value)
+  ) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
@@ -221,14 +223,115 @@ function capturedMap(
 ): Record<string, string | null> | undefined {
   if (value === undefined) return undefined;
   if (!isPlainRecord(value)) throw new Error("stock_auth:resolved auth map is malformed");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")) {
+    throw new Error("stock_auth:resolved auth map cannot be safely represented");
+  }
   const captured: Record<string, string | null> = {};
-  for (const [key, item] of Object.entries(value)) {
+  for (const key of Object.keys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+      throw new Error("stock_auth:resolved auth map cannot be safely represented");
+    }
+    const item = descriptor.value;
     if (key.length === 0 || (typeof item !== "string" && !(allowNull && item === null))) {
       throw new Error("stock_auth:resolved auth map cannot be safely represented");
     }
     captured[key] = item as string | null;
   }
   return captured;
+}
+
+function stableValueFingerprint(
+  value: unknown,
+  functionIds: Map<Function, number>,
+  seen = new Set<object>(),
+): string {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("stock_config:provider snapshot contains a non-finite number");
+    return `number:${Object.is(value, -0) ? "-0" : String(value)}`;
+  }
+  if (typeof value === "function") {
+    if (utilTypes.isProxy(value)) throw new Error("stock_config:provider snapshot contains a proxy");
+    let id = functionIds.get(value);
+    if (id === undefined) {
+      id = functionIds.size + 1;
+      functionIds.set(value, id);
+    }
+    return `function:${id}`;
+  }
+  if (typeof value !== "object" || utilTypes.isProxy(value)) {
+    throw new Error("stock_config:provider snapshot cannot be safely represented");
+  }
+  if (seen.has(value)) throw new Error("stock_config:provider snapshot is cyclic");
+  seen.add(value);
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      !Array.isArray(value) &&
+      prototype !== Object.prototype && prototype !== null
+    ) {
+      throw new Error("stock_config:provider snapshot is not plain data");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== "string")) {
+      throw new Error("stock_config:provider snapshot contains symbol properties");
+    }
+    const entries: string[] = [];
+    for (const key of (keys as string[]).sort()) {
+      if (Array.isArray(value) && key === "length") continue;
+      const descriptor = descriptors[key];
+      if (descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+        throw new Error("stock_config:provider snapshot contains an accessor");
+      }
+      entries.push(`${JSON.stringify(key)}:${stableValueFingerprint(descriptor.value, functionIds, seen)}`);
+    }
+    const prefix = Array.isArray(value) ? `array:${value.length}` : "object";
+    return `${prefix}:{${entries.join(",")}}`;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function safeProviderCopy(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || utilTypes.isProxy(value)) {
+    throw new Error("stock_config:active parent provider is unavailable or unsafe");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")) {
+    throw new Error("stock_config:active parent provider has unsafe properties");
+  }
+  const captured: Record<string, unknown> = {};
+  for (const key of Object.keys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (descriptor.get !== undefined || descriptor.set !== undefined || !("value" in descriptor)) {
+      throw new Error("stock_config:active parent provider has accessors");
+    }
+    captured[key] = descriptor.value;
+  }
+  return Object.freeze(captured);
+}
+
+function mergeRequestHeaders(
+  providerHeaders: Record<string, string | null> | undefined,
+  modelHeaders: unknown,
+): Record<string, string | null> | undefined {
+  const configured = capturedMap(modelHeaders, true);
+  if (providerHeaders === undefined && configured === undefined) return undefined;
+  const merged: Record<string, string | null> = { ...(providerHeaders ?? {}) };
+  for (const [name, value] of Object.entries(configured ?? {})) {
+    const lowerName = name.toLowerCase();
+    for (const existingName of Object.keys(merged)) {
+      if (existingName.toLowerCase() === lowerName) delete merged[existingName];
+    }
+    merged[name] = value;
+  }
+  return merged;
 }
 
 function modelFingerprint(model: StockPiModel): string {
@@ -338,16 +441,61 @@ async function captureParentRuntime(
   }
   const find = registry.find as (providerId: string, modelId: string) => unknown;
   const getStatus = registry.getProviderAuthStatus as (providerId: string) => unknown;
-  const catalogModel = find.call(registry, selected.provider, selected.id);
-  const status = getStatus.call(registry, selected.provider);
-  if (
-    !isPlainRecord(catalogModel) ||
-    modelFingerprint(catalogModel as unknown as StockPiModel) !== token.sourceModelFingerprint ||
-    !isPlainRecord(status) || status.configured !== true
-  ) {
-    throw new Error("stock_config:parent catalog or auth status changed after admission");
-  }
+  const getProvider = registry.getProvider as (providerId: string) => unknown;
+  const getNative = registry.getRegisteredNativeProvider as (providerId: string) => unknown;
+  const getConfig = registry.getRegisteredProviderConfig as (providerId: string) => unknown;
+  const functionIds = new Map<Function, number>();
 
+  const snapshot = () => {
+    const currentModel = activeModel(context);
+    if (
+      currentModel === undefined ||
+      modelFingerprint(currentModel) !== token.sourceModelFingerprint
+    ) {
+      throw new Error("stock_config:parent model changed after admission");
+    }
+    const catalogModel = find.call(registry, currentModel.provider, currentModel.id);
+    const status = getStatus.call(registry, currentModel.provider);
+    const provider = getProvider.call(registry, currentModel.provider);
+    const nativeProvider = getNative.call(registry, currentModel.provider);
+    const registeredConfig = getConfig.call(registry, currentModel.provider);
+    if (
+      !isPlainRecord(catalogModel) ||
+      modelFingerprint(catalogModel as unknown as StockPiModel) !== token.sourceModelFingerprint
+    ) {
+      throw new Error("stock_config:parent catalog changed after admission");
+    }
+    const statusFingerprint = stableValueFingerprint(status, functionIds);
+    if (!isPlainRecord(status) || status.configured !== true) {
+      throw new Error("stock_config:parent auth status changed after admission");
+    }
+    if (
+      provider === null || typeof provider !== "object" || utilTypes.isProxy(provider) ||
+      (nativeProvider !== undefined && (
+        nativeProvider === null || typeof nativeProvider !== "object" || utilTypes.isProxy(nativeProvider)
+      )) ||
+      (registeredConfig !== undefined && (
+        utilTypes.isProxy(registeredConfig) || !isPlainRecord(registeredConfig)
+      ))
+    ) {
+      throw new Error("stock_config:parent provider state is malformed or unsafe");
+    }
+    const providerFingerprint = stableValueFingerprint(provider, functionIds);
+    const nativeFingerprint = stableValueFingerprint(nativeProvider, functionIds);
+    const configFingerprint = stableValueFingerprint(registeredConfig, functionIds);
+    return {
+      provider,
+      nativeProvider,
+      registeredConfig,
+      statusFingerprint,
+      providerFingerprint,
+      nativeFingerprint,
+      configFingerprint,
+      providerCopy: safeProviderCopy(provider),
+    };
+  };
+
+  const before = snapshot();
   let resolved: unknown;
   if (typeof registry.getProviderAuth === "function") {
     const getProviderAuth = registry.getProviderAuth as (providerId: string) => Promise<unknown>;
@@ -359,48 +507,19 @@ async function captureParentRuntime(
     throw new Error("stock_auth:parent registry lacks a public auth resolver");
   }
   const auth = captureResolvedAuth(resolved);
-  const afterAuthModel = activeModel(context);
-  const afterAuthCatalog = afterAuthModel === undefined
-    ? undefined
-    : find.call(registry, afterAuthModel.provider, afterAuthModel.id);
-  const afterAuthStatus = afterAuthModel === undefined
-    ? undefined
-    : getStatus.call(registry, afterAuthModel.provider);
+  const after = snapshot();
   if (
-    afterAuthModel === undefined ||
-    modelFingerprint(afterAuthModel) !== token.sourceModelFingerprint ||
-    !isPlainRecord(afterAuthCatalog) ||
-    modelFingerprint(afterAuthCatalog as unknown as StockPiModel) !== token.sourceModelFingerprint ||
-    !isPlainRecord(afterAuthStatus) || afterAuthStatus.configured !== true
+    after.provider !== before.provider ||
+    after.nativeProvider !== before.nativeProvider ||
+    after.registeredConfig !== before.registeredConfig ||
+    after.statusFingerprint !== before.statusFingerprint ||
+    after.providerFingerprint !== before.providerFingerprint ||
+    after.nativeFingerprint !== before.nativeFingerprint ||
+    after.configFingerprint !== before.configFingerprint
   ) {
-    throw new Error("stock_config:parent model changed during auth resolution");
+    throw new Error("stock_config:parent provider state changed during auth resolution");
   }
-
-  const getProvider = registry.getProvider as (providerId: string) => unknown;
-  const getNative = registry.getRegisteredNativeProvider as (providerId: string) => unknown;
-  const getConfig = registry.getRegisteredProviderConfig as (providerId: string) => unknown;
-  const provider = getProvider.call(registry, selected.provider);
-  const nativeProvider = getNative.call(registry, selected.provider);
-  const registeredConfig = getConfig.call(registry, selected.provider);
-  if (provider === null || typeof provider !== "object") {
-    throw new Error("stock_config:active parent provider is unavailable");
-  }
-  if (nativeProvider !== undefined && (nativeProvider === null || typeof nativeProvider !== "object")) {
-    throw new Error("stock_config:registered native provider is malformed");
-  }
-  if (registeredConfig !== undefined && !isPlainRecord(registeredConfig)) {
-    throw new Error("stock_config:registered provider config is malformed");
-  }
-  return {
-    auth,
-    provider: Object.freeze({ ...(provider as Record<string, unknown>) }),
-    nativeProvider: nativeProvider === undefined
-      ? undefined
-      : Object.freeze({ ...(nativeProvider as Record<string, unknown>) }),
-    registeredConfig: registeredConfig === undefined
-      ? undefined
-      : Object.freeze({ ...registeredConfig }),
-  };
+  return { auth, provider: before.providerCopy };
 }
 
 function validateRateSet(value: unknown): value is {
@@ -714,12 +833,18 @@ function inMemoryModelsStore() {
   };
 }
 
+function sortedStringMap(value: Record<string, string | null> | undefined) {
+  return value === undefined
+    ? null
+    : Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
+}
+
 function authFingerprint(auth: ParentAuthState): string {
   return JSON.stringify({
     apiKey: auth.apiKey ?? null,
-    headers: auth.headers ?? null,
+    headers: sortedStringMap(auth.headers),
     baseUrl: auth.baseUrl ?? null,
-    env: auth.env ?? null,
+    env: sortedStringMap(auth.env),
     source: auth.source ?? null,
   });
 }
@@ -774,7 +899,11 @@ async function isolatedModelRuntime(
     throw new Error("stock_config:isolated runtime model does not match admission");
   }
   const runtimeAuth = captureResolvedAuth(await runtime.getAuth(runtimeModel));
-  if (authFingerprint(runtimeAuth) !== authFingerprint(resolvedAuth)) {
+  const expectedAuth: ParentAuthState = {
+    ...resolvedAuth,
+    headers: mergeRequestHeaders(resolvedAuth.headers, model.headers),
+  };
+  if (authFingerprint(runtimeAuth) !== authFingerprint(expectedAuth)) {
     throw new Error("stock_config:isolated runtime auth does not match parent resolution");
   }
   return runtime;

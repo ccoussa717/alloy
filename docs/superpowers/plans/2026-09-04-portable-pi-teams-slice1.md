@@ -138,6 +138,7 @@ export interface StockPiHostOptions {
     | "SettingsManager"
     | "SessionManager"
     | "ModelRuntime"
+    | "getAgentDir"
   >;
   agentDir?: string;
   maxTimeoutMs?: number;
@@ -1169,7 +1170,7 @@ git commit -m "feat: execute and cancel durable team runs"
 - Modify: `packages/pi-teams/src/index.ts`
 
 **Interfaces:**
-- Consumes: common SDK `createAgentSession`, `DefaultResourceLoader`, `SessionManager.inMemory`, and `ModelRuntime`; runtime context contains Pi `ExtensionContext`.
+- Consumes: common SDK `createAgentSession`, `DefaultResourceLoader`, `SessionManager.inMemory`, `ModelRuntime`, and `getAgentDir`; runtime context contains Pi `ExtensionContext`.
 - Produces: `createStockPiHost({ sdk?, agentDir?, maxTimeoutMs? }): TeamHost` with only read-only capabilities, a validated tighten-only operator timeout ceiling, synchronous `MemberExecution` handles, required per-member containment, and a newly added barrel export.
 
 - [ ] **Step 1: Write failing capabilities/preflight tests**
@@ -1271,9 +1272,14 @@ selected provider/model; never parse a model from route or manifest.
 Construct `SettingsManager`/`DefaultResourceLoader` with project resource
 discovery disabled, call `reload`, then `createAgentSession` with
 `SessionManager.inMemory(context.cwd)` and exact tools. After human approval,
-resolve the complete public parent auth shape once, reject catalog/config drift,
-and create an isolated `ModelRuntime` with explicit in-memory credential/model
-stores and network refresh disabled. Pass `noTools: "all"`, the exact admitted
+resolve the complete public parent auth shape once. Snapshot effective/native
+provider identity, safely canonicalized registered config, and auth status
+before and after that asynchronous call; reject drift and hostile/proxy/accessor
+config before runtime creation. Create an isolated `ModelRuntime` with explicit
+in-memory credential/model stores and network refresh disabled. Verify isolated
+request auth by case-insensitively merging admitted model headers over resolved
+provider headers using Pi's precedence, then comparing API key, headers, and
+environment. Pass `noTools: "all"`, the exact admitted
 custom-tool names in `tools`, and only matching repository-confined custom
 definitions. `runMember` immediately
 returns a host-owned handle and an async result that performs setup. Serialize a
@@ -1623,8 +1629,8 @@ tarball plus exactly `@earendil-works/pi-coding-agent@0.84.2` and compatible
 TypeBox with `--ignore-scripts --no-audit --no-fund`, assert installed package
 version and peer version, and assert the common SDK exports
 `createAgentSession`, `DefaultResourceLoader`, `SettingsManager`,
-`SessionManager`, and `ModelRuntime`. Import its extension entry, invoke it with a Proxy API,
-and assert exactly one command/tool named `team`. Invoke list through the
+`SessionManager`, `ModelRuntime`, and `getAgentDir`. Import its extension entry,
+invoke it with a Proxy API, and assert exactly one command/tool named `team`. Invoke list through the
 captured command and tool with temporary homes and assert both include
 `builtin/investigate` without a provider call.
 
@@ -1744,10 +1750,11 @@ producer and consumer. Verify successful admissions retain effective
 Verify `StockPiHostOptions.maxTimeoutMs?: number` matches the spec, rejects
 invalid values before SDK/model use, and implements
 `min(requested timeoutMs, maxTimeoutMs)` without widening. Verify the documented
-`StockPiHostOptions.sdk` common subset contains `ModelRuntime` alongside
-`createAgentSession`, `DefaultResourceLoader`, `SettingsManager`, and
-`SessionManager`, with no post-0.82.1 API. Finally, inspect the barrel at the Task 1, Task 9, Task 11, and Task 13 commit
-boundaries and confirm no commit imports a module that does not yet exist.
+`StockPiHostOptions.sdk` common subset contains `ModelRuntime` and `getAgentDir`
+alongside `createAgentSession`, `DefaultResourceLoader`, `SettingsManager`, and
+`SessionManager`, with no post-0.82.1 API. Finally, inspect the barrel at the
+Task 1, Task 9, Task 11, and Task 13 commit boundaries and confirm no commit
+imports a module that does not yet exist.
 
 - [ ] **Step 11: Commit documentation and final verification wiring**
 

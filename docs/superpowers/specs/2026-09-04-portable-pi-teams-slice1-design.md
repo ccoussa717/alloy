@@ -68,8 +68,8 @@ The common extension layer uses only APIs present in both target runtimes:
 - `ExtensionContext.cwd`, `model`, `modelRegistry`, `isProjectTrusted()`,
   `signal`, `hasUI`, and `ui` text dialogs/notifications;
 - `createAgentSession`, `DefaultResourceLoader`, `SettingsManager`,
-  `SessionManager.inMemory`, and `ModelRuntime`. The stock adapter supplies its
-  own repository-confined read-only custom tools rather than Pi built-ins.
+  `SessionManager.inMemory`, `ModelRuntime`, and `getAgentDir`. The stock adapter
+  supplies its own repository-confined read-only custom tools rather than Pi built-ins.
 
 It does not use APIs introduced after Pi `0.82.1`. Compatibility is established
 by a root-package smoke test against Alloy's pinned `0.82.1` dependency and an
@@ -483,6 +483,7 @@ export interface StockPiHostOptions {
     | "SettingsManager"
     | "SessionManager"
     | "ModelRuntime"
+    | "getAgentDir"
   >;
   agentDir?: string;
   maxTimeoutMs?: number;
@@ -856,10 +857,15 @@ Each member uses `createAgentSession` with the active admitted model, an
 in-memory `SessionManager`, and a `DefaultResourceLoader` with extensions,
 skills, prompts, themes, and project context-file discovery disabled. After
 human approval, `runMember` resolves the parent route's complete public auth
-shape exactly once, rejects model/catalog/config drift, and constructs an
-isolated `ModelRuntime` with explicit in-memory credential/model stores and
-network refresh disabled. No ambient auth, model, headers, or base URL may
-replace the admitted route. The child receives `noTools: "all"`, the exact
+shape exactly once. It snapshots the effective provider identity, native
+provider identity, safely canonicalized registered config, and complete auth
+status before and after that asynchronous resolution and fails closed on drift
+or hostile/accessor/proxy config. It then constructs an isolated `ModelRuntime`
+with explicit in-memory credential/model stores and network refresh disabled.
+Runtime auth verification case-insensitively merges admitted model headers over
+resolved provider headers, matching Pi request precedence, before comparing the
+API key, headers, and environment. No ambient auth, model, headers, or base URL
+may replace the admitted route. The child receives `noTools: "all"`, the exact
 custom-tool names in `tools`, and only repository-confined custom definitions
 for `read`, `grep`, `find`, and `ls`; stock built-ins are not enabled.
 

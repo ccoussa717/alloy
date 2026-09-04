@@ -56,10 +56,16 @@ function registryFor(activeModel, overrides = {}) {
     models: activeModel ? [activeModel] : [],
     streamSimple() { throw new Error("not called by adapter tests"); },
   };
+  const providerConfig = overrides.providerConfig ?? {
+    name: "Parent registered provider",
+    baseUrl: "https://registered-parent.invalid/v1",
+    authHeader: true,
+  };
   return {
     calls,
-    async getProviderAuth() {
+    async getProviderAuth(providerId) {
       calls.getProviderAuth += 1;
+      if (overrides.resolveAuth) return await overrides.resolveAuth(providerId);
       return overrides.auth === undefined ? {
         auth: {
           apiKey: "parent-runtime-key",
@@ -76,7 +82,9 @@ function registryFor(activeModel, overrides = {}) {
     },
     getProviderAuthStatus(providerId) {
       calls.getProviderAuthStatus += 1;
-      return providerId === provider.id ? (overrides.authStatus ?? { configured: true, source: "runtime" }) : { configured: false };
+      return providerId === provider.id
+        ? (overrides.authStatusGetter?.() ?? overrides.authStatus ?? { configured: true, source: "runtime" })
+        : { configured: false };
     },
     find(providerId, modelId) {
       calls.find += 1;
@@ -86,19 +94,19 @@ function registryFor(activeModel, overrides = {}) {
     },
     getProvider(providerId) {
       calls.getProvider += 1;
-      return providerId === provider.id ? provider : undefined;
+      return providerId === provider.id ? (overrides.providerGetter?.() ?? provider) : undefined;
     },
     getRegisteredNativeProvider(providerId) {
       calls.getRegisteredNativeProvider += 1;
-      return providerId === provider.id ? (overrides.nativeProvider ?? provider) : undefined;
+      return providerId === provider.id
+        ? (overrides.nativeProviderGetter?.() ?? overrides.nativeProvider ?? provider)
+        : undefined;
     },
     getRegisteredProviderConfig(providerId) {
       calls.getRegisteredProviderConfig += 1;
-      return providerId === provider.id ? (overrides.providerConfig ?? {
-        name: "Parent registered provider",
-        baseUrl: "https://registered-parent.invalid/v1",
-        authHeader: true,
-      }) : undefined;
+      return providerId === provider.id
+        ? (overrides.providerConfigGetter?.() ?? providerConfig)
+        : undefined;
     },
   };
 }
@@ -200,8 +208,9 @@ function sdkFixture(options = {}) {
             ? registered.getModels().find((entry) => entry.id === modelId)
             : undefined;
         },
-        async getAuth() {
-          return await registered.auth.apiKey.resolve();
+        async getAuth(runtimeModel) {
+          if (options.runtimeAuth !== undefined) return options.runtimeAuth;
+          return await registered.auth.apiKey.resolve(runtimeModel);
         },
       };
       calls.runtimeCreates.push({ ...input, runtime });
@@ -726,6 +735,155 @@ test("stock child receives exact resolved parent runtime state without ambient f
   assert.equal(calls.runtimeCreates.length, 1);
 });
 
+test("stock auth verification accepts model-header precedence and rejects runtime mismatch", async () => {
+  const active = model({
+    headers: {
+      "X-Model-Only": "model",
+      "x-shared": "model-wins",
+    },
+  });
+  const registry = registryFor(active, {
+    auth: {
+      auth: {
+        apiKey: "parent-key",
+        headers: {
+          "x-provider-only": "provider",
+          "X-Shared": "provider-loses",
+        },
+        baseUrl: "https://resolved.invalid/v1",
+      },
+      env: { TENANT: "exact" },
+      source: "parent",
+    },
+  });
+  const ctx = context(active, { runtime: { model: active, modelRegistry: registry } });
+  const expectedAuth = {
+    auth: {
+      apiKey: "parent-key",
+      headers: {
+        "x-provider-only": "provider",
+        "X-Model-Only": "model",
+        "x-shared": "model-wins",
+      },
+      baseUrl: "https://resolved.invalid/v1",
+    },
+    env: { TENANT: "exact" },
+    source: "parent",
+  };
+
+  const acceptingFixture = sdkFixture({ runtimeAuth: expectedAuth });
+  const acceptingHost = createStockPiHost({ sdk: acceptingFixture.sdk });
+  const admission = await admissionFor(acceptingHost, ctx);
+  const accepted = await acceptingHost.runMember(
+    admittedRun(admission), ctx, new AbortController().signal,
+  ).result;
+  assert.equal(accepted.ok, true, accepted.error);
+
+  const rejectingFixture = sdkFixture({
+    runtimeAuth: {
+      ...expectedAuth,
+      auth: {
+        ...expectedAuth.auth,
+        headers: { ...expectedAuth.auth.headers, "x-shared": "wrong-runtime-value" },
+      },
+    },
+  });
+  const rejectingHost = createStockPiHost({ sdk: rejectingFixture.sdk });
+  const rejectingAdmission = await admissionFor(rejectingHost, ctx);
+  const rejected = await rejectingHost.runMember(
+    admittedRun(rejectingAdmission), ctx, new AbortController().signal,
+  ).result;
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /stock_config:isolated runtime auth/);
+  assert.equal(rejectingFixture.calls.create.length, 0);
+});
+
+test("stock run fails closed when provider state drifts during deferred auth", async (t) => {
+  for (const field of [
+    "provider", "provider-value", "native", "native-value", "config", "config-value", "status",
+  ]) {
+    await t.test(field, async () => {
+      const gate = deferred();
+      const active = model();
+      const initialProvider = {
+        id: active.provider,
+        name: "Initial effective provider",
+        models: [active],
+        streamSimple() { throw new Error("not called"); },
+      };
+      const replacementProvider = { ...initialProvider, name: "Replacement effective provider" };
+      const initialNative = { ...initialProvider, name: "Initial native provider" };
+      const replacementNative = { ...initialProvider, name: "Replacement native provider" };
+      let providerState = initialProvider;
+      let nativeState = initialNative;
+      let configState = { name: "Initial config", headers: { "x-config": "initial" } };
+      let statusState = { configured: true, source: "runtime", label: "initial" };
+      const registry = registryFor(active, {
+        provider: initialProvider,
+        providerGetter: () => providerState,
+        nativeProviderGetter: () => nativeState,
+        providerConfigGetter: () => configState,
+        authStatusGetter: () => statusState,
+        async resolveAuth() {
+          await gate.promise;
+          return {
+            auth: { apiKey: "resolved-key", headers: { "x-auth": "stable" } },
+            env: { TENANT: "stable" },
+            source: "parent",
+          };
+        },
+      });
+      const ctx = context(active, { runtime: { model: active, modelRegistry: registry } });
+      const fixture = sdkFixture();
+      const host = createStockPiHost({ sdk: fixture.sdk });
+      const admission = await admissionFor(host, ctx);
+      const execution = host.runMember(admittedRun(admission), ctx, new AbortController().signal);
+      while (registry.calls.getProviderAuth === 0) await new Promise((resolve) => setImmediate(resolve));
+      if (field === "provider") providerState = replacementProvider;
+      if (field === "provider-value") providerState.name = "Changed in place";
+      if (field === "native") nativeState = replacementNative;
+      if (field === "native-value") nativeState.name = "Changed in place";
+      if (field === "config") configState = { ...configState, headers: { "x-config": "changed" } };
+      if (field === "config-value") configState.headers["x-config"] = "changed in place";
+      if (field === "status") statusState = { ...statusState, label: "changed" };
+      gate.resolve();
+
+      const result = await execution.result;
+      assert.equal(result.ok, false);
+      assert.match(result.error, /stock_config/);
+      assert.equal(fixture.calls.runtimeCreates.length, 0);
+      assert.equal(fixture.calls.create.length, 0);
+    });
+  }
+});
+
+test("stock rejects accessor and proxy provider configs before deferred auth", async (t) => {
+  const hostileConfigs = [
+    Object.defineProperty({}, "apiKey", {
+      enumerable: true,
+      get() { throw new Error("accessor must not execute"); },
+    }),
+    new Proxy({ name: "proxy config" }, {}),
+  ];
+  for (const [index, providerConfig] of hostileConfigs.entries()) {
+    await t.test(String(index), async () => {
+      const active = model();
+      const registry = registryFor(active, { providerConfig });
+      const ctx = context(active, { runtime: { model: active, modelRegistry: registry } });
+      const fixture = sdkFixture();
+      const host = createStockPiHost({ sdk: fixture.sdk });
+      const admission = await admissionFor(host, ctx);
+      const result = await host.runMember(
+        admittedRun(admission), ctx, new AbortController().signal,
+      ).result;
+      assert.equal(result.ok, false);
+      assert.match(result.error, /stock_config/);
+      assert.equal(registry.calls.getProviderAuth, 0);
+      assert.equal(fixture.calls.runtimeCreates.length, 0);
+    });
+  }
+});
+
 test("stock custom tools stay descriptor-confined to the repository", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "stock-tools-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -929,6 +1087,7 @@ test("stock adapter constructs a working isolated runtime on pinned Pi 0.82 publ
   const catalogModel = provider.getModels()[0];
   const active = {
     ...catalogModel,
+    headers: { "X-Pinned-Model": "model", "x-shared": "model-wins" },
     cost: { input: 0.001, output: 0.01, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 100_000_000,
     maxTokens: 10_000,
@@ -940,7 +1099,7 @@ test("stock adapter constructs a working isolated runtime on pinned Pi 0.82 publ
     auth: {
       auth: {
         apiKey: "pinned-parent-key",
-        headers: { "x-pinned-parent": "yes" },
+        headers: { "x-pinned-parent": "yes", "X-Shared": "provider-loses" },
         baseUrl: "https://pinned-parent.invalid/v1",
       },
       env: { PINNED_TENANT: "yes" },
@@ -963,7 +1122,11 @@ test("stock adapter constructs a working isolated runtime on pinned Pi 0.82 publ
       assert.deepEqual(resolved, {
         auth: {
           apiKey: "pinned-parent-key",
-          headers: { "x-pinned-parent": "yes" },
+          headers: {
+            "x-pinned-parent": "yes",
+            "X-Pinned-Model": "model",
+            "x-shared": "model-wins",
+          },
           baseUrl: "https://pinned-parent.invalid/v1",
         },
         env: { PINNED_TENANT: "yes" },
