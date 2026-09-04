@@ -201,6 +201,40 @@ test("trusted loading includes project manifests under the project namespace", a
   });
 });
 
+test("loader skips absent optional user and trusted-project roots but still requires builtins", async () => {
+  await fixture(async (paths) => {
+    await realFs.writeFile(join(paths.builtinsDir, "investigate.yaml"), manifest("investigate"));
+    await Promise.all([
+      realFs.rm(paths.userDir, { recursive: true }),
+      realFs.rm(paths.projectDir, { recursive: true }),
+    ]);
+
+    const catalog = await defaultLoad(paths);
+    assert.deepEqual(catalog.list().map(({ ref }) => ref), ["builtin/investigate"]);
+
+    await realFs.rm(paths.builtinsDir, { recursive: true });
+    await assert.rejects(defaultLoad(paths), (error) => error?.code === "ENOENT");
+  });
+});
+
+test("loader propagates non-ENOENT inspection errors for optional roots", async () => {
+  await fixture(async (paths) => {
+    for (const deniedRoot of [paths.userDir, paths.projectDir]) {
+      const denied = Object.assign(new Error("access denied"), { code: "EACCES" });
+      const fs = {
+        lstat: async (path) => {
+          if (path === deniedRoot) throw denied;
+          return realFs.lstat(path);
+        },
+        realpath: realFs.realpath,
+        readdir: realFs.readdir,
+        open: realFs.open,
+      };
+      await assert.rejects(defaultLoad(paths, { fs }), (error) => error === denied);
+    }
+  });
+});
+
 test("loader processes YAML filenames in lexical order", async () => {
   await fixture(async (paths) => {
     await Promise.all([

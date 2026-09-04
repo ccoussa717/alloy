@@ -273,6 +273,18 @@ export function registerTeamTool(
               actor: modelActor(ctx),
               context,
             });
+            if (requested.status === "blocked" && requested.approvalBinding === undefined) {
+              return result(formatTeamRun(requested), {
+                status: "blocked",
+                runId: requested.runId,
+              });
+            }
+            if (
+              requested.status !== "awaiting_approval" ||
+              requested.approvalBinding === undefined
+            ) {
+              throw new Error("team_tool_result:request returned a contradictory state");
+            }
             return result(`approval_required\n${formatTeamRun(requested)}`, {
               status: "approval_required",
               runId: requested.runId,

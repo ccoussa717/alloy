@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { types as nodeUtilTypes } from "node:util";
 
 import { createTeamCatalog } from "../core/catalog.ts";
 import { TEAM_LIMITS } from "../core/limits.ts";
@@ -49,6 +50,17 @@ export interface LoadTeamCatalogInput {
 
 function loaderError(code: string, message: string): Error {
   return new Error(`${code}:${message}`);
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    nodeUtilTypes.isProxy(error) ||
+    !nodeUtilTypes.isNativeError(error)
+  ) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+  return descriptor !== undefined && "value" in descriptor && descriptor.value === code;
 }
 
 function isContained(root: string, candidate: string): boolean {
@@ -151,16 +163,22 @@ export async function loadTeamCatalog(
 ): Promise<TeamCatalog> {
   const fs = input.fs ?? nodeFs;
   const entries: CatalogEntry[] = [];
-  const sources: Array<[TeamNamespace, string]> = [
-    ["builtin", input.builtinsDir],
-    ["user", input.userDir],
+  const sources: Array<[TeamNamespace, string, boolean]> = [
+    ["builtin", input.builtinsDir, false],
+    ["user", input.userDir, true],
   ];
   if (input.projectTrusted) {
-    sources.push(["project", input.projectDir]);
+    sources.push(["project", input.projectDir, true]);
   }
 
-  for (const [source, configuredRoot] of sources) {
-    const rootBefore = await fs.lstat(configuredRoot);
+  for (const [source, configuredRoot, optional] of sources) {
+    let rootBefore: CatalogStats;
+    try {
+      rootBefore = await fs.lstat(configuredRoot);
+    } catch (error) {
+      if (optional && hasErrorCode(error, "ENOENT")) continue;
+      throw error;
+    }
     if (rootBefore.isSymbolicLink()) {
       throw loaderError("catalog_root_symlink", configuredRoot);
     }

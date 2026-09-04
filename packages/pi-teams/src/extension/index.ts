@@ -20,11 +20,14 @@ import { createFileEventStore } from "../storage/file-event-store.ts";
 import {
   registerTeamCommand,
   type CommandContext,
-  type ExtensionAPI as CommandExtensionAPI,
 } from "./commands.ts";
-import { registerTeamTool, type TeamToolExtensionAPI } from "./tool.ts";
+import {
+  createTeamRegistration,
+  type TeamRegistrationAPI,
+} from "./registration.ts";
+import { registerTeamTool } from "./tool.ts";
 
-export interface ExtensionAPI extends CommandExtensionAPI, TeamToolExtensionAPI {}
+export interface ExtensionAPI extends TeamRegistrationAPI {}
 
 export interface RegisterTeamsOptions {
   host?: TeamHost;
@@ -35,12 +38,12 @@ export interface RegisterTeamsOptions {
   teamsRoot?: string;
 }
 
-const registeredApis = new WeakSet<object>();
 const builtinsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../builtins");
-
-function registrationError(code: string, message: string): never {
-  throw new Error(`${code}:${message}`);
-}
+const registerOnce = createTeamRegistration({
+  createService: createTeamService,
+  registerCommand: registerTeamCommand,
+  registerTool: registerTeamTool,
+});
 
 function projectId(cwd: string): string {
   return createHash("sha256").update(cwd, "utf8").digest("hex");
@@ -65,39 +68,30 @@ export function registerTeams(
   pi: ExtensionAPI,
   options: RegisterTeamsOptions = {},
 ): TeamService {
-  if (pi === null || (typeof pi !== "object" && typeof pi !== "function")) {
-    return registrationError("teams_api", "extension API must be an object");
-  }
-  if (registeredApis.has(pi as object)) {
-    return registrationError("teams_already_registered", "team command and tool are already registered for this API");
-  }
-  registeredApis.add(pi as object);
-
-  const agentDir = resolve(
-    options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
-  );
-  const teamsRoot = resolve(options.teamsRoot ?? join(agentDir, "team-runs"));
-  const catalogFor = options.catalogFor ?? (async (context: TeamRunContext) =>
-    loadTeamCatalog({
-      builtinsDir,
-      userDir: join(agentDir, "teams"),
-      projectDir: join(context.cwd, ".pi", "teams"),
-      projectTrusted: context.projectTrusted,
-    }));
-  const service = createTeamService({
-    catalogFor,
-    eventStore: options.eventStore ?? createFileEventStore({ root: teamsRoot }),
-    artifactStore: options.artifactStore ?? createFileArtifactStore({ root: teamsRoot }),
-    host: options.host ?? createStockPiHost({ agentDir }),
-    now: () => new Date().toISOString(),
-    randomUUID,
-  });
   const contextFactory = (ctx: CommandContext, source: "command" | "tool") =>
     createContext(ctx, source);
 
-  registerTeamCommand(pi, service, contextFactory);
-  registerTeamTool(pi, service, contextFactory);
-  return service;
+  return registerOnce(pi, () => {
+    const agentDir = resolve(
+      options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
+    );
+    const teamsRoot = resolve(options.teamsRoot ?? join(agentDir, "team-runs"));
+    const catalogFor = options.catalogFor ?? (async (context: TeamRunContext) =>
+      loadTeamCatalog({
+        builtinsDir,
+        userDir: join(agentDir, "teams"),
+        projectDir: join(context.cwd, ".pi", "teams"),
+        projectTrusted: context.projectTrusted,
+      }));
+    return {
+      catalogFor,
+      eventStore: options.eventStore ?? createFileEventStore({ root: teamsRoot }),
+      artifactStore: options.artifactStore ?? createFileArtifactStore({ root: teamsRoot }),
+      host: options.host ?? createStockPiHost({ agentDir }),
+      now: () => new Date().toISOString(),
+      randomUUID,
+    };
+  }, contextFactory);
 }
 
 export default function portableTeamsExtension(pi: ExtensionAPI): void {

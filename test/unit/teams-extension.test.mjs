@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { Check } from "typebox/value";
 
@@ -19,6 +21,7 @@ import { registerTeamTool } from "../../packages/pi-teams/src/extension/tool.ts"
 import portableTeamsExtension, {
   registerTeams,
 } from "../../packages/pi-teams/src/extension/index.ts";
+import { createTeamRegistration } from "../../packages/pi-teams/src/extension/registration.ts";
 
 const RUN_ID = "123e4567-e89b-42d3-a456-426614174000";
 const OTHER_RUN_ID = "123e4567-e89b-42d3-a456-426614174001";
@@ -678,6 +681,36 @@ test("team tool dispatches exact actions and request/run can only request approv
   assert.deepEqual(harness.calls.at(-1)[2], { kind: "model", id: "no-active-model" });
 });
 
+test("team tool reports blocked requests truthfully without approval text or binding", async () => {
+  const harness = toolHarness();
+  harness.service.request = async (input) => {
+    harness.calls.push(["request", input]);
+    return runView({
+      status: "blocked",
+      approvalBinding: undefined,
+      admissions: [{
+        ok: false,
+        memberId: "architecture",
+        effectiveRoute: null,
+        effectiveModel: null,
+        effectiveCapabilities: [],
+        effectiveTools: [],
+        maxCostUsd: 2 / 3,
+        reason: "stock_auth: private provider detail",
+      }],
+    });
+  };
+
+  for (const action of ["request", "run"]) {
+    const response = await harness.execute({ action, team: "investigate", objective: "map auth" });
+    assert.deepEqual(response.details, { status: "blocked", runId: RUN_ID });
+    assert.equal(Object.hasOwn(response.details, "binding"), false);
+    assert.doesNotMatch(response.content[0].text, /approval_required|private provider detail/);
+    assert.match(response.content[0].text, /Status: "blocked"/);
+  }
+  assert.deepEqual(harness.calls.map(([name]) => name), ["request", "request"]);
+});
+
 test("team tool rejects direct-call proxy accessor and authority arguments before dispatch", async () => {
   const harness = toolHarness();
   let getterCalls = 0;
@@ -784,6 +817,162 @@ test("registerTeams shares canonical trusted runtime context with command and to
     assert.strictEqual(context.runtime, ctx);
   }
 });
+
+test("default registration lists builtins when optional catalog roots are absent", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-extension-default-"));
+  const agentDir = join(root, "agent");
+  const projectDir = join(root, "project");
+  await Promise.all([mkdir(agentDir), mkdir(projectDir)]);
+  try {
+    const harness = registrationApi();
+    registerTeams(harness.pi, {
+      agentDir,
+      host: { id: "stock-pi" },
+      eventStore: {},
+      artifactStore: {},
+    });
+    const ctx = {
+      cwd: projectDir,
+      model: undefined,
+      modelRegistry: {},
+      isProjectTrusted: () => true,
+      signal: undefined,
+      hasUI: false,
+      ui: {},
+    };
+    const response = await harness.tools[0].execute(
+      "call",
+      { action: "list" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.match(response.content[0].text, /Team: "builtin\/investigate"/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function registrationCoordinatorHarness() {
+  const serviceCalls = [];
+  const service = {
+    async list(context) { serviceCalls.push(["list", context]); return []; },
+    async inspect() { throw new Error("unused:inspect"); },
+    async request() { throw new Error("unused:request"); },
+    async approve() { throw new Error("unused:approve"); },
+    async execute() { throw new Error("unused:execute"); },
+    async status() { throw new Error("unused:status"); },
+    async view() { throw new Error("unused:view"); },
+    async cancel() { throw new Error("unused:cancel"); },
+  };
+  const order = [];
+  const commandServices = [];
+  const toolServices = [];
+  let createCalls = 0;
+  const register = createTeamRegistration({
+    createService(dependencies) {
+      createCalls += 1;
+      assert.deepEqual(dependencies, { marker: "dependencies" });
+      return service;
+    },
+    registerCommand(pi, received, contextFactory) {
+      order.push("command");
+      commandServices.push(received);
+      registerTeamCommand(pi, received, contextFactory);
+    },
+    registerTool(pi, received, contextFactory) {
+      order.push("tool");
+      toolServices.push(received);
+      registerTeamTool(pi, received, contextFactory);
+    },
+  });
+  const context = { marker: "context" };
+  const invoke = (pi) => register(
+    pi,
+    () => ({ marker: "dependencies" }),
+    () => context,
+  );
+  return {
+    service,
+    serviceCalls,
+    order,
+    commandServices,
+    toolServices,
+    invoke,
+    get createCalls() { return createCalls; },
+  };
+}
+
+test("registration creates one service and passes its strict identity tool-first to both surfaces", () => {
+  const coordinator = registrationCoordinatorHarness();
+  const harness = registrationApi();
+  const returned = coordinator.invoke(harness.pi);
+  assert.equal(coordinator.createCalls, 1);
+  assert.strictEqual(returned, coordinator.service);
+  assert.deepEqual(coordinator.order, ["tool", "command"]);
+  assert.deepEqual(coordinator.toolServices, [coordinator.service]);
+  assert.deepEqual(coordinator.commandServices, [coordinator.service]);
+  assert.throws(() => coordinator.invoke(harness.pi), /teams_already_registered/);
+  assert.equal(coordinator.createCalls, 1);
+  assert.equal(harness.tools.length, 1);
+  assert.equal(harness.commands.length, 1);
+});
+
+test("registration validates both API methods before service or registration effects", () => {
+  const coordinator = registrationCoordinatorHarness();
+  let toolCalls = 0;
+  assert.throws(
+    () => coordinator.invoke({ registerTool() { toolCalls += 1; } }),
+    /teams_api/,
+  );
+  assert.equal(coordinator.createCalls, 0);
+  assert.equal(toolCalls, 0);
+  assert.deepEqual(coordinator.order, []);
+});
+
+for (const throwAt of ["tool", "command"]) {
+  test(`registration failure at ${throwAt} leaves every partial handler inert and retry-safe`, async () => {
+    const coordinator = registrationCoordinatorHarness();
+    const captured = { tools: [], commands: [] };
+    const pi = {
+      registerTool(tool) {
+        captured.tools.push(tool);
+        if (throwAt === "tool") throw new Error("registration_throw:tool");
+      },
+      registerCommand(name, options) {
+        captured.commands.push({ name, options });
+        if (throwAt === "command") throw new Error("registration_throw:command");
+      },
+    };
+    assert.throws(() => coordinator.invoke(pi), new RegExp(`registration_throw:${throwAt}`));
+    assert.deepEqual(coordinator.order, throwAt === "tool" ? ["tool"] : ["tool", "command"]);
+
+    const ctx = {
+      cwd: process.cwd(), model: undefined, modelRegistry: {},
+      isProjectTrusted: () => false, signal: undefined, hasUI: false, ui: {},
+    };
+    for (const tool of captured.tools) {
+      await assert.rejects(
+        tool.execute("call", { action: "list" }, undefined, undefined, ctx),
+        /teams_registration_inactive/,
+      );
+    }
+    for (const command of captured.commands) {
+      await assert.rejects(command.options.handler("list", ctx), /teams_registration_inactive/);
+    }
+    assert.deepEqual(coordinator.serviceCalls, []);
+
+    assert.throws(() => coordinator.invoke(pi), /teams_already_registered/);
+    assert.equal(captured.tools.length, 1);
+    assert.equal(captured.commands.length, throwAt === "command" ? 1 : 0);
+    assert.deepEqual(coordinator.serviceCalls, []);
+
+    const fresh = registrationApi();
+    assert.strictEqual(coordinator.invoke(fresh.pi), coordinator.service);
+    assert.equal(fresh.tools.length, 1);
+    assert.equal(fresh.commands.length, 1);
+  });
+}
 
 test("portable default extension registers one command and one tool around its one service", () => {
   const harness = registrationApi();
