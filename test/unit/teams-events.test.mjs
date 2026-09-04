@@ -41,23 +41,123 @@ function chainedEvent(previous, overrides = {}) {
 
 function validHistory() {
   const requested = chainedEvent(undefined, {
-    payload: { objective: "Map auth" },
+    payload: {
+      projectId: "a".repeat(64),
+      teamRef: "builtin/solo",
+      objective: "Map auth",
+    },
   });
   const snapshotted = chainedEvent(requested, {
     type: "manifest.snapshotted",
     occurredAt: "2026-09-04T12:00:01Z",
-    payload: { manifestDigest: "a".repeat(64) },
+    payload: {
+      teamRef: "builtin/solo",
+      manifestDigest: "a".repeat(64),
+      planDigest: "b".repeat(64),
+      limits: {
+        maxConcurrency: 1,
+        maxCostUsd: 1,
+        timeoutMs: 1_000,
+        maxMembers: 1,
+      },
+      members: [{ id: "reader", needs: [] }],
+    },
   });
-  const completed = chainedEvent(snapshotted, {
-    type: "run.completed",
+  const admitted = chainedEvent(snapshotted, {
+    type: "policy.admitted",
     occurredAt: "2026-09-04T12:00:02.25Z",
+    payload: {
+      policyDigest: "c".repeat(64),
+      admissions: [{
+        ok: true,
+        memberId: "reader",
+        effectiveRoute: "research",
+        effectiveModel: "model",
+        effectiveCapabilities: ["repo.read"],
+        effectiveTools: ["read"],
+        maxCostUsd: 1,
+        timeoutMs: 1_000,
+      }],
+    },
   });
-  return [requested, snapshotted, completed];
+  return [requested, snapshotted, admitted];
 }
 
 function rehash(event) {
   return { ...event, hash: hashEvent(withoutHash(event)) };
 }
+
+function lifecyclePrefix() {
+  const requested = chainedEvent(undefined, {
+    payload: {
+      projectId: "a".repeat(64),
+      teamRef: "builtin/solo",
+      objective: "Read the repository.",
+    },
+  });
+  const snapshotted = chainedEvent(requested, {
+    type: "manifest.snapshotted",
+    payload: {
+      teamRef: "builtin/solo",
+      manifestDigest: "b".repeat(64),
+      planDigest: "c".repeat(64),
+      limits: {
+        maxConcurrency: 1,
+        maxCostUsd: 1,
+        timeoutMs: 1_000,
+        maxMembers: 1,
+      },
+      members: [{ id: "reader", needs: [] }],
+    },
+  });
+  const admitted = chainedEvent(snapshotted, {
+    type: "policy.admitted",
+    payload: {
+      policyDigest: "d".repeat(64),
+      admissions: [{
+        ok: true,
+        memberId: "reader",
+        effectiveRoute: "research",
+        effectiveModel: "model",
+        effectiveCapabilities: ["repo.read"],
+        effectiveTools: ["read"],
+        maxCostUsd: 1,
+        timeoutMs: 1_000,
+      }],
+    },
+  });
+  return [requested, snapshotted, admitted];
+}
+
+// Break caught: hash-valid event reads admit impossible lifecycle authority.
+test("event history validation rejects impossible lifecycle transitions and payloads", () => {
+  const prefix = lifecyclePrefix();
+  const approvalBeforeAwaiting = chainedEvent(prefix.at(-1), {
+    type: "approval.granted",
+    payload: {
+      binding: {
+        runId: RUN_ID,
+        manifestDigest: "b".repeat(64),
+        planDigest: "c".repeat(64),
+        policyDigest: "d".repeat(64),
+        requestedAction: "execute",
+      },
+    },
+  });
+  assert.throws(
+    () => validateEventHistory([...prefix, approvalBeforeAwaiting], RUN_ID),
+    /event_transition:/,
+  );
+
+  const unknownPayload = chainedEvent(prefix.at(-1), {
+    type: "run.awaiting_approval",
+    payload: { binding: {}, extra: true },
+  });
+  assert.throws(
+    () => validateEventHistory([...prefix, unknownPayload], RUN_ID),
+    /event_payload:/,
+  );
+});
 
 // Break caught: hashing omits the required newline or depends on insertion order.
 test("event hashes canonical JSON plus one newline deterministically", () => {
@@ -216,7 +316,7 @@ test("requires exact known actors, RFC 3339 UTC timestamps, plain payloads, and 
     const candidate = { ...first, payload, hash: "0".repeat(64) };
     assert.throws(() => validateEventHistory([candidate], RUN_ID), /event_payload:/);
   }
-  const nullPrototypePayload = Object.assign(Object.create(null), { safe: true });
+  const nullPrototypePayload = Object.assign(Object.create(null), first.payload);
   assert.doesNotThrow(() => validateEventHistory([
     rehash({ ...first, payload: nullPrototypePayload }),
   ], RUN_ID));
@@ -235,14 +335,25 @@ test("allows at most one terminal event and only at the end", () => {
   assert.equal(validateEventHistory(history.slice(0, 2), RUN_ID).length, 2);
   assert.equal(validateEventHistory(history, RUN_ID).length, 3);
 
-  const afterTerminal = chainedEvent(history[2], { type: "budget.observed" });
-  const secondTerminal = chainedEvent(history[2], { type: "run.failed" });
+  const blockedPrefix = lifecyclePrefix().slice(0, 2);
+  const policyBlocked = chainedEvent(blockedPrefix.at(-1), {
+    type: "policy.blocked",
+    payload: { reasons: ["model unavailable"] },
+  });
+  const terminal = chainedEvent(policyBlocked, {
+    type: "run.blocked",
+    payload: { reason: "model unavailable" },
+  });
+  assert.equal(validateEventHistory([...blockedPrefix, policyBlocked, terminal], RUN_ID).length, 4);
+
+  const afterTerminal = chainedEvent(terminal, { type: "budget.observed" });
+  const secondTerminal = chainedEvent(terminal, { type: "run.failed" });
   assert.throws(
-    () => validateEventHistory([...history, afterTerminal], RUN_ID),
+    () => validateEventHistory([...blockedPrefix, policyBlocked, terminal, afterTerminal], RUN_ID),
     /event_terminal:/,
   );
   assert.throws(
-    () => validateEventHistory([...history, secondTerminal], RUN_ID),
+    () => validateEventHistory([...blockedPrefix, policyBlocked, terminal, secondTerminal], RUN_ID),
     /event_terminal:/,
   );
 });
@@ -704,11 +815,14 @@ test("writer serializes concurrent canonical appends without changing existing p
   await withStoreFixture(async ({ root, store }) => {
     const writer = await store.createRun(runSnapshotInput());
     const eventPath = join(root, PROJECT_ID, RUN_ID, "events.jsonl");
-    const first = await writer.append(draft("run.requested", { payload: { n: 1 } }));
+    const lifecycle = lifecyclePrefix();
+    const first = await writer.append(draft("run.requested", {
+      payload: lifecycle[0].payload,
+    }));
     const prefix = await realFs.readFile(eventPath);
     const [second, third] = await Promise.all([
-      writer.append(draft("manifest.snapshotted", { payload: { n: 2 } })),
-      writer.append(draft("policy.admitted", { payload: { n: 3 } })),
+      writer.append(draft("manifest.snapshotted", { payload: lifecycle[1].payload })),
+      writer.append(draft("policy.admitted", { payload: lifecycle[2].payload })),
     ]);
     const bytes = await realFs.readFile(eventPath);
     const text = bytes.toString("utf8");
@@ -780,13 +894,23 @@ test("writer rejects proxy drafts and payloads before invoking their traps", asy
 test("writer snapshots a draft at the append call boundary", async () => {
   await withStoreFixture(async ({ store }) => {
     const writer = await store.createRun(runSnapshotInput());
-    const input = draft("run.requested", { payload: { value: "original" } });
+    const input = draft("run.requested", {
+      payload: {
+        projectId: PROJECT_ID,
+        teamRef: "builtin/solo",
+        objective: "original",
+      },
+    });
     const pending = writer.append(input);
-    input.payload.value = "mutated";
+    input.payload.objective = "mutated";
     input.actor.id = "mutated";
 
     const event = await pending;
-    assert.deepEqual(event.payload, { value: "original" });
+    assert.deepEqual(event.payload, {
+      projectId: PROJECT_ID,
+      teamRef: "builtin/solo",
+      objective: "original",
+    });
     assert.deepEqual(event.actor, { kind: "system", id: "teams" });
     assert.deepEqual(await store.read(PROJECT_ID, RUN_ID), [event]);
     await writer.close();

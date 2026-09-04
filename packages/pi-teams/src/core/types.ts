@@ -252,11 +252,11 @@ export interface TeamRunView {
   teamRef: TeamRef;
   objective: string;
   status: TeamRunStatus;
-  manifestDigest: string;
-  planDigest: string;
+  manifestDigest?: string;
+  planDigest?: string;
   policyDigest?: string;
   approvalBinding?: ApprovalBinding;
-  limits: TeamLimits;
+  limits?: TeamLimits;
   admissions: PublicAdmission[];
   members: Record<string, TeamMemberView>;
   usage: { input: number; output: number; costUsd: number | null };

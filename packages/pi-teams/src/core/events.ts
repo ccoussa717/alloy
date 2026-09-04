@@ -3,6 +3,7 @@ import { types as nodeUtilTypes } from "node:util";
 
 import { canonicalJsonSnapshotBounded } from "./compiler.ts";
 import { TEAM_LIMITS, ZERO_HASH } from "./limits.ts";
+import { validateTeamLifecycle } from "./projection.ts";
 import type { Actor, EventDraft, TeamEvent, TeamEventType } from "./types.ts";
 
 export const TEAM_EVENT_TYPES = Object.freeze([
@@ -300,6 +301,7 @@ export function validateEventHistory(
     validated.push(value as unknown as TeamEvent);
   }
 
+  validateTeamLifecycle(validated);
   return validated;
 }
 
