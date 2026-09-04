@@ -17,6 +17,8 @@ export const TEAM_LIMITS = Object.freeze({
   outputBytes: 1_048_576,
   resultBytes: 65_536,
   eventLineBytes: 65_536,
+  eventHistoryBytes: 16_777_216,
+  eventHistoryEvents: 4_096,
 });
 
 export const ZERO_HASH = "0".repeat(64);

@@ -109,6 +109,8 @@ test("portable limits enforce identifiers and inclusive bounded UTF-8 text", asy
     outputBytes: 1_048_576,
     resultBytes: 65_536,
     eventLineBytes: 65_536,
+    eventHistoryBytes: 16_777_216,
+    eventHistoryEvents: 4_096,
   });
   assert.ok(Object.isFrozen(limits.TEAM_LIMITS));
   assert.equal(limits.ZERO_HASH, "0".repeat(64));
