@@ -104,6 +104,10 @@ function isWithin(root, candidate) {
   return resolve(candidate) === resolve(root) || resolve(candidate).startsWith(normalizedRoot);
 }
 
+function isDescriptorPath(path) {
+  return path.startsWith("/proc/self/fd/") || path.startsWith("/dev/fd/");
+}
+
 test("catalog sorts qualified refs and resolves exact and unique short names", () => {
   const catalog = createTeamCatalog([
     entry("user", "solo"),
@@ -213,7 +217,7 @@ test("loader processes YAML filenames in lexical order", async () => {
         return path === paths.builtinsDir ? entries.reverse() : entries;
       },
       open: async (path, flags) => {
-        if (isWithin(paths.builtinsDir, path)) opened.push(basename(path));
+        if (path.endsWith(".yaml")) opened.push(basename(path));
         return realFs.open(path, flags);
       },
     };
@@ -234,7 +238,7 @@ test("loader rejects a 33rd YAML file before opening manifests", async () => {
       realpath: realFs.realpath,
       readdir: realFs.readdir,
       open: async (...args) => {
-        opens += 1;
+        if (args[0].endsWith(".yaml")) opens += 1;
         return realFs.open(...args);
       },
     };
@@ -255,6 +259,41 @@ test("loader rejects aggregate bytes above 1,048,576", async () => {
     }));
 
     await assert.rejects(defaultLoad(paths), /catalog_bytes/);
+  });
+});
+
+test("file-count ceilings reset for each namespace", async () => {
+  await fixture(async (paths) => {
+    await Promise.all(["builtinsDir", "userDir"].flatMap((directoryKey) =>
+      Array.from({ length: 17 }, (_, index) => realFs.writeFile(
+        join(paths[directoryKey], `${String(index).padStart(2, "0")}.yaml`),
+        manifest(`${directoryKey === "builtinsDir" ? "builtin" : "user"}-${index}`),
+      ))));
+
+    const catalog = await defaultLoad(paths);
+
+    assert.equal(catalog.list().length, 34);
+    assert.equal(catalog.resolve("builtin/builtin-16").source, "builtin");
+    assert.equal(catalog.resolve("user/user-16").source, "user");
+  });
+});
+
+test("aggregate-byte ceilings reset for each namespace", async () => {
+  await fixture(async (paths) => {
+    await Promise.all(["builtinsDir", "userDir"].flatMap((directoryKey) =>
+      Array.from({ length: 9 }, (_, index) => {
+        const prefix = directoryKey === "builtinsDir" ? "builtin" : "user";
+        return realFs.writeFile(
+          join(paths[directoryKey], `${String(index).padStart(2, "0")}.yaml`),
+          padManifest(manifest(`${prefix}-${index}`), 60_000),
+        );
+      })));
+
+    const catalog = await defaultLoad(paths);
+
+    assert.equal(catalog.list().length, 18);
+    assert.equal(catalog.resolve("builtin/builtin-8").source, "builtin");
+    assert.equal(catalog.resolve("user/user-8").source, "user");
   });
 });
 
@@ -302,12 +341,73 @@ test("loader rejects escaped realpaths", async () => {
     ]);
     const escapingFs = {
       lstat: realFs.lstat,
-      realpath: async (path) => path === candidate ? escaped : realFs.realpath(path),
+      realpath: async (path) =>
+        isDescriptorPath(path) && basename(path) === "team.yaml"
+          ? escaped
+          : realFs.realpath(path),
       readdir: realFs.readdir,
       open: realFs.open,
     };
 
     await assert.rejects(defaultLoad(paths, { fs: escapingFs }), /catalog_escape/);
+  });
+});
+
+test("loader stays bound to the admitted root descriptor during parent replacement", async (t) => {
+  if (process.platform !== "linux") {
+    t.skip("the real descriptor-root race fixture requires Linux procfs");
+    return;
+  }
+
+  await fixture(async (paths) => {
+    await realFs.writeFile(join(paths.builtinsDir, "safe.yaml"), manifest("safe"));
+    const movedRoot = join(paths.root, "admitted-builtins");
+    let replaced = false;
+    const racingFs = {
+      lstat: realFs.lstat,
+      realpath: realFs.realpath,
+      open: realFs.open,
+      readdir: async (path, options) => {
+        if (!replaced && (path === paths.builtinsDir || isDescriptorPath(path))) {
+          replaced = true;
+          await realFs.rename(paths.builtinsDir, movedRoot);
+          await realFs.mkdir(paths.builtinsDir);
+          await realFs.writeFile(join(paths.builtinsDir, "evil.yaml"), manifest("evil"));
+        }
+        return realFs.readdir(path, options);
+      },
+    };
+
+    const catalog = await defaultLoad(paths, { fs: racingFs });
+
+    assert.equal(replaced, true);
+    assert.deepEqual(catalog.list().map(({ ref }) => ref), ["builtin/safe"]);
+  });
+});
+
+test("loader fails closed when no verified descriptor-root path is available", async () => {
+  await fixture(async (paths) => {
+    await realFs.writeFile(join(paths.builtinsDir, "team.yaml"), manifest("team"));
+    let manifestOpens = 0;
+    const unavailableFs = {
+      lstat: realFs.lstat,
+      readdir: realFs.readdir,
+      open: async (path, flags) => {
+        if (path.endsWith(".yaml")) manifestOpens += 1;
+        return realFs.open(path, flags);
+      },
+      realpath: async (path) => {
+        if (isDescriptorPath(path)) {
+          const error = new Error("descriptor path unavailable");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return realFs.realpath(path);
+      },
+    };
+
+    await assert.rejects(defaultLoad(paths, { fs: unavailableFs }), /catalog_descriptor_path/);
+    assert.equal(manifestOpens, 0);
   });
 });
 
@@ -330,7 +430,9 @@ test("loader rejects an identity change between lstat and fstat and closes the f
       readdir: realFs.readdir,
       open: async (path, flags) => {
         const handle = await realFs.open(path, flags);
+        if ((flags & constants.O_DIRECTORY) !== 0) return handle;
         return {
+          fd: handle.fd,
           stat: async () => {
             const stat = await handle.stat();
             return {
@@ -340,7 +442,7 @@ test("loader rejects an identity change between lstat and fstat and closes the f
               isFile: () => stat.isFile(),
             };
           },
-          readFile: (...args) => handle.readFile(...args),
+          read: (...args) => handle.read(...args),
           close: async () => {
             closed = true;
             await handle.close();
@@ -365,11 +467,13 @@ test("loader opens no-follow read-only, rejects malformed UTF-8, and closes the 
       realpath: realFs.realpath,
       readdir: realFs.readdir,
       open: async (path, flags) => {
-        observedFlags = flags;
         const handle = await realFs.open(path, flags);
+        if ((flags & constants.O_DIRECTORY) !== 0) return handle;
+        observedFlags = flags;
         return {
+          fd: handle.fd,
           stat: () => handle.stat(),
-          readFile: (...args) => handle.readFile(...args),
+          read: (...args) => handle.read(...args),
           close: async () => {
             closed = true;
             await handle.close();
@@ -384,6 +488,94 @@ test("loader opens no-follow read-only, rejects malformed UTF-8, and closes the 
       assert.equal(observedFlags & constants.O_NOFOLLOW, constants.O_NOFOLLOW);
     }
     assert.equal(closed, true);
+  });
+});
+
+test("loader bounds descriptor reads when a manifest grows after fstat", async () => {
+  await fixture(async (paths) => {
+    const candidate = join(paths.builtinsDir, "growing.yaml");
+    await realFs.writeFile(candidate, manifest("growing"));
+    let readCapacity = 0;
+    let grew = false;
+    const growingFs = {
+      lstat: realFs.lstat,
+      realpath: realFs.realpath,
+      readdir: realFs.readdir,
+      open: async (path, flags) => {
+        const handle = await realFs.open(path, flags);
+        if ((flags & constants.O_DIRECTORY) !== 0) return handle;
+        return {
+          fd: handle.fd,
+          stat: async () => {
+            const stat = await handle.stat();
+            if (!grew) {
+              grew = true;
+              await realFs.appendFile(candidate, "x".repeat(TEAM_LIMITS.manifestBytes + 1));
+            }
+            return stat;
+          },
+          read: async (buffer, offset, length, position) => {
+            readCapacity = Math.max(readCapacity, buffer.byteLength);
+            return handle.read(buffer, offset, length, position);
+          },
+          readFile: async () => {
+            throw new Error("unbounded readFile must not be used");
+          },
+          close: () => handle.close(),
+        };
+      },
+    };
+
+    await assert.rejects(defaultLoad(paths, { fs: growingFs }), /catalog_file_bytes/);
+    assert.equal(grew, true);
+    assert.equal(readCapacity, TEAM_LIMITS.manifestBytes + 1);
+  });
+});
+
+test("loader caps growth reads at the remaining per-source aggregate plus one", async () => {
+  await fixture(async (paths) => {
+    await Promise.all(Array.from({ length: 16 }, (_, index) => realFs.writeFile(
+      join(paths.builtinsDir, `${String(index).padStart(2, "0")}.yaml`),
+      padManifest(manifest(`team-${index}`), 62_000),
+    )));
+    const candidate = join(paths.builtinsDir, "zz.yaml");
+    await realFs.writeFile(candidate, manifest("growing"));
+    let readCapacity = 0;
+    let grew = false;
+    const growingFs = {
+      lstat: realFs.lstat,
+      realpath: realFs.realpath,
+      readdir: realFs.readdir,
+      open: async (path, flags) => {
+        const handle = await realFs.open(path, flags);
+        if ((flags & constants.O_DIRECTORY) !== 0 || basename(path) !== "zz.yaml") {
+          return handle;
+        }
+        return {
+          fd: handle.fd,
+          stat: async () => {
+            const stat = await handle.stat();
+            if (!grew) {
+              grew = true;
+              await realFs.appendFile(candidate, "x".repeat(60_000));
+            }
+            return stat;
+          },
+          read: async (buffer, offset, length, position) => {
+            readCapacity = Math.max(readCapacity, buffer.byteLength);
+            return handle.read(buffer, offset, length, position);
+          },
+          close: () => handle.close(),
+        };
+      },
+    };
+
+    await assert.rejects(defaultLoad(paths, { fs: growingFs }), /catalog_bytes/);
+    assert.equal(grew, true);
+    assert.equal(
+      readCapacity,
+      TEAM_LIMITS.catalogBytes - (16 * 62_000) + 1,
+    );
   });
 });
 
