@@ -63,6 +63,7 @@
     "test:tui": "bun --cwd tui test",
     "typecheck:tui": "bun run --cwd tui typecheck",
     "typecheck:teams": "tsc -p packages/pi-teams/tsconfig.json",
+    "test:teams:stock": "ALLOY_RUN_TEAMS_STOCK_E2E=1 node --test --test-force-exit test/integration/teams-stock-pi.e2e.test.mjs",
     "verify:tui:pty": "bun run --cwd tui verify:pty",
     "verify:opentui-packed": "bash ./scripts/verify-opentui-packed.sh",
     "test:integration": "node --test --test-force-exit test/integration/*.e2e.test.mjs",

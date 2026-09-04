@@ -373,6 +373,7 @@ test("loader rejects escaped realpaths", async () => {
       realFs.writeFile(candidate, manifest("team")),
       realFs.writeFile(escaped, manifest("escaped")),
     ]);
+    const opened = [];
     const escapingFs = {
       lstat: realFs.lstat,
       realpath: async (path) =>
@@ -380,10 +381,14 @@ test("loader rejects escaped realpaths", async () => {
           ? escaped
           : realFs.realpath(path),
       readdir: realFs.readdir,
-      open: realFs.open,
+      open: async (path, ...args) => {
+        opened.push(String(path));
+        return realFs.open(path, ...args);
+      },
     };
 
     await assert.rejects(defaultLoad(paths, { fs: escapingFs }), /catalog_escape/);
+    assert.equal(opened.includes(escaped), false, "escaped pathname must never be opened");
   });
 });
 

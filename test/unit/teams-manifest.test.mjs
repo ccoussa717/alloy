@@ -234,6 +234,17 @@ test("exact schema and semantic constraints reject unsupported manifests", () =>
   }
 });
 
+test("concurrency cannot exceed member count even at the package ceiling", () => {
+  const twoMembersAtCeiling = manifestWithMembers(2).replace(
+    "maxConcurrency: 2",
+    "maxConcurrency: 3",
+  );
+  assert.throws(
+    () => parseTeamManifest(twoMembersAtCeiling, "concurrency-above-members.yaml"),
+    errorCode("manifest_concurrency"),
+  );
+});
+
 test("dependency membership and graph validation are deferred to compilation", () => {
   const unknownDependency = VALID.replace(
     "needs: [architecture, risks]",

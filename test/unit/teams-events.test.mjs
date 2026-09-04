@@ -1118,7 +1118,7 @@ test("terminal append durably closes the writer and permanently consumes the run
   }, { fs: trackingFs(syncPaths, opened) });
 });
 
-// Break caught: a failed partial creation is cleaned up and its abandoned ID becomes reusable.
+// Break caught: a failed partial creation leaves an abandoned run ID permanently consumed.
 test("a failed run creation permanently consumes the abandoned run ID", async () => {
   let failSnapshot = true;
   const failingFs = {
