@@ -473,3 +473,214 @@ test("rejects oversized output and result descriptors before calling read", asyn
     }, { fs: observedFs });
   }
 });
+
+// Break caught: output is closed and trusted before result work can replace or chmod it.
+test("write keeps output identity pinned through result persistence", async () => {
+  for (const mutation of ["replace", "chmod"]) {
+    let armed = true;
+    const adversarialFs = {
+      ...realFs,
+      async open(path, flags, mode) {
+        if (
+          armed &&
+          String(path).endsWith("result.json") &&
+          typeof flags === "number" &&
+          (flags & constants.O_CREAT) !== 0
+        ) {
+          armed = false;
+          const outputPath = join(String(path), "..", "output.md");
+          if (mutation === "replace") {
+            await realFs.rename(outputPath, join(String(path), "..", "replaced-output.md"));
+            await realFs.writeFile(outputPath, "evidence\n", { mode: 0o600 });
+          } else {
+            await realFs.chmod(outputPath, 0o640);
+          }
+        }
+        return realFs.open(path, flags, mode);
+      },
+    };
+    await withFixture(async ({ store }) => {
+      await assert.rejects(
+        () => store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult()),
+        /artifact_file_output:/,
+      );
+    }, { fs: adversarialFs });
+  }
+});
+
+// Break caught: read closes output before result work and returns stale verified bytes.
+test("read keeps both file identities pinned until final verification", async () => {
+  for (const mutation of ["replace", "chmod"]) {
+    let armed = false;
+    const adversarialFs = {
+      ...realFs,
+      async open(path, flags, mode) {
+        if (
+          armed &&
+          String(path).endsWith("result.json") &&
+          typeof flags === "number" &&
+          (flags & constants.O_CREAT) === 0
+        ) {
+          armed = false;
+          const outputPath = join(String(path), "..", "output.md");
+          if (mutation === "replace") {
+            await realFs.rename(outputPath, join(String(path), "..", "replaced-output.md"));
+            await realFs.writeFile(outputPath, "evidence\n", { mode: 0o600 });
+          } else {
+            await realFs.chmod(outputPath, 0o640);
+          }
+        }
+        return realFs.open(path, flags, mode);
+      },
+    };
+    await writtenFixture(async ({ store, ref }) => {
+      armed = true;
+      await assert.rejects(
+        () => store.readVerified(PROJECT_ID, RUN_ID, ref),
+        /artifact_file_output:/,
+      );
+    }, { fs: adversarialFs });
+  }
+});
+
+// Break caught: opening the configured root as one pathname follows a symlink ancestor.
+test("opens every configured-root component without following ancestor symlinks", async () => {
+  const parent = await realFs.mkdtemp(join(tmpdir(), "teams-artifacts-root-chain-"));
+  try {
+    const actualParent = join(parent, "actual");
+    const actualRoot = join(actualParent, "store");
+    await makeAuthority(actualRoot);
+    const linkedParent = join(parent, "linked");
+    await realFs.symlink(actualParent, linkedParent);
+    const store = createFileArtifactStore({ root: join(linkedParent, "store") });
+    await assert.rejects(
+      () => store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult()),
+      /artifact_directory_root_component:/,
+    );
+    await assert.rejects(
+      () => realFs.lstat(join(actualRoot, PROJECT_ID, RUN_ID, "artifacts", MEMBER_ID)),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await realFs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+// Break caught: a restrictive creation mode prevents safe descriptor opening before fchmod.
+test("repairs restrictive member mkdir modes under the pinned parent without changing umask", async () => {
+  const restrictiveFs = {
+    ...realFs,
+    async mkdir(path, options) {
+      await realFs.mkdir(path, options);
+      if (String(path).endsWith(`/${MEMBER_ID}`)) await realFs.chmod(path, 0o000);
+    },
+  };
+  await withFixture(async ({ artifacts, store }) => {
+    const ref = await store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult());
+    assert.equal((await realFs.stat(join(artifacts, MEMBER_ID))).mode & 0o7777, 0o700);
+    assert.equal((await store.readVerified(PROJECT_ID, RUN_ID, ref)).text, "evidence\n");
+  }, { fs: restrictiveFs });
+});
+
+// Break caught: a single short descriptor read or write silently truncates durable bytes.
+test("completes short descriptor read and write loops", async () => {
+  let shortWrites = 0;
+  let shortReads = 0;
+  const shortFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (!/(?:output\.md|result\.json)$/.test(String(path))) return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "write") {
+            return async (buffer, offset, length, position) => {
+              shortWrites += 1;
+              return target.write(buffer, offset, Math.min(length, 2), position);
+            };
+          }
+          if (property === "read") {
+            return async (buffer, offset, length, position) => {
+              shortReads += 1;
+              return target.read(buffer, offset, Math.min(length, 3), position);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  await withFixture(async ({ store }) => {
+    const ref = await store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult());
+    assert.deepEqual(await store.readVerified(PROJECT_ID, RUN_ID, ref), {
+      text: "evidence\n",
+      result: memberResult(),
+    });
+    assert.ok(shortWrites > 2);
+    assert.ok(shortReads > 2);
+  }, { fs: shortFs });
+});
+
+// Break caught: concurrent exclusive writes both claim the same member or replace the winner.
+test("allows exactly one concurrent writer for a member", async () => {
+  await withFixture(async ({ store }) => {
+    const settled = await Promise.allSettled([
+      store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult()),
+      store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, memberResult()),
+    ]);
+    assert.deepEqual(settled.map(({ status }) => status).sort(), ["fulfilled", "rejected"]);
+    const rejected = settled.find(({ status }) => status === "rejected");
+    assert.match(String(rejected.reason), /artifact_exists:/);
+  });
+});
+
+// Break caught: validation probes invoke untrusted result/reference getters or proxy traps.
+test("rejects proxy and accessor result/reference values without invoking them", async () => {
+  await withFixture(async ({ artifacts, store }) => {
+    let resultTraps = 0;
+    const proxyResult = new Proxy(memberResult(), {
+      get() { resultTraps += 1; throw new Error("result get"); },
+      ownKeys() { resultTraps += 1; throw new Error("result ownKeys"); },
+      getOwnPropertyDescriptor() { resultTraps += 1; throw new Error("result descriptor"); },
+    });
+    await assert.rejects(
+      () => store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, proxyResult),
+      /artifact_result:/,
+    );
+    assert.equal(resultTraps, 0);
+
+    let getterCalls = 0;
+    const accessorResult = memberResult();
+    Object.defineProperty(accessorResult, "text", {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error("result text getter"); },
+    });
+    await assert.rejects(
+      () => store.writeMember(PROJECT_ID, RUN_ID, MEMBER_ID, accessorResult),
+      /artifact_result:/,
+    );
+    assert.equal(getterCalls, 0);
+    await assert.rejects(() => realFs.lstat(join(artifacts, MEMBER_ID)), { code: "ENOENT" });
+  });
+
+  await writtenFixture(async ({ store, ref }) => {
+    let refTraps = 0;
+    const proxyRef = new Proxy(ref, {
+      get() { refTraps += 1; throw new Error("ref get"); },
+      ownKeys() { refTraps += 1; throw new Error("ref ownKeys"); },
+      getOwnPropertyDescriptor() { refTraps += 1; throw new Error("ref descriptor"); },
+    });
+    await assert.rejects(() => store.readVerified(PROJECT_ID, RUN_ID, proxyRef), /artifact_ref:/);
+    assert.equal(refTraps, 0);
+
+    let getterCalls = 0;
+    const accessorRef = { ...ref };
+    Object.defineProperty(accessorRef, "outputPath", {
+      enumerable: true,
+      get() { getterCalls += 1; throw new Error("ref outputPath getter"); },
+    });
+    await assert.rejects(() => store.readVerified(PROJECT_ID, RUN_ID, accessorRef), /artifact_ref:/);
+    assert.equal(getterCalls, 0);
+  });
+});

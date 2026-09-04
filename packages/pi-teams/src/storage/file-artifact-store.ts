@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
-import { parse, resolve } from "node:path";
+import { parse, resolve, sep } from "node:path";
 import { types as nodeUtilTypes } from "node:util";
 
 import { canonicalJson, canonicalJsonSnapshotBounded } from "../core/compiler.ts";
@@ -18,7 +18,23 @@ type FileSystem = typeof nodeFs;
 type FileHandle = Awaited<ReturnType<FileSystem["open"]>>;
 type FileStat = Awaited<ReturnType<FileHandle["stat"]>>;
 
-type OpenDirectory = { handle: FileHandle; descriptor: string; identity: FileStat };
+type OpenDirectory = {
+  handle: FileHandle;
+  descriptor: string;
+  identity: FileStat;
+  linkPath: string;
+  requireExactMode: boolean;
+};
+
+type OpenArtifactFile = {
+  handle: FileHandle;
+  path: string;
+  label: "output" | "result";
+  expectedBytes: number;
+  expectedDigest: string;
+  maximum: number;
+  identity: FileStat;
+};
 
 type CapturedResult = {
   result: MemberResult;
@@ -32,7 +48,7 @@ const DIRECTORY_FLAGS = constants.O_RDONLY |
   (constants.O_DIRECTORY ?? 0) |
   (constants.O_NOFOLLOW ?? 0);
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
-const EXCLUSIVE_WRITE_FLAGS = constants.O_WRONLY |
+const EXCLUSIVE_WRITE_FLAGS = constants.O_RDWR |
   constants.O_CREAT |
   constants.O_EXCL |
   (constants.O_NOFOLLOW ?? 0);
@@ -321,6 +337,7 @@ async function openDirectory(
   path: string,
   label: string,
   requireExactMode = true,
+  expectedIdentity?: FileStat,
 ): Promise<OpenDirectory> {
   let before: FileStat;
   try {
@@ -328,8 +345,12 @@ async function openDirectory(
   } catch (error) {
     throw artifactError(`artifact_directory_${label}`, `cannot inspect directory: ${String(error)}`);
   }
-  if (before.isSymbolicLink() || !before.isDirectory()) {
-    throw artifactError(`artifact_directory_${label}`, "path is not a real directory");
+  if (
+    before.isSymbolicLink() ||
+    !before.isDirectory() ||
+    (expectedIdentity !== undefined && !sameIdentity(before, expectedIdentity))
+  ) {
+    throw artifactError(`artifact_directory_${label}`, "path is not the expected real directory");
   }
 
   let handle: FileHandle;
@@ -350,6 +371,8 @@ async function openDirectory(
       handle,
       descriptor: await descriptorPath(fs, handle, after),
       identity: after,
+      linkPath: path,
+      requireExactMode,
     };
   } catch (error) {
     await handle.close();
@@ -359,13 +382,12 @@ async function openDirectory(
 
 async function verifyDirectoryLinked(
   fs: FileSystem,
-  path: string,
   directory: OpenDirectory,
   label: string,
 ): Promise<void> {
   let linked: FileStat;
   try {
-    linked = await fs.lstat(path);
+    linked = await fs.lstat(directory.linkPath);
   } catch (error) {
     throw artifactError(`artifact_directory_${label}`, `directory path changed: ${String(error)}`);
   }
@@ -376,13 +398,58 @@ async function verifyDirectoryLinked(
     !opened.isDirectory() ||
     !sameIdentity(directory.identity, opened) ||
     !sameIdentity(opened, linked) ||
-    (opened.mode & 0o7777) !== DIRECTORY_MODE ||
-    (linked.mode & 0o7777) !== DIRECTORY_MODE
+    (directory.requireExactMode && (
+      (opened.mode & 0o7777) !== DIRECTORY_MODE ||
+      (linked.mode & 0o7777) !== DIRECTORY_MODE
+    ))
   ) {
     throw artifactError(
       `artifact_directory_${label}`,
       "directory identity or exact mode changed during artifact access",
     );
+  }
+}
+
+async function openConfiguredRoot(
+  fs: FileSystem,
+  configuredRoot: string,
+): Promise<{ root: OpenDirectory; chain: OpenDirectory[] }> {
+  const rootPath = parse(configuredRoot).root;
+  const components = configuredRoot.slice(rootPath.length).split(sep).filter(Boolean);
+  const chain: OpenDirectory[] = [];
+  try {
+    let current = await openDirectory(fs, rootPath, "root_anchor", false);
+    chain.push(current);
+    for (let index = 0; index < components.length; index += 1) {
+      const component = components[index]!;
+      if (component === "." || component === ".." || component.includes("/") || component.includes("\\")) {
+        throw artifactError("artifact_directory_root_component", "configured root has an invalid component");
+      }
+      current = await openDirectory(
+        fs,
+        `${current.descriptor}/${component}`,
+        "root_component",
+        index === components.length - 1,
+      );
+      chain.push(current);
+    }
+    return { root: current, chain };
+  } catch (error) {
+    await closeAll(chain.map(({ handle }) => handle));
+    throw error;
+  }
+}
+
+async function verifyDirectoryChain(
+  fs: FileSystem,
+  rootChain: OpenDirectory[],
+  descendants: Array<{ directory: OpenDirectory; label: string }>,
+): Promise<void> {
+  for (const directory of rootChain) {
+    await verifyDirectoryLinked(fs, directory, directory === rootChain[0] ? "root_anchor" : "root_component");
+  }
+  for (const { directory, label } of descendants) {
+    await verifyDirectoryLinked(fs, directory, label);
   }
 }
 
@@ -400,14 +467,39 @@ async function createMemberDirectory(
     }
     throw error;
   }
+  let created: FileStat;
+  try {
+    created = await fs.lstat(path);
+    if (created.isSymbolicLink() || !created.isDirectory()) {
+      throw artifactError("artifact_directory_member", "new member path is not a real directory");
+    }
+    await fs.chmod(path, DIRECTORY_MODE);
+    const tightened = await fs.lstat(path);
+    if (
+      tightened.isSymbolicLink() ||
+      !tightened.isDirectory() ||
+      !sameIdentity(created, tightened) ||
+      (tightened.mode & 0o7777) !== DIRECTORY_MODE
+    ) {
+      throw artifactError("artifact_directory_member", "new member directory changed while tightening mode");
+    }
+    created = tightened;
+  } catch (error) {
+    throw artifactError("artifact_directory_member", `cannot tighten new member directory: ${String(error)}`);
+  }
+
   let member: OpenDirectory;
   try {
-    member = await openDirectory(fs, path, "member", false);
+    member = await openDirectory(fs, path, "member", true, created);
   } catch (error) {
     throw artifactError("artifact_directory_member", `cannot verify new member directory: ${String(error)}`);
   }
   try {
     await member.handle.chmod(DIRECTORY_MODE);
+    const verified = await member.handle.stat();
+    if (!sameIdentity(created, verified) || (verified.mode & 0o7777) !== DIRECTORY_MODE) {
+      throw artifactError("artifact_directory_member", "member descriptor identity or mode changed");
+    }
     await member.handle.sync();
     await artifacts.handle.sync();
     return member;
@@ -432,18 +524,60 @@ async function writeAll(handle: FileHandle, bytes: Uint8Array): Promise<void> {
   }
 }
 
-async function createDurableBytes(
+async function readExact(
+  handle: FileHandle,
+  size: number,
+  label: "output" | "result",
+): Promise<Buffer> {
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+    if (!Number.isInteger(bytesRead) || bytesRead <= 0 || bytesRead > bytes.byteLength - offset) {
+      throw artifactError(`artifact_file_${label}`, "file changed or returned an invalid read count");
+    }
+    offset += bytesRead;
+  }
+  return bytes;
+}
+
+async function createDurableFile(
   fs: FileSystem,
   path: string,
+  label: "output" | "result",
   bytes: Buffer,
-): Promise<void> {
+  maximum: number,
+): Promise<OpenArtifactFile> {
   const handle = await fs.open(path, EXCLUSIVE_WRITE_FLAGS, FILE_MODE);
   try {
     await handle.chmod(FILE_MODE);
     await writeAll(handle, bytes);
     await handle.sync();
-  } finally {
+    const identity = await handle.stat();
+    const linked = await fs.lstat(path);
+    if (
+      !identity.isFile() ||
+      linked.isSymbolicLink() ||
+      !linked.isFile() ||
+      !sameObservedFile(identity, linked) ||
+      identity.size !== bytes.byteLength ||
+      identity.size > maximum ||
+      (identity.mode & 0o7777) !== FILE_MODE
+    ) {
+      throw artifactError(`artifact_file_${label}`, "new file identity, size, or exact mode is invalid");
+    }
+    return {
+      handle,
+      path,
+      label,
+      expectedBytes: bytes.byteLength,
+      expectedDigest: digest(bytes),
+      maximum,
+      identity,
+    };
+  } catch (error) {
     await handle.close();
+    throw error;
   }
 }
 
@@ -459,14 +593,14 @@ function verifyDigest(bytes: Uint8Array, expectedHex: string, label: string): vo
   }
 }
 
-async function readBoundedFile(
+async function openBoundedFile(
   fs: FileSystem,
   path: string,
   label: "output" | "result",
   expectedBytes: number,
   expectedDigest: string,
   maximum: number,
-): Promise<Buffer> {
+): Promise<{ file: OpenArtifactFile; bytes: Buffer }> {
   let before: FileStat;
   try {
     before = await fs.lstat(path);
@@ -501,36 +635,66 @@ async function readBoundedFile(
       throw artifactError("artifact_size", `${label} file size does not match its reference`);
     }
 
-    const bytes = Buffer.alloc(opened.size);
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
-      if (!Number.isInteger(bytesRead) || bytesRead <= 0 || bytesRead > bytes.byteLength - offset) {
-        throw artifactError(`artifact_file_${label}`, "file changed or returned an invalid read count");
-      }
-      offset += bytesRead;
-    }
-    const after = await handle.stat();
-    let finalPath: FileStat;
-    try {
-      finalPath = await fs.lstat(path);
-    } catch (error) {
-      throw artifactError(`artifact_file_${label}`, `file path changed: ${String(error)}`);
-    }
+    const bytes = await readExact(handle, opened.size, label);
+    const identity = await handle.stat();
+    const linked = await fs.lstat(path);
     if (
-      finalPath.isSymbolicLink() ||
-      !finalPath.isFile() ||
-      !sameObservedFile(opened, after) ||
-      !sameObservedFile(opened, finalPath) ||
-      (after.mode & 0o7777) !== FILE_MODE ||
-      (finalPath.mode & 0o7777) !== FILE_MODE
+      linked.isSymbolicLink() ||
+      !linked.isFile() ||
+      !sameObservedFile(opened, identity) ||
+      !sameObservedFile(identity, linked)
     ) {
       throw artifactError(`artifact_file_${label}`, "file identity or content changed during read");
     }
     verifyDigest(bytes, expectedDigest, label);
-    return bytes;
-  } finally {
+    return {
+      file: { handle, path, label, expectedBytes, expectedDigest, maximum, identity },
+      bytes,
+    };
+  } catch (error) {
     await handle.close();
+    throw error;
+  }
+}
+
+async function verifyOpenArtifactContents(file: OpenArtifactFile): Promise<void> {
+  const before = await file.handle.stat();
+  if (
+    !before.isFile() ||
+    !sameObservedFile(file.identity, before) ||
+    !Number.isSafeInteger(before.size) ||
+    before.size < 0 ||
+    before.size > file.maximum ||
+    before.size !== file.expectedBytes ||
+    (before.mode & 0o7777) !== FILE_MODE
+  ) {
+    throw artifactError(`artifact_file_${file.label}`, "open file identity, size, or mode changed");
+  }
+  const bytes = await readExact(file.handle, before.size, file.label);
+  const after = await file.handle.stat();
+  if (!sameObservedFile(before, after)) {
+    throw artifactError(`artifact_file_${file.label}`, "open file changed during final verification");
+  }
+  verifyDigest(bytes, file.expectedDigest, file.label);
+}
+
+async function verifyOpenArtifactPath(fs: FileSystem, file: OpenArtifactFile): Promise<void> {
+  let linked: FileStat;
+  try {
+    linked = await fs.lstat(file.path);
+  } catch (error) {
+    throw artifactError(`artifact_file_${file.label}`, `file path changed: ${String(error)}`);
+  }
+  const opened = await file.handle.stat();
+  if (
+    linked.isSymbolicLink() ||
+    !linked.isFile() ||
+    !sameObservedFile(file.identity, opened) ||
+    !sameObservedFile(opened, linked) ||
+    opened.size !== file.expectedBytes ||
+    (opened.mode & 0o7777) !== FILE_MODE
+  ) {
+    throw artifactError(`artifact_file_${file.label}`, "file pathname identity, size, or mode changed");
   }
 }
 
@@ -610,48 +774,66 @@ export function createFileArtifactStore(input: FileArtifactStoreOptions): Artifa
     ): Promise<ArtifactRef> {
       validateIdentifiers(projectId, runId, memberId);
       const captured = captureResult(value, runId, memberId);
-      let rootHandle: FileHandle | undefined;
-      let projectHandle: FileHandle | undefined;
-      let runHandle: FileHandle | undefined;
-      let artifactsHandle: FileHandle | undefined;
-      let memberHandle: FileHandle | undefined;
+      let rootChain: OpenDirectory[] = [];
+      let project: OpenDirectory | undefined;
+      let run: OpenDirectory | undefined;
+      let artifacts: OpenDirectory | undefined;
+      let member: OpenDirectory | undefined;
+      let outputFile: OpenArtifactFile | undefined;
+      let resultFile: OpenArtifactFile | undefined;
       try {
-        const root = await openDirectory(fs, configuredRoot, "root");
-        rootHandle = root.handle;
-        const project = await openDirectory(fs, `${root.descriptor}/${projectId}`, "project");
-        projectHandle = project.handle;
-        const run = await openDirectory(fs, `${project.descriptor}/${runId}`, "run");
-        runHandle = run.handle;
-        const artifacts = await openDirectory(fs, `${run.descriptor}/artifacts`, "artifacts");
-        artifactsHandle = artifacts.handle;
-        const member = await createMemberDirectory(fs, artifacts, memberId);
-        memberHandle = member.handle;
+        const rootAuthority = await openConfiguredRoot(fs, configuredRoot);
+        rootChain = rootAuthority.chain;
+        const root = rootAuthority.root;
+        project = await openDirectory(fs, `${root.descriptor}/${projectId}`, "project");
+        run = await openDirectory(fs, `${project.descriptor}/${runId}`, "run");
+        artifacts = await openDirectory(fs, `${run.descriptor}/artifacts`, "artifacts");
+        member = await createMemberDirectory(fs, artifacts, memberId);
 
-        await createDurableBytes(fs, `${member.descriptor}/output.md`, captured.output);
-        await createDurableBytes(fs, `${member.descriptor}/result.json`, captured.resultBytes);
+        outputFile = await createDurableFile(
+          fs,
+          `${member.descriptor}/output.md`,
+          "output",
+          captured.output,
+          TEAM_LIMITS.outputBytes,
+        );
+        resultFile = await createDurableFile(
+          fs,
+          `${member.descriptor}/result.json`,
+          "result",
+          captured.resultBytes,
+          TEAM_LIMITS.resultBytes,
+        );
         await member.handle.sync();
-        await verifyDirectoryLinked(fs, configuredRoot, root, "root");
-        await verifyDirectoryLinked(fs, `${root.descriptor}/${projectId}`, project, "project");
-        await verifyDirectoryLinked(fs, `${project.descriptor}/${runId}`, run, "run");
-        await verifyDirectoryLinked(fs, `${run.descriptor}/artifacts`, artifacts, "artifacts");
-        await verifyDirectoryLinked(fs, `${artifacts.descriptor}/${memberId}`, member, "member");
+        await verifyOpenArtifactContents(outputFile);
+        await verifyOpenArtifactContents(resultFile);
+        await verifyDirectoryChain(fs, rootChain, [
+          { directory: project, label: "project" },
+          { directory: run, label: "run" },
+          { directory: artifacts, label: "artifacts" },
+          { directory: member, label: "member" },
+        ]);
+        await verifyOpenArtifactPath(fs, outputFile);
+        await verifyOpenArtifactPath(fs, resultFile);
 
         return {
           memberId,
           outputPath: `artifacts/${memberId}/output.md`,
           resultPath: `artifacts/${memberId}/result.json`,
-          outputBytes: captured.output.byteLength,
-          outputSha256: digest(captured.output),
-          resultBytes: captured.resultBytes.byteLength,
-          resultSha256: digest(captured.resultBytes),
+          outputBytes: outputFile.expectedBytes,
+          outputSha256: outputFile.expectedDigest,
+          resultBytes: resultFile.expectedBytes,
+          resultSha256: resultFile.expectedDigest,
         };
       } finally {
         await closeAll([
-          memberHandle,
-          artifactsHandle,
-          runHandle,
-          projectHandle,
-          rootHandle,
+          outputFile?.handle,
+          resultFile?.handle,
+          member?.handle,
+          artifacts?.handle,
+          run?.handle,
+          project?.handle,
+          ...rootChain.map(({ handle }) => handle).reverse(),
         ]);
       }
     },
@@ -664,24 +846,23 @@ export function createFileArtifactStore(input: FileArtifactStoreOptions): Artifa
       validateIdentifiers(projectId, runId);
       const ref = captureArtifactRef(value);
       validateIdentifiers(projectId, runId, ref.memberId);
-      let rootHandle: FileHandle | undefined;
-      let projectHandle: FileHandle | undefined;
-      let runHandle: FileHandle | undefined;
-      let artifactsHandle: FileHandle | undefined;
-      let memberHandle: FileHandle | undefined;
+      let rootChain: OpenDirectory[] = [];
+      let project: OpenDirectory | undefined;
+      let run: OpenDirectory | undefined;
+      let artifacts: OpenDirectory | undefined;
+      let member: OpenDirectory | undefined;
+      let outputFile: OpenArtifactFile | undefined;
+      let resultFile: OpenArtifactFile | undefined;
       try {
-        const root = await openDirectory(fs, configuredRoot, "root");
-        rootHandle = root.handle;
-        const project = await openDirectory(fs, `${root.descriptor}/${projectId}`, "project");
-        projectHandle = project.handle;
-        const run = await openDirectory(fs, `${project.descriptor}/${runId}`, "run");
-        runHandle = run.handle;
-        const artifacts = await openDirectory(fs, `${run.descriptor}/artifacts`, "artifacts");
-        artifactsHandle = artifacts.handle;
-        const member = await openDirectory(fs, `${artifacts.descriptor}/${ref.memberId}`, "member");
-        memberHandle = member.handle;
+        const rootAuthority = await openConfiguredRoot(fs, configuredRoot);
+        rootChain = rootAuthority.chain;
+        const root = rootAuthority.root;
+        project = await openDirectory(fs, `${root.descriptor}/${projectId}`, "project");
+        run = await openDirectory(fs, `${project.descriptor}/${runId}`, "run");
+        artifacts = await openDirectory(fs, `${run.descriptor}/artifacts`, "artifacts");
+        member = await openDirectory(fs, `${artifacts.descriptor}/${ref.memberId}`, "member");
 
-        const output = await readBoundedFile(
+        const openedOutput = await openBoundedFile(
           fs,
           `${member.descriptor}/output.md`,
           "output",
@@ -689,7 +870,8 @@ export function createFileArtifactStore(input: FileArtifactStoreOptions): Artifa
           ref.outputSha256,
           TEAM_LIMITS.outputBytes,
         );
-        const persistedResult = await readBoundedFile(
+        outputFile = openedOutput.file;
+        const openedResult = await openBoundedFile(
           fs,
           `${member.descriptor}/result.json`,
           "result",
@@ -697,25 +879,33 @@ export function createFileArtifactStore(input: FileArtifactStoreOptions): Artifa
           ref.resultSha256,
           TEAM_LIMITS.resultBytes,
         );
-        const text = fatalDecode(output, "member output");
+        resultFile = openedResult.file;
+        const text = fatalDecode(openedOutput.bytes, "member output");
         const envelope = parseResultEnvelope(
-          fatalDecode(persistedResult, "member result"),
+          fatalDecode(openedResult.bytes, "member result"),
           runId,
           ref.memberId,
         );
-        await verifyDirectoryLinked(fs, configuredRoot, root, "root");
-        await verifyDirectoryLinked(fs, `${root.descriptor}/${projectId}`, project, "project");
-        await verifyDirectoryLinked(fs, `${project.descriptor}/${runId}`, run, "run");
-        await verifyDirectoryLinked(fs, `${run.descriptor}/artifacts`, artifacts, "artifacts");
-        await verifyDirectoryLinked(fs, `${artifacts.descriptor}/${ref.memberId}`, member, "member");
+        await verifyOpenArtifactContents(outputFile);
+        await verifyOpenArtifactContents(resultFile);
+        await verifyDirectoryChain(fs, rootChain, [
+          { directory: project, label: "project" },
+          { directory: run, label: "run" },
+          { directory: artifacts, label: "artifacts" },
+          { directory: member, label: "member" },
+        ]);
+        await verifyOpenArtifactPath(fs, outputFile);
+        await verifyOpenArtifactPath(fs, resultFile);
         return { text, result: { ...envelope, text } };
       } finally {
         await closeAll([
-          memberHandle,
-          artifactsHandle,
-          runHandle,
-          projectHandle,
-          rootHandle,
+          outputFile?.handle,
+          resultFile?.handle,
+          member?.handle,
+          artifacts?.handle,
+          run?.handle,
+          project?.handle,
+          ...rootChain.map(({ handle }) => handle).reverse(),
         ]);
       }
     },
