@@ -41,6 +41,15 @@ function model(overrides = {}) {
 }
 
 function registryFor(activeModel, overrides = {}) {
+  const calls = {
+    getProviderAuth: 0,
+    getApiKeyAndHeaders: 0,
+    getProviderAuthStatus: 0,
+    find: 0,
+    getProvider: 0,
+    getRegisteredNativeProvider: 0,
+    getRegisteredProviderConfig: 0,
+  };
   const provider = overrides.provider ?? {
     id: activeModel?.provider ?? "provider",
     name: "Exact parent provider",
@@ -48,7 +57,9 @@ function registryFor(activeModel, overrides = {}) {
     streamSimple() { throw new Error("not called by adapter tests"); },
   };
   return {
+    calls,
     async getProviderAuth() {
+      calls.getProviderAuth += 1;
       return overrides.auth === undefined ? {
         auth: {
           apiKey: "parent-runtime-key",
@@ -60,15 +71,29 @@ function registryFor(activeModel, overrides = {}) {
       } : overrides.auth;
     },
     async getApiKeyAndHeaders() {
+      calls.getApiKeyAndHeaders += 1;
       return overrides.compatAuth ?? { ok: false, error: "not configured" };
     },
+    getProviderAuthStatus(providerId) {
+      calls.getProviderAuthStatus += 1;
+      return providerId === provider.id ? (overrides.authStatus ?? { configured: true, source: "runtime" }) : { configured: false };
+    },
+    find(providerId, modelId) {
+      calls.find += 1;
+      return providerId === activeModel?.provider && modelId === activeModel?.id
+        ? (overrides.catalogModel ?? activeModel)
+        : undefined;
+    },
     getProvider(providerId) {
+      calls.getProvider += 1;
       return providerId === provider.id ? provider : undefined;
     },
     getRegisteredNativeProvider(providerId) {
+      calls.getRegisteredNativeProvider += 1;
       return providerId === provider.id ? (overrides.nativeProvider ?? provider) : undefined;
     },
     getRegisteredProviderConfig(providerId) {
+      calls.getRegisteredProviderConfig += 1;
       return providerId === provider.id ? (overrides.providerConfig ?? {
         name: "Parent registered provider",
         baseUrl: "https://registered-parent.invalid/v1",
@@ -161,12 +186,22 @@ function sdkFixture(options = {}) {
   }
   class ModelRuntime {
     static async create(input) {
+      let registered;
       const runtime = {
         registerNativeProvider(provider) {
+          registered = provider;
           calls.nativeRegistrations.push(provider);
         },
         registerProvider(providerId, config) {
           calls.providerRegistrations.push({ providerId, config });
+        },
+        getModel(providerId, modelId) {
+          return registered?.id === providerId
+            ? registered.getModels().find((entry) => entry.id === modelId)
+            : undefined;
+        },
+        async getAuth() {
+          return await registered.auth.apiKey.resolve();
         },
       };
       calls.runtimeCreates.push({ ...input, runtime });
@@ -306,6 +341,9 @@ test("stock timeout ceiling", async () => {
     { member: selectedMember, maxCostUsd: 2 / 3, timeoutMs: 300_000 }, ctx,
   );
   assert.equal(preserved.ok && preserved.timeoutMs, 300_000);
+  assert.equal(runtime.modelRegistry.calls.getProviderAuth, 0);
+  assert.equal(runtime.modelRegistry.calls.getApiKeyAndHeaders, 0);
+  assert.equal(sdkModelCalls, 1);
 
   const boundary = await createStockPiHost({ sdk, maxTimeoutMs: 300_000 }).preflightMember(
     { member: selectedMember, maxCostUsd: 2 / 3, timeoutMs: 300_000 }, ctx,
@@ -472,7 +510,7 @@ test("stock run uses an isolated read-only session and extracts bounded evidence
   assert.equal(create.model.maxTokens, admission.token.model.maxTokens);
   assert.deepEqual(create.scopedModels, [{ model: create.model }]);
   assert.equal(create.noTools, "all");
-  assert.deepEqual(create.tools, []);
+  assert.deepEqual(create.tools, READ_ONLY_TOOLS);
   assert.deepEqual(create.customTools.map((tool) => tool.name), READ_ONLY_TOOLS);
   assert.ok(!create.customTools.some((tool) => ["bash", "edit", "write"].includes(tool.name)));
   assert.equal(create.modelRuntime, calls.runtimeCreates[0].runtime);
@@ -603,7 +641,7 @@ test("stock child receives exact resolved parent runtime state without ambient f
     auth: {
       auth: {
         apiKey: "resolved-parent-only-key",
-        headers: { "x-parent-route": "runtime-only" },
+        headers: { "x-parent-route": "runtime-only", "x-suppress": null },
         baseUrl: "https://resolved-parent.invalid/v1",
       },
       env: { TENANT_ID: "parent-only" },
@@ -617,10 +655,20 @@ test("stock child receives exact resolved parent runtime state without ambient f
   sdk.ambientBaseUrl = "https://wrong-ambient.invalid";
   const host = createStockPiHost({ sdk });
   const admission = await admissionFor(host, ctx);
+  assert.equal(registry.calls.getProviderAuth, 0);
+  assert.equal(registry.calls.getApiKeyAndHeaders, 0);
+  assert.equal(registry.calls.getProvider, 0);
+  assert.equal(registry.calls.getRegisteredNativeProvider, 0);
+  assert.equal(registry.calls.getRegisteredProviderConfig, 0);
+  assert.ok(registry.calls.find > 0);
+  assert.ok(registry.calls.getProviderAuthStatus > 0);
+  assert.equal(calls.runtimeCreates.length, 0);
   const result = await host.runMember(admittedRun(admission, {
     member: member(),
   }), ctx, new AbortController().signal).result;
   assert.equal(result.ok, true, result.error);
+  assert.equal(registry.calls.getProviderAuth, 1);
+  assert.equal(registry.calls.getApiKeyAndHeaders, 0);
 
   assert.equal(calls.runtimeCreates.length, 1);
   const runtimeInput = calls.runtimeCreates[0];
@@ -642,16 +690,13 @@ test("stock child receives exact resolved parent runtime state without ambient f
   assert.deepEqual(await isolatedProvider.auth.apiKey.resolve(), {
     auth: {
       apiKey: "resolved-parent-only-key",
-      headers: { "x-parent-route": "runtime-only" },
+      headers: { "x-parent-route": "runtime-only", "x-suppress": null },
       baseUrl: "https://resolved-parent.invalid/v1",
     },
     env: { TENANT_ID: "parent-only" },
-    source: "resolved parent session auth",
+    source: "runtime-only",
   });
   assert.equal(calls.providerRegistrations.length, 0);
-  assert.equal(admission.token.parentRuntime.registeredConfig.name, "Runtime-only registered config");
-  assert.notEqual(admission.token.parentRuntime.nativeProvider, nativeProvider);
-  assert.equal(admission.token.parentRuntime.nativeProvider.streamSimple, nativeProvider.streamSimple);
   assert.notEqual(isolatedProvider.auth.apiKey, sdk.ambientAuth);
   assert.notEqual(admission.token.model.baseUrl, sdk.ambientBaseUrl);
   assert.equal(calls.create[0].modelRuntime, runtimeInput.runtime);
@@ -659,18 +704,25 @@ test("stock child receives exact resolved parent runtime state without ambient f
   const unsafeRegistry = registryFor(active, {
     provider: nativeProvider,
     auth: {
-      auth: { headers: { authorization: null } },
+      auth: { headers: { authorization: 42 } },
       env: {},
       source: "unrepresentable",
     },
   });
-  const blocked = await host.preflightMember({
+  const unsafeContext = context(active, { runtime: { model: active, modelRegistry: unsafeRegistry } });
+  const unsafeAdmission = await host.preflightMember({
     member: member(),
     maxCostUsd: 2 / 3,
     timeoutMs: 300_000,
-  }, context(active, { runtime: { model: active, modelRegistry: unsafeRegistry } }));
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.reason, /stock_auth/);
+  }, unsafeContext);
+  assert.equal(unsafeAdmission.ok, true, unsafeAdmission.reason);
+  assert.equal(unsafeRegistry.calls.getProviderAuth, 0);
+  const unsafeResult = await host.runMember(
+    admittedRun(unsafeAdmission), unsafeContext, new AbortController().signal,
+  ).result;
+  assert.equal(unsafeResult.ok, false);
+  assert.match(unsafeResult.error, /stock_auth/);
+  assert.equal(unsafeRegistry.calls.getProviderAuth, 1);
   assert.equal(calls.runtimeCreates.length, 1);
 });
 
@@ -915,7 +967,7 @@ test("stock adapter constructs a working isolated runtime on pinned Pi 0.82 publ
           baseUrl: "https://pinned-parent.invalid/v1",
         },
         env: { PINNED_TENANT: "yes" },
-        source: "resolved parent session auth",
+        source: "pinned parent",
       });
     },
   });
@@ -925,4 +977,95 @@ test("stock adapter constructs a working isolated runtime on pinned Pi 0.82 publ
     admittedRun(admission), ctx, new AbortController().signal,
   ).result;
   assert.equal(result.ok, true, result.error);
+});
+
+test("stock preflight detects catalog state without resolving auth or creating runtime", async () => {
+  const active = model();
+  const registry = registryFor(active);
+  const ctx = context(active, { runtime: { model: active, modelRegistry: registry } });
+  const fixture = sdkFixture();
+  const host = createStockPiHost({ sdk: fixture.sdk });
+  const admission = await admissionFor(host, ctx);
+  assert.equal(admission.ok, true);
+  assert.ok(registry.calls.find > 0);
+  assert.ok(registry.calls.getProviderAuthStatus > 0);
+  assert.equal(registry.calls.getProviderAuth, 0);
+  assert.equal(registry.calls.getApiKeyAndHeaders, 0);
+  assert.equal(registry.calls.getProvider, 0);
+  assert.equal(registry.calls.getRegisteredNativeProvider, 0);
+  assert.equal(registry.calls.getRegisteredProviderConfig, 0);
+  assert.equal(fixture.calls.runtimeCreates.length, 0);
+
+  active.baseUrl = "https://refreshed-after-approval.invalid/v1";
+  const result = await host.runMember(
+    admittedRun(admission), ctx, new AbortController().signal,
+  ).result;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /stock_(model|config)/);
+  assert.equal(registry.calls.getProviderAuth, 0);
+  assert.equal(fixture.calls.runtimeCreates.length, 0);
+});
+
+test("real createAgentSession activates only confined custom read tools", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "stock-real-tools-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "evidence.txt"), "evidence\n");
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const credentials = {
+    async read(providerId) {
+      return providerId === "anthropic" ? { type: "api_key", key: "unused-test-key" } : undefined;
+    },
+    async list() { return [{ providerId: "anthropic", type: "api_key" }]; },
+    async modify(_providerId, update) { return await update({ type: "api_key", key: "unused-test-key" }); },
+    async delete() {},
+  };
+  const modelsStore = {
+    async read() { return undefined; },
+    async write() {},
+    async delete() {},
+  };
+  const modelRuntime = await pi.ModelRuntime.create({
+    credentials,
+    modelsPath: null,
+    modelsStore,
+    allowModelNetwork: false,
+  });
+  const selected = modelRuntime.getModels("anthropic")[0];
+  const settingsManager = pi.SettingsManager.inMemory({}, { projectTrusted: false });
+  const resourceLoader = new pi.DefaultResourceLoader({
+    cwd: root,
+    agentDir: join(root, "agent"),
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const customTools = createRepoReadOnlyTools({ cwd: root });
+  const { session } = await pi.createAgentSession({
+    cwd: root,
+    model: selected,
+    modelRuntime,
+    scopedModels: [{ model: selected }],
+    resourceLoader,
+    sessionManager: pi.SessionManager.inMemory(root),
+    settingsManager,
+    noTools: "all",
+    tools: READ_ONLY_TOOLS,
+    customTools,
+  });
+  try {
+    assert.deepEqual(session.getActiveToolNames(), READ_ONLY_TOOLS);
+    assert.deepEqual(session.getAllTools().map((tool) => tool.name).sort(), [...READ_ONLY_TOOLS].sort());
+    for (const tool of customTools) {
+      assert.equal(session.getToolDefinition(tool.name), tool);
+    }
+    assert.equal(session.getToolDefinition("bash"), undefined);
+    assert.equal(session.getToolDefinition("edit"), undefined);
+    assert.equal(session.getToolDefinition("write"), undefined);
+  } finally {
+    session.dispose();
+  }
 });

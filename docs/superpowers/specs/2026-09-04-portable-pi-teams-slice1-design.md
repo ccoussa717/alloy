@@ -68,8 +68,8 @@ The common extension layer uses only APIs present in both target runtimes:
 - `ExtensionContext.cwd`, `model`, `modelRegistry`, `isProjectTrusted()`,
   `signal`, `hasUI`, and `ui` text dialogs/notifications;
 - `createAgentSession`, `DefaultResourceLoader`, `SettingsManager`,
-  `SessionManager.inMemory`, and the read-only built-in tools used by the stock
-  adapter.
+  `SessionManager.inMemory`, and `ModelRuntime`. The stock adapter supplies its
+  own repository-confined read-only custom tools rather than Pi built-ins.
 
 It does not use APIs introduced after Pi `0.82.1`. Compatibility is established
 by a root-package smoke test against Alloy's pinned `0.82.1` dependency and an
@@ -482,6 +482,7 @@ export interface StockPiHostOptions {
     | "DefaultResourceLoader"
     | "SettingsManager"
     | "SessionManager"
+    | "ModelRuntime"
   >;
   agentDir?: string;
   maxTimeoutMs?: number;
@@ -493,7 +494,9 @@ be a positive integer no greater than `TEAM_LIMITS.timeoutMs` (300,000 ms), and
 it is validated before any SDK access, model inspection, or provider use. Stock
 preflight returns `min(MemberPreflightInput.timeoutMs, maxTimeoutMs)`; when the
 option is absent it preserves the requested timeout. The option can only narrow
-and never widens a shorter request.
+and never widens a shorter request. Preflight uses only the synchronous active
+model, catalog, and auth-status snapshots; it performs no auth resolution,
+provider request, runtime construction, network access, or mutation.
 
 The policy helper treats a blocked host admission as blocked. For an admitted
 result it verifies that every effective capability/tool is requested by the
@@ -849,17 +852,25 @@ manifest cannot select a provider or model. The optional operator
 timeout is `min(requested timeoutMs, maxTimeoutMs)`; without the option it is the
 requested timeout.
 
-Each member uses `createAgentSession` with the active model, an in-memory
-`SessionManager`, an explicit four-tool allowlist narrowed by the member, and a
-`DefaultResourceLoader` with extensions, skills, prompts, themes, and project
-context-file discovery disabled. The objective, member instructions, and
-verified dependency records are serialized into one bounded data prompt. The
-adapter requires finite nonnegative model pricing, reserves worst-case input
-cost using one token per UTF-8 byte, and clones the model with an output-token
-cap whose worst-case listed price fits the member allocation; a model whose
-allocation cannot fund one output token is blocked. Zero-cost local models keep
-their host maximum. Provider credentials remain in Pi's normal model runtime
-and are not copied to files, argv, or team artifacts. The adapter subscribes for result/usage evidence, returns a synchronous
+Each member uses `createAgentSession` with the active admitted model, an
+in-memory `SessionManager`, and a `DefaultResourceLoader` with extensions,
+skills, prompts, themes, and project context-file discovery disabled. After
+human approval, `runMember` resolves the parent route's complete public auth
+shape exactly once, rejects model/catalog/config drift, and constructs an
+isolated `ModelRuntime` with explicit in-memory credential/model stores and
+network refresh disabled. No ambient auth, model, headers, or base URL may
+replace the admitted route. The child receives `noTools: "all"`, the exact
+custom-tool names in `tools`, and only repository-confined custom definitions
+for `read`, `grep`, `find`, and `ls`; stock built-ins are not enabled.
+
+The objective, member instructions, and verified dependency records are
+serialized as untrusted data under an authoritative bounded operator envelope.
+The adapter requires finite nonnegative model pricing, reserves exact
+worst-case JSON-escaped input cost using one token per UTF-8 byte, and clones
+the model with an output-token cap whose worst-case listed price fits the member
+allocation; a model whose allocation cannot fund one output token is blocked.
+Zero-cost local models keep their host maximum. Resolved credentials remain
+in-memory and are not copied to files, argv, or team artifacts. The adapter subscribes for result/usage evidence, returns a synchronous
 `MemberExecution` whose opaque handle tracks the session/controller lifecycle,
 aborts the session on signal, effective admission timeout, or observed budget
 breach, implements `containMember` by aborting and disposing only that tracked

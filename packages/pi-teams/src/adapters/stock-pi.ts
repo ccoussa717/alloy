@@ -44,9 +44,10 @@ interface StockPiModel {
 
 interface ParentAuthState {
   apiKey?: string;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | null>;
   baseUrl?: string;
   env?: Record<string, string>;
+  source?: string;
 }
 
 interface ParentRuntimeState {
@@ -73,7 +74,7 @@ interface StockPiSdk {
     sessionManager: unknown;
     settingsManager: unknown;
     noTools: "all";
-    tools: [];
+    tools: TeamToolName[];
     customTools: unknown[];
   }): Promise<{ session: StockPiSession }>;
   DefaultResourceLoader: new (options: {
@@ -97,6 +98,8 @@ interface StockPiSdk {
     }): Promise<{
       registerNativeProvider(provider: unknown): void;
       registerProvider(providerId: string, config: Record<string, unknown>): void;
+      getModel(providerId: string, modelId: string): StockPiModel | undefined;
+      getAuth(model: StockPiModel): Promise<unknown>;
     }>;
   };
   SessionManager: { inMemory(cwd?: string): unknown };
@@ -119,8 +122,8 @@ type AdmissionToken = Readonly<{
   route: string;
   modelRoute: string;
   model: StockPiModel;
+  sourceModelFingerprint: string;
   maxInputTokens: number;
-  parentRuntime: ParentRuntimeState;
   capabilities: readonly string[];
   tools: readonly TeamToolName[];
   maxCostUsd: number;
@@ -212,102 +215,192 @@ function activeModel(context: TeamRunContext): StockPiModel | undefined {
   return isPlainRecord(selected) ? selected as unknown as StockPiModel : undefined;
 }
 
-function stringMap(value: unknown): Record<string, string> | undefined {
+function capturedMap(
+  value: unknown,
+  allowNull: boolean,
+): Record<string, string | null> | undefined {
   if (value === undefined) return undefined;
   if (!isPlainRecord(value)) throw new Error("stock_auth:resolved auth map is malformed");
-  const captured: Record<string, string> = {};
+  const captured: Record<string, string | null> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key.length === 0 || typeof item !== "string") {
+    if (key.length === 0 || (typeof item !== "string" && !(allowNull && item === null))) {
       throw new Error("stock_auth:resolved auth map cannot be safely represented");
     }
-    captured[key] = item;
+    captured[key] = item as string | null;
   }
   return captured;
 }
 
-async function captureParentRuntime(
+function modelFingerprint(model: StockPiModel): string {
+  return JSON.stringify({
+    id: model.id,
+    name: model.name,
+    api: model.api,
+    provider: model.provider,
+    baseUrl: model.baseUrl,
+    reasoning: model.reasoning,
+    thinkingLevelMap: model.thinkingLevelMap ?? null,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    headers: model.headers ?? null,
+    compat: model.compat ?? null,
+  });
+}
+
+function registryFrom(context: TeamRunContext): Record<string, unknown> | undefined {
+  if (!isPlainRecord(context.runtime)) return undefined;
+  const registry = context.runtime.modelRegistry;
+  return registry !== null && (typeof registry === "object" || typeof registry === "function")
+    ? registry as Record<string, unknown>
+    : undefined;
+}
+
+function catalogSnapshot(
   context: TeamRunContext,
   model: StockPiModel,
-): Promise<ParentRuntimeState | { reason: string }> {
-  if (!isPlainRecord(context.runtime)) {
-    return { reason: "stock_auth:Pi extension runtime is required" };
-  }
-  const registry = context.runtime.modelRegistry as Record<string, unknown> | undefined;
+): { fingerprint: string } | { reason: string } {
+  const registry = registryFrom(context);
   if (
     registry === undefined ||
-    (typeof registry !== "object" && typeof registry !== "function") ||
-    typeof registry.getProviderAuth !== "function" ||
-    typeof registry.getApiKeyAndHeaders !== "function" ||
+    typeof registry.find !== "function" ||
+    typeof registry.getProviderAuthStatus !== "function"
+  ) {
+    return { reason: "stock_model:parent registry lacks synchronous catalog/status APIs" };
+  }
+  try {
+    const find = registry.find as (providerId: string, modelId: string) => unknown;
+    const getStatus = registry.getProviderAuthStatus as (providerId: string) => unknown;
+    const catalogModel = find.call(registry, model.provider, model.id);
+    const status = getStatus.call(registry, model.provider);
+    const fingerprint = modelFingerprint(model);
+    if (!isPlainRecord(catalogModel) || modelFingerprint(catalogModel as unknown as StockPiModel) !== fingerprint) {
+      return { reason: "stock_model:active model does not match the synchronous catalog" };
+    }
+    if (!isPlainRecord(status) || status.configured !== true) {
+      return { reason: "stock_auth:active model auth is not configured in the synchronous snapshot" };
+    }
+    return { fingerprint };
+  } catch {
+    return { reason: "stock_model:parent catalog snapshot is invalid" };
+  }
+}
+
+function captureResolvedAuth(value: unknown): ParentAuthState {
+  if (!isPlainRecord(value)) {
+    throw new Error("stock_auth:resolved parent authentication is malformed");
+  }
+  if (value.ok === false) {
+    throw new Error("stock_auth:parent route authentication is unavailable");
+  }
+  const nested = value.auth;
+  const rawAuth = nested === undefined ? value : nested;
+  if (!isPlainRecord(rawAuth)) {
+    throw new Error("stock_auth:resolved parent authentication is malformed");
+  }
+  const apiKey = rawAuth.apiKey;
+  const baseUrl = rawAuth.baseUrl;
+  const source = value.source;
+  if (
+    (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length === 0)) ||
+    (baseUrl !== undefined && (typeof baseUrl !== "string" || baseUrl.length === 0)) ||
+    (source !== undefined && typeof source !== "string")
+  ) {
+    throw new Error("stock_auth:resolved parent authentication cannot be safely represented");
+  }
+  const env = capturedMap(value.env ?? rawAuth.env, false) as Record<string, string> | undefined;
+  return {
+    apiKey: apiKey as string | undefined,
+    baseUrl: baseUrl as string | undefined,
+    headers: capturedMap(rawAuth.headers, true),
+    env,
+    source: source as string | undefined,
+  };
+}
+
+async function captureParentRuntime(
+  context: TeamRunContext,
+  token: AdmissionToken,
+): Promise<ParentRuntimeState> {
+  const selected = activeModel(context);
+  const registry = registryFrom(context);
+  if (
+    selected === undefined || registry === undefined ||
+    modelFingerprint(selected) !== token.sourceModelFingerprint ||
+    typeof registry.find !== "function" ||
+    typeof registry.getProviderAuthStatus !== "function" ||
     typeof registry.getProvider !== "function" ||
     typeof registry.getRegisteredNativeProvider !== "function" ||
     typeof registry.getRegisteredProviderConfig !== "function"
   ) {
-    return { reason: "stock_auth:parent model registry lacks the required public APIs" };
+    throw new Error("stock_config:parent route changed after admission");
   }
-  try {
-    const getProviderAuth = registry.getProviderAuth as (providerId: string) => Promise<unknown>;
-    const getApiKeyAndHeaders = registry.getApiKeyAndHeaders as (model: StockPiModel) => Promise<unknown>;
-    const getProvider = registry.getProvider as (providerId: string) => unknown;
-    const getNative = registry.getRegisteredNativeProvider as (providerId: string) => unknown;
-    const getConfig = registry.getRegisteredProviderConfig as (providerId: string) => unknown;
-    const provider = getProvider.call(registry, model.provider);
-    if (provider === null || typeof provider !== "object") {
-      return { reason: "stock_auth:active parent provider is unavailable" };
-    }
+  const find = registry.find as (providerId: string, modelId: string) => unknown;
+  const getStatus = registry.getProviderAuthStatus as (providerId: string) => unknown;
+  const catalogModel = find.call(registry, selected.provider, selected.id);
+  const status = getStatus.call(registry, selected.provider);
+  if (
+    !isPlainRecord(catalogModel) ||
+    modelFingerprint(catalogModel as unknown as StockPiModel) !== token.sourceModelFingerprint ||
+    !isPlainRecord(status) || status.configured !== true
+  ) {
+    throw new Error("stock_config:parent catalog or auth status changed after admission");
+  }
 
-    const resolved = await getProviderAuth.call(registry, model.provider);
-    let rawAuth: unknown;
-    let rawEnv: unknown;
-    if (resolved === undefined) {
-      const compatible = await getApiKeyAndHeaders.call(registry, model);
-      if (!isPlainRecord(compatible) || compatible.ok !== true) {
-        return { reason: "stock_auth:parent route authentication is unavailable" };
-      }
-      rawAuth = { headers: compatible.headers };
-    } else {
-      if (!isPlainRecord(resolved) || !isPlainRecord(resolved.auth)) {
-        return { reason: "stock_auth:resolved parent authentication is malformed" };
-      }
-      rawAuth = resolved.auth;
-      rawEnv = resolved.env;
-    }
-    if (!isPlainRecord(rawAuth)) {
-      return { reason: "stock_auth:resolved parent authentication is malformed" };
-    }
-    const apiKey = rawAuth.apiKey;
-    const baseUrl = rawAuth.baseUrl;
-    if (
-      (apiKey !== undefined && (typeof apiKey !== "string" || apiKey.length === 0)) ||
-      (baseUrl !== undefined && (typeof baseUrl !== "string" || baseUrl.length === 0))
-    ) {
-      return { reason: "stock_auth:resolved parent authentication cannot be safely represented" };
-    }
-    const nativeProvider = getNative.call(registry, model.provider);
-    const registeredConfig = getConfig.call(registry, model.provider);
-    if (nativeProvider !== undefined && (nativeProvider === null || typeof nativeProvider !== "object")) {
-      return { reason: "stock_auth:registered native provider is malformed" };
-    }
-    if (registeredConfig !== undefined && !isPlainRecord(registeredConfig)) {
-      return { reason: "stock_auth:registered provider config is malformed" };
-    }
-    return {
-      auth: {
-        apiKey: apiKey as string | undefined,
-        baseUrl: baseUrl as string | undefined,
-        headers: stringMap(rawAuth.headers),
-        env: stringMap(rawEnv),
-      },
-      provider: Object.freeze({ ...(provider as Record<string, unknown>) }),
-      nativeProvider: nativeProvider === undefined
-        ? undefined
-        : Object.freeze({ ...(nativeProvider as Record<string, unknown>) }),
-      registeredConfig: registeredConfig === undefined
-        ? undefined
-        : Object.freeze({ ...registeredConfig }),
-    };
-  } catch {
-    return { reason: "stock_auth:parent authentication could not be safely resolved" };
+  let resolved: unknown;
+  if (typeof registry.getProviderAuth === "function") {
+    const getProviderAuth = registry.getProviderAuth as (providerId: string) => Promise<unknown>;
+    resolved = await getProviderAuth.call(registry, selected.provider);
+  } else if (typeof registry.getApiKeyAndHeaders === "function") {
+    const getApiKeyAndHeaders = registry.getApiKeyAndHeaders as (model: StockPiModel) => Promise<unknown>;
+    resolved = await getApiKeyAndHeaders.call(registry, selected);
+  } else {
+    throw new Error("stock_auth:parent registry lacks a public auth resolver");
   }
+  const auth = captureResolvedAuth(resolved);
+  const afterAuthModel = activeModel(context);
+  const afterAuthCatalog = afterAuthModel === undefined
+    ? undefined
+    : find.call(registry, afterAuthModel.provider, afterAuthModel.id);
+  const afterAuthStatus = afterAuthModel === undefined
+    ? undefined
+    : getStatus.call(registry, afterAuthModel.provider);
+  if (
+    afterAuthModel === undefined ||
+    modelFingerprint(afterAuthModel) !== token.sourceModelFingerprint ||
+    !isPlainRecord(afterAuthCatalog) ||
+    modelFingerprint(afterAuthCatalog as unknown as StockPiModel) !== token.sourceModelFingerprint ||
+    !isPlainRecord(afterAuthStatus) || afterAuthStatus.configured !== true
+  ) {
+    throw new Error("stock_config:parent model changed during auth resolution");
+  }
+
+  const getProvider = registry.getProvider as (providerId: string) => unknown;
+  const getNative = registry.getRegisteredNativeProvider as (providerId: string) => unknown;
+  const getConfig = registry.getRegisteredProviderConfig as (providerId: string) => unknown;
+  const provider = getProvider.call(registry, selected.provider);
+  const nativeProvider = getNative.call(registry, selected.provider);
+  const registeredConfig = getConfig.call(registry, selected.provider);
+  if (provider === null || typeof provider !== "object") {
+    throw new Error("stock_config:active parent provider is unavailable");
+  }
+  if (nativeProvider !== undefined && (nativeProvider === null || typeof nativeProvider !== "object")) {
+    throw new Error("stock_config:registered native provider is malformed");
+  }
+  if (registeredConfig !== undefined && !isPlainRecord(registeredConfig)) {
+    throw new Error("stock_config:registered provider config is malformed");
+  }
+  return {
+    auth,
+    provider: Object.freeze({ ...(provider as Record<string, unknown>) }),
+    nativeProvider: nativeProvider === undefined
+      ? undefined
+      : Object.freeze({ ...(nativeProvider as Record<string, unknown>) }),
+    registeredConfig: registeredConfig === undefined
+      ? undefined
+      : Object.freeze({ ...registeredConfig }),
+  };
 }
 
 function validateRateSet(value: unknown): value is {
@@ -564,7 +657,7 @@ function assertAdmission(
     token.modelRoute !== admission.effectiveModel ||
     typeof token.maxInputTokens !== "number" ||
     !Number.isSafeInteger(token.maxInputTokens) || token.maxInputTokens <= 0 ||
-    token.parentRuntime === undefined ||
+    typeof token.sourceModelFingerprint !== "string" || token.sourceModelFingerprint.length === 0 ||
     token.maxCostUsd !== input.maxCostUsd || token.maxCostUsd !== admission.maxCostUsd ||
     token.timeoutMs !== input.timeoutMs || token.timeoutMs !== admission.timeoutMs ||
     !sameStrings(admission.effectiveCapabilities, token.capabilities ?? []) ||
@@ -621,8 +714,22 @@ function inMemoryModelsStore() {
   };
 }
 
-async function isolatedModelRuntime(sdk: StockPiSdk, token: AdmissionToken): Promise<unknown> {
-  const credentials = inMemoryCredentials(token.model.provider, token.parentRuntime.auth);
+function authFingerprint(auth: ParentAuthState): string {
+  return JSON.stringify({
+    apiKey: auth.apiKey ?? null,
+    headers: auth.headers ?? null,
+    baseUrl: auth.baseUrl ?? null,
+    env: auth.env ?? null,
+    source: auth.source ?? null,
+  });
+}
+
+async function isolatedModelRuntime(
+  sdk: StockPiSdk,
+  model: StockPiModel,
+  parentRuntime: ParentRuntimeState,
+): Promise<unknown> {
+  const credentials = inMemoryCredentials(model.provider, parentRuntime.auth);
   const modelsStore = inMemoryModelsStore();
   const runtime = await sdk.ModelRuntime.create({
     credentials,
@@ -630,14 +737,13 @@ async function isolatedModelRuntime(sdk: StockPiSdk, token: AdmissionToken): Pro
     modelsStore,
     allowModelNetwork: false,
   });
-  const resolvedAuth = token.parentRuntime.auth;
-  const sourceProvider = token.parentRuntime.provider;
+  const resolvedAuth = parentRuntime.auth;
   const isolatedProvider = {
-    ...sourceProvider,
-    id: token.model.provider,
-    baseUrl: token.model.baseUrl,
+    ...parentRuntime.provider,
+    id: model.provider,
+    baseUrl: model.baseUrl,
     headers: undefined,
-    getModels: () => [token.model],
+    getModels: () => [model],
     refreshModels: undefined,
     auth: {
       apiKey: {
@@ -646,7 +752,7 @@ async function isolatedModelRuntime(sdk: StockPiSdk, token: AdmissionToken): Pro
           throw new Error("stock_auth:isolated child login is disabled");
         },
         async check() {
-          return { type: "api_key", source: "resolved parent session auth" };
+          return { type: "api_key", source: resolvedAuth.source ?? "resolved parent session auth" };
         },
         async resolve() {
           return {
@@ -656,13 +762,21 @@ async function isolatedModelRuntime(sdk: StockPiSdk, token: AdmissionToken): Pro
               baseUrl: resolvedAuth.baseUrl,
             },
             env: resolvedAuth.env,
-            source: "resolved parent session auth",
+            source: resolvedAuth.source,
           };
         },
       },
     },
   };
   runtime.registerNativeProvider(isolatedProvider);
+  const runtimeModel = runtime.getModel(model.provider, model.id);
+  if (runtimeModel === undefined || modelFingerprint(runtimeModel) !== modelFingerprint(model)) {
+    throw new Error("stock_config:isolated runtime model does not match admission");
+  }
+  const runtimeAuth = captureResolvedAuth(await runtime.getAuth(runtimeModel));
+  if (authFingerprint(runtimeAuth) !== authFingerprint(resolvedAuth)) {
+    throw new Error("stock_config:isolated runtime auth does not match parent resolution");
+  }
   return runtime;
 }
 
@@ -751,40 +865,25 @@ export function createStockPiHost(input: StockPiHostOptions = {}): TeamHost {
           "stock_model:an active Pi model is required",
         );
       }
+      const snapshot = catalogSnapshot(context, selected);
+      if ("reason" in snapshot) {
+        return blocked(preflight.member.id, preflight.maxCostUsd, snapshot.reason);
+      }
       const affordable = affordableModel(selected, preflight.maxCostUsd);
       if ("reason" in affordable) {
         return blocked(preflight.member.id, preflight.maxCostUsd, affordable.reason);
       }
-      const parentRuntime = await captureParentRuntime(context, selected);
-      if ("reason" in parentRuntime) {
-        return blocked(preflight.member.id, preflight.maxCostUsd, parentRuntime.reason);
-      }
       const timeoutMs = timeoutCeiling === undefined
         ? preflight.timeoutMs
         : Math.min(preflight.timeoutMs, timeoutCeiling);
-      const admittedModel = Object.freeze({
-        ...affordable.model,
-        baseUrl: parentRuntime.auth.baseUrl ?? affordable.model.baseUrl,
-      }) as StockPiModel;
       const token: AdmissionToken = Object.freeze({
         owner,
         memberId: preflight.member.id,
         route: preflight.member.route,
         modelRoute: affordable.route,
-        model: admittedModel,
+        model: affordable.model,
+        sourceModelFingerprint: snapshot.fingerprint,
         maxInputTokens: MAXIMUM_PROMPT_INPUT_BYTES,
-        parentRuntime: Object.freeze({
-          ...parentRuntime,
-          auth: Object.freeze({
-            ...parentRuntime.auth,
-            headers: parentRuntime.auth.headers === undefined
-              ? undefined
-              : Object.freeze({ ...parentRuntime.auth.headers }),
-            env: parentRuntime.auth.env === undefined
-              ? undefined
-              : Object.freeze({ ...parentRuntime.auth.env }),
-          }),
-        }),
         capabilities: Object.freeze([...preflight.member.capabilities]),
         tools: Object.freeze([...preflight.member.tools]),
         maxCostUsd: preflight.maxCostUsd,
@@ -836,6 +935,14 @@ export function createStockPiHost(input: StockPiHostOptions = {}): TeamHost {
             return failure(`stock_child:${record.abortReason}`);
           }
 
+          const parentRuntime = await captureParentRuntime(context, token);
+          if (record.abortReason !== undefined) {
+            return failure(`stock_child:${record.abortReason} during setup`);
+          }
+          const executionModel = Object.freeze({
+            ...token.model,
+            baseUrl: parentRuntime.auth.baseUrl ?? token.model.baseUrl,
+          }) as StockPiModel;
           const sdk = await loadSdk();
           if (record.abortReason !== undefined) {
             return failure(`stock_child:${record.abortReason} during setup`);
@@ -858,7 +965,7 @@ export function createStockPiHost(input: StockPiHostOptions = {}): TeamHost {
           }
 
           const sessionManager = sdk.SessionManager.inMemory(context.cwd);
-          const modelRuntime = await isolatedModelRuntime(sdk, token);
+          const modelRuntime = await isolatedModelRuntime(sdk, executionModel, parentRuntime);
           if (record.abortReason !== undefined) {
             return failure(`stock_child:${record.abortReason} during setup`);
           }
@@ -866,14 +973,14 @@ export function createStockPiHost(input: StockPiHostOptions = {}): TeamHost {
             .filter((tool) => token.tools.includes(tool.name));
           const created = await sdk.createAgentSession({
             cwd: context.cwd,
-            model: token.model,
+            model: executionModel,
             modelRuntime,
-            scopedModels: [{ model: token.model }],
+            scopedModels: [{ model: executionModel }],
             resourceLoader,
             sessionManager,
             settingsManager,
             noTools: "all",
-            tools: [],
+            tools: [...token.tools],
             customTools,
           });
           record.session = created.session;
