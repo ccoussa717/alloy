@@ -468,13 +468,14 @@ test("createRun captures exact snapshot data properties once before path use", a
         return Reflect.get(object, property, receiver);
       },
     });
-    const writer = await store.createRun(proxySnapshot);
+    await assert.rejects(
+      () => store.createRun(proxySnapshot),
+      /event_run_snapshot:/,
+    );
     assert.equal(propertyReads, 0);
-    assert.equal(ownKeyReads, 1);
-    assert.equal(descriptorReads, 4);
-    assert.ok((await realFs.stat(join(root, PROJECT_ID, RUN_ID))).isDirectory());
-    await assert.rejects(() => realFs.stat(join(root, "b".repeat(64))), { code: "ENOENT" });
-    await writer.close();
+    assert.equal(ownKeyReads, 0);
+    assert.equal(descriptorReads, 0);
+    await assert.rejects(() => realFs.stat(root), { code: "ENOENT" });
   });
 });
 
@@ -597,6 +598,81 @@ test("creation fsyncs each new directory before its parent entry boundary", asyn
   }
 });
 
+// Break caught: concurrent first users race on root mkdir and leak raw EEXIST.
+test("concurrent fresh-root creation adopts the verified winner and preserves run claims", async () => {
+  const parent = await realFs.mkdtemp(join(tmpdir(), "teams-events-race-"));
+  try {
+    const root = join(parent, "fresh-root");
+    let rootLstats = 0;
+    let release;
+    const bothAtRoot = new Promise((resolve) => { release = resolve; });
+    const racingFs = {
+      ...realFs,
+      async lstat(path, options) {
+        if (String(path) === root && rootLstats < 2) {
+          rootLstats += 1;
+          if (rootLstats === 2) release();
+          await bothAtRoot;
+          const error = new Error("injected concurrent absence");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return realFs.lstat(path, options);
+      },
+    };
+    const firstStore = createFileEventStore({
+      root,
+      now: () => OCCURRED_AT,
+      randomUUID: () => "123e4567-e89b-42d3-a456-426614174010",
+      fs: racingFs,
+    });
+    const secondStore = createFileEventStore({
+      root,
+      now: () => OCCURRED_AT,
+      randomUUID: () => "123e4567-e89b-42d3-a456-426614174011",
+      fs: racingFs,
+    });
+    const differentRuns = await Promise.allSettled([
+      firstStore.createRun(runSnapshotInput()),
+      secondStore.createRun(runSnapshotInput({ runId: OTHER_RUN_ID })),
+    ]);
+    try {
+      assert.deepEqual(differentRuns.map(({ status }) => status), ["fulfilled", "fulfilled"]);
+    } finally {
+      await Promise.all(differentRuns.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value.close()] : []
+      ));
+    }
+
+    const collisionRoot = join(parent, "collision-root");
+    const collisionStoreA = createFileEventStore({
+      root: collisionRoot,
+      now: () => OCCURRED_AT,
+      randomUUID: () => "123e4567-e89b-42d3-a456-426614174012",
+    });
+    const collisionStoreB = createFileEventStore({
+      root: collisionRoot,
+      now: () => OCCURRED_AT,
+      randomUUID: () => "123e4567-e89b-42d3-a456-426614174013",
+    });
+    const sameRun = await Promise.allSettled([
+      collisionStoreA.createRun(runSnapshotInput()),
+      collisionStoreB.createRun(runSnapshotInput()),
+    ]);
+    try {
+      assert.equal(sameRun.filter(({ status }) => status === "fulfilled").length, 1);
+      const rejected = sameRun.find(({ status }) => status === "rejected");
+      assert.match(String(rejected.reason), /event_writer_claimed:/);
+    } finally {
+      await Promise.all(sameRun.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value.close()] : []
+      ));
+    }
+  } finally {
+    await realFs.rm(parent, { recursive: true, force: true });
+  }
+});
+
 // Break caught: append rewrites a prefix, omits newline/fsync, or races sequence assignment.
 test("writer serializes concurrent canonical appends without changing existing prefixes", async () => {
   const syncPaths = [];
@@ -628,46 +704,47 @@ test("writer serializes concurrent canonical appends without changing existing p
 });
 
 // Break caught: validation and canonical capture observe different proxy descriptor values.
-test("writer canonically snapshots a draft once before validating the immutable copy", async () => {
+test("writer rejects proxy drafts and payloads before invoking their traps", async () => {
   await withStoreFixture(async ({ store }) => {
-    let nestedDescriptorReads = 0;
-    let nestedOwnKeys = 0;
-    const payload = new Proxy({ value: "original" }, {
+    let rootTraps = 0;
+    const proxyDraft = new Proxy(draft("run.requested"), {
       ownKeys(object) {
-        nestedOwnKeys += 1;
+        rootTraps += 1;
         return Reflect.ownKeys(object);
       },
       getOwnPropertyDescriptor(object, property) {
-        nestedDescriptorReads += 1;
-        const descriptor = Reflect.getOwnPropertyDescriptor(object, property);
-        if (nestedDescriptorReads > 1) return { ...descriptor, value: "substituted" };
-        return descriptor;
-      },
-    });
-    const target = draft("run.requested", { payload });
-    let descriptorReads = 0;
-    let propertyReads = 0;
-    const proxyDraft = new Proxy(target, {
-      getOwnPropertyDescriptor(object, property) {
-        descriptorReads += 1;
-        const descriptor = Reflect.getOwnPropertyDescriptor(object, property);
-        if (descriptorReads > 4 && property === "payload") {
-          return { ...descriptor, value: { value: "substituted" } };
-        }
-        return descriptor;
+        rootTraps += 1;
+        return Reflect.getOwnPropertyDescriptor(object, property);
       },
       get(object, property, receiver) {
-        propertyReads += 1;
+        rootTraps += 1;
         return Reflect.get(object, property, receiver);
+      },
+    });
+    let nestedTraps = 0;
+    const proxyPayload = new Proxy({ value: "original" }, {
+      ownKeys(object) {
+        nestedTraps += 1;
+        return Reflect.ownKeys(object);
+      },
+      getOwnPropertyDescriptor(object, property) {
+        nestedTraps += 1;
+        return Reflect.getOwnPropertyDescriptor(object, property);
       },
     });
 
     const writer = await store.createRun(runSnapshotInput());
-    const event = await writer.append(proxyDraft);
-    assert.equal(descriptorReads, 4);
-    assert.equal(propertyReads, 0);
-    assert.equal(nestedOwnKeys, 1);
-    assert.equal(nestedDescriptorReads, 1);
+    await assert.rejects(() => writer.append(proxyDraft), /event_draft:/);
+    await assert.rejects(
+      () => writer.append(draft("run.requested", { payload: proxyPayload })),
+      /event_payload:/,
+    );
+    assert.equal(rootTraps, 0);
+    assert.equal(nestedTraps, 0);
+
+    const event = await writer.append(draft("run.requested", {
+      payload: { value: "original" },
+    }));
     assert.deepEqual(event.payload, { value: "original" });
     assert.ok(Object.isFrozen(event.payload));
     assert.ok(Object.isFrozen(event.actor));
@@ -721,6 +798,46 @@ test("writer rejects huge and deeply nested events during bounded canonical trav
       () => writer.append(draft("run.requested", { payload: nested })),
       /event_line_bytes:/,
     );
+    assert.equal((await realFs.stat(eventPath)).size, 0);
+    await writer.close();
+  });
+});
+
+// Break caught: structural work grows with very wide containers before the byte limit is known.
+test("bounded canonicalization rejects very wide arrays and objects before descriptor work", async () => {
+  await withStoreFixture(async ({ root, store }) => {
+    const writer = await store.createRun(runSnapshotInput());
+    const eventPath = join(root, PROJECT_ID, RUN_ID, "events.jsonl");
+
+    const wideArray = new Array(40_000).fill(0);
+    Object.defineProperty(wideArray, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("wide array descriptor reached");
+      },
+    });
+    await assert.rejects(
+      () => writer.append(draft("run.requested", { payload: { wideArray } })),
+      /event_line_bytes:/,
+    );
+
+    const wideObject = {};
+    for (let index = 0; index < 14_000; index += 1) {
+      wideObject[`k${String(index).padStart(5, "0")}`] = 0;
+    }
+    Object.defineProperty(wideObject, "zzzz", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        throw new Error("wide object descriptor reached");
+      },
+    });
+    await assert.rejects(
+      () => writer.append(draft("run.requested", { payload: { wideObject } })),
+      /event_line_bytes:/,
+    );
+
     assert.equal((await realFs.stat(eventPath)).size, 0);
     await writer.close();
   });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeUtilTypes } from "node:util";
 
 import { canonicalJsonSnapshotBounded } from "./compiler.ts";
 import { TEAM_LIMITS, ZERO_HASH } from "./limits.ts";
@@ -37,9 +38,11 @@ function captureExactPlainDataShape(
   expectedKeys: readonly string[],
   code: string,
 ): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object") {
     return eventError(code, "record must be a plain object");
   }
+  if (nodeUtilTypes.isProxy(value)) return eventError(code, "proxy records are not supported");
+  if (Array.isArray(value)) return eventError(code, "record must be a plain object");
   if (Object.getPrototypeOf(value) !== Object.prototype) {
     return eventError(code, "record must have the plain object prototype");
   }
@@ -83,7 +86,8 @@ function hasExactPlainDataShape(
 }
 
 function isPlainDataObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value === null || typeof value !== "object" || nodeUtilTypes.isProxy(value)) return false;
+  if (Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
   if (Object.getOwnPropertySymbols(value).length !== 0) return false;

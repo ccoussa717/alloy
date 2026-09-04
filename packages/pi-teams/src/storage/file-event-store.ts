@@ -2,6 +2,7 @@ import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { basename, dirname, parse, resolve } from "node:path";
+import { types as nodeUtilTypes } from "node:util";
 
 import { canonicalJson, canonicalJsonSnapshotBounded } from "../core/compiler.ts";
 import {
@@ -149,7 +150,11 @@ async function ensureRoot(fs: FileSystem, configuredRoot: string) {
   try {
     for (const component of missing) {
       const childPath = `${current.descriptor}/${component}`;
-      await fs.mkdir(childPath, { mode: DIRECTORY_MODE });
+      try {
+        await fs.mkdir(childPath, { mode: DIRECTORY_MODE });
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
       const child = await openDirectory(fs, childPath, "root_component");
       try {
         await child.handle.chmod(DIRECTORY_MODE);
@@ -235,7 +240,13 @@ function captureRunSnapshot(value: unknown): {
   manifest: unknown;
   request: unknown;
 } {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object") {
+    throw storeError("event_run_snapshot", "run snapshot must be a plain object");
+  }
+  if (nodeUtilTypes.isProxy(value)) {
+    throw storeError("event_run_snapshot", "proxy run snapshots are not supported");
+  }
+  if (Array.isArray(value)) {
     throw storeError("event_run_snapshot", "run snapshot must be a plain object");
   }
   if (Object.getPrototypeOf(value) !== Object.prototype) {

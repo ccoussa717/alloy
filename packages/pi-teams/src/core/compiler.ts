@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types as nodeUtilTypes } from "node:util";
 
 import { IDENTIFIER, TEAM_LIMITS } from "./limits.ts";
 import type {
@@ -104,16 +105,29 @@ export interface BoundedCanonicalSnapshot {
   readonly bytes: number;
 }
 
+type CanonicalValueTask = {
+  kind: "value";
+  source: unknown;
+  parent?: Record<string, unknown> | unknown[];
+  key?: string | number;
+};
+
 type CanonicalTask =
+  | CanonicalValueTask
   | {
-      kind: "value";
-      source: unknown;
-      parent?: Record<string, unknown> | unknown[];
-      key?: string | number;
+      kind: "array";
+      source: unknown[];
+      clone: unknown[];
+      index: number;
+      length: number;
     }
-  | { kind: "text"; text: string }
-  | { kind: "string"; text: string }
-  | { kind: "exit"; source: object; clone: Record<string, unknown> | unknown[] };
+  | {
+      kind: "object";
+      source: Record<string, unknown>;
+      clone: Record<string, unknown>;
+      keys: string[];
+      index: number;
+    };
 
 function canonicalLimitError(maximumBytes: number): never {
   throw new RangeError(`canonical_json:exceeds ${maximumBytes} UTF-8 bytes`);
@@ -205,19 +219,60 @@ export function canonicalJsonSnapshotBounded(
     }
   };
 
+  const maximumArrayLength = Math.max(0, Math.floor((maximumBytes - 1) / 2));
+  const maximumObjectKeys = Math.max(0, Math.floor((maximumBytes - 1) / 5));
+
   while (tasks.length > 0) {
     const task = tasks.pop()!;
-    if (task.kind === "text") {
-      append(task.text, task.text.length);
+
+    if (task.kind === "array") {
+      if (task.index >= task.length) {
+        append("]", 1);
+        Object.freeze(task.clone);
+        ancestors.delete(task.source);
+        continue;
+      }
+      if (task.index > 0) append(",", 1);
+      const index = task.index;
+      const descriptor = Object.getOwnPropertyDescriptor(task.source, String(index));
+      if (descriptor === undefined) canonicalError("sparse arrays are not supported");
+      if (!("value" in descriptor)) canonicalError("accessor properties are not supported");
+      task.index += 1;
+      tasks.push(task);
+      tasks.push({
+        kind: "value",
+        source: descriptor.value,
+        parent: task.clone,
+        key: index,
+      });
       continue;
     }
-    if (task.kind === "string") {
-      appendString(task.text);
-      continue;
-    }
-    if (task.kind === "exit") {
-      Object.freeze(task.clone);
-      ancestors.delete(task.source);
+
+    if (task.kind === "object") {
+      if (task.index >= task.keys.length) {
+        append("}", 1);
+        Object.freeze(task.clone);
+        ancestors.delete(task.source);
+        continue;
+      }
+      if (task.index > 0) append(",", 1);
+      const key = task.keys[task.index];
+      appendString(key);
+      append(":", 1);
+      const descriptor = Object.getOwnPropertyDescriptor(task.source, key);
+      if (descriptor === undefined) {
+        canonicalError("property identity changed during canonical capture");
+      }
+      if (!("value" in descriptor)) canonicalError("accessor properties are not supported");
+      if (!descriptor.enumerable) canonicalError("non-enumerable properties are not supported");
+      task.index += 1;
+      tasks.push(task);
+      tasks.push({
+        kind: "value",
+        source: descriptor.value,
+        parent: task.clone,
+        key,
+      });
       continue;
     }
 
@@ -247,35 +302,16 @@ export function canonicalJsonSnapshotBounded(
     if (typeof source !== "object") {
       canonicalError(`unsupported ${typeof source} value`);
     }
+    if (nodeUtilTypes.isProxy(source)) canonicalError("proxy values are not supported");
     if (ancestors.has(source)) canonicalError("cyclic values are not supported");
 
-    const propertyKeys = Reflect.ownKeys(source);
-    if (propertyKeys.some((key) => typeof key === "symbol")) {
-      canonicalError("symbol keys are not supported");
-    }
-    const ownNames = propertyKeys as string[];
-    const descriptors: Record<string, PropertyDescriptor> = Object.create(null);
-    for (const name of ownNames) {
-      const descriptor = Object.getOwnPropertyDescriptor(source, name);
-      if (descriptor === undefined) {
-        canonicalError("property identity changed during canonical capture");
-      }
-      if (!("value" in descriptor)) canonicalError("accessor properties are not supported");
-      descriptors[name] = descriptor;
-    }
-    ancestors.add(source);
-
     if (Array.isArray(source)) {
-      const lengthDescriptor = descriptors.length;
-      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) {
-        canonicalError("array length must be a data property");
+      const length = source.length;
+      if (length > maximumArrayLength) canonicalLimitError(maximumBytes);
+      if (Object.getOwnPropertySymbols(source).length > 0) {
+        canonicalError("symbol keys are not supported");
       }
-      const length = lengthDescriptor.value as number;
-      for (let index = 0; index < length; index += 1) {
-        if (descriptors[String(index)] === undefined) {
-          canonicalError("sparse arrays are not supported");
-        }
-      }
+      const ownNames = Object.getOwnPropertyNames(source);
       if (ownNames.some((name) => {
         if (name === "length") return false;
         const index = Number(name);
@@ -285,18 +321,9 @@ export function canonicalJsonSnapshotBounded(
       }
       const clone: unknown[] = new Array(length);
       assign(task, clone);
+      ancestors.add(source);
       append("[", 1);
-      tasks.push({ kind: "exit", source, clone });
-      tasks.push({ kind: "text", text: "]" });
-      for (let index = length - 1; index >= 0; index -= 1) {
-        tasks.push({
-          kind: "value",
-          source: (descriptors[String(index)] as PropertyDescriptor & { value: unknown }).value,
-          parent: clone,
-          key: index,
-        });
-        if (index > 0) tasks.push({ kind: "text", text: "," });
-      }
+      tasks.push({ kind: "array", source, clone, index: 0, length });
       continue;
     }
 
@@ -304,29 +331,32 @@ export function canonicalJsonSnapshotBounded(
     if (prototype !== Object.prototype && prototype !== null) {
       canonicalError("only plain objects are supported");
     }
-    if (ownNames.some((name) => !descriptors[name]!.enumerable)) {
+    const keys: string[] = [];
+    for (const key in source) {
+      if (!Object.hasOwn(source, key)) continue;
+      if (keys.length >= maximumObjectKeys) canonicalLimitError(maximumBytes);
+      keys.push(key);
+    }
+    if (Object.getOwnPropertySymbols(source).length > 0) {
+      canonicalError("symbol keys are not supported");
+    }
+    if (Object.getOwnPropertyNames(source).length !== keys.length) {
       canonicalError("non-enumerable properties are not supported");
     }
-    const keys = [...ownNames].sort();
+    keys.sort();
     const clone = prototype === null
       ? Object.create(null) as Record<string, unknown>
       : {} as Record<string, unknown>;
     assign(task, clone);
+    ancestors.add(source);
     append("{", 1);
-    tasks.push({ kind: "exit", source, clone });
-    tasks.push({ kind: "text", text: "}" });
-    for (let index = keys.length - 1; index >= 0; index -= 1) {
-      const key = keys[index];
-      tasks.push({
-        kind: "value",
-        source: (descriptors[key] as PropertyDescriptor & { value: unknown }).value,
-        parent: clone,
-        key,
-      });
-      tasks.push({ kind: "text", text: ":" });
-      tasks.push({ kind: "string", text: key });
-      if (index > 0) tasks.push({ kind: "text", text: "," });
-    }
+    tasks.push({
+      kind: "object",
+      source: source as Record<string, unknown>,
+      clone,
+      keys,
+      index: 0,
+    });
   }
 
   return Object.freeze({ json: chunks.join(""), value: snapshot, bytes });
