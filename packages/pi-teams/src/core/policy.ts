@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { types as nodeUtilTypes } from "node:util";
 
 import { sha256Canonical } from "./compiler.ts";
 import { assertBoundedUtf8, TEAM_LIMITS } from "./limits.ts";
@@ -127,7 +128,12 @@ function inspectDataRecord(
   code: "policy_admission" | "approval_binding",
   label: string,
 ): DataRecord {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    nodeUtilTypes.isProxy(value) ||
+    Array.isArray(value)
+  ) {
     return shapeError(code, `${label} must be a plain object`);
   }
   const prototype = Object.getPrototypeOf(value);

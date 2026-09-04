@@ -75,7 +75,7 @@ function context(overrides = {}) {
   };
 }
 
-function eventStoreFake() {
+function eventStoreFake(options = {}) {
   const runs = new Map();
   const createCalls = [];
   return {
@@ -84,11 +84,19 @@ function eventStoreFake() {
     async createRun(snapshot) {
       createCalls.push(structuredClone(snapshot));
       if (runs.has(snapshot.runId)) throw new Error("event_writer_claimed:duplicate");
-      const record = { snapshot: structuredClone(snapshot), events: [], closed: false };
+      const record = {
+        snapshot: structuredClone(snapshot),
+        events: [],
+        closed: false,
+        appendCalls: [],
+        closeCalls: 0,
+      };
       runs.set(snapshot.runId, record);
       return {
         async append(draft) {
           if (record.closed) throw new Error("event_writer_closed:closed");
+          record.appendCalls.push(draft.type);
+          await options.beforeAppend?.(draft, record);
           const previous = record.events.at(-1);
           const withoutHash = {
             v: 1,
@@ -105,9 +113,12 @@ function eventStoreFake() {
           if (["run.completed", "run.failed", "run.blocked", "run.cancelled"].includes(event.type)) {
             record.closed = true;
           }
-          return event;
+          return options.returnEvent?.(event, draft, record) ?? event;
         },
-        async close() { record.closed = true; },
+        async close() {
+          record.closeCalls += 1;
+          record.closed = true;
+        },
       };
     },
     async read(projectId, runId) {
@@ -146,7 +157,7 @@ function fixture(options = {}) {
   let capabilitiesCalls = 0;
   let catalogCalls = 0;
   let resolveCalls = 0;
-  const baseCatalog = createTeamCatalog([options.entry ?? entry()]);
+  const baseCatalog = options.catalog ?? createTeamCatalog([options.entry ?? entry()]);
   const catalog = {
     list: () => baseCatalog.list(),
     resolve(ref) {
@@ -193,8 +204,8 @@ function fixture(options = {}) {
       async readVerified() { throw new Error("artifact reads are not used in Task 9"); },
     },
     host,
-    now: () => NOW,
-    randomUUID: () => RUN_ID,
+    now: options.now ?? (() => NOW),
+    randomUUID: options.randomUUID ?? (() => RUN_ID),
   });
   return {
     service,
@@ -273,6 +284,35 @@ test("request rejects mismatched project trust and catalog identity before write
   const mismatched = fixture({ entry: entry({ source: "user" }) });
   await assert.rejects(() => request(mismatched), /catalog_identity/);
   assert.equal(mismatched.eventStore.createCalls.length, 0);
+});
+
+// Break caught: a catalog resolver substitutes a different valid team for the requested reference.
+test("request binds qualified and short catalog resolution to the exact requested identity", async () => {
+  const other = entry({
+    ref: "builtin/other",
+    definition: {
+      ...definition(),
+      metadata: { ...definition().metadata, name: "other" },
+    },
+  });
+  for (const [teamRef, substituted] of [
+    ["builtin/investigate", other],
+    ["investigate", other],
+    ["investigate", entry({ ref: "user/investigate", source: "builtin" })],
+  ]) {
+    const maliciousCatalog = {
+      list: () => [substituted],
+      resolve: () => substituted,
+    };
+    const run = fixture({ catalog: maliciousCatalog });
+    await assert.rejects(() => request(run, { teamRef }), /catalog_identity/);
+    assert.equal(run.eventStore.createCalls.length, 0);
+    assert.equal(run.capabilitiesCalls, 0);
+  }
+
+  const shortRun = fixture();
+  const view = await request(shortRun, { teamRef: "investigate" });
+  assert.equal(view.teamRef, "builtin/investigate");
 });
 
 // Break caught: request compiles/preflights repeatedly, widens limits, leaks tokens, or starts providers.
@@ -401,6 +441,27 @@ test("preflight converts every host failure into a complete terminal block after
   assert.match(reasons[1], /async denial/);
 });
 
+// Break caught: UTF-16 truncation splits a supplementary character and prevents durable blocking.
+test("preflight bounds supplementary-character errors by code point and UTF-8 bytes", async () => {
+  const run = fixture({
+    preflight(input, _context, index) {
+      if (index === 0) throw new Error(`aa${"💥".repeat(1_000)}`);
+      return admitted(input, 120_000);
+    },
+  });
+  const view = await request(run);
+  assert.equal(view.status, "blocked");
+  const events = run.eventStore.runs.get(RUN_ID).events;
+  assert.deepEqual(events.map(({ type }) => type), [
+    "run.requested", "manifest.snapshotted", "policy.blocked", "run.blocked",
+  ]);
+  const reason = events[2].payload.reasons[0];
+  assert.ok(Buffer.byteLength(reason, "utf8") <= TEAM_LIMITS.descriptionBytes);
+  assert.equal(Buffer.from(reason, "utf8").toString("utf8"), reason);
+  assert.match(reason, /^preflight_architecture:aa💥+$/u);
+  assert.equal(events[3].payload.reason, reason);
+});
+
 // Break caught: a failed durable claim is retried in-process as though the ID were unused.
 test("request permanently abandons a run ID after writer creation fails", async () => {
   const store = eventStoreFake();
@@ -419,6 +480,22 @@ test("request permanently abandons a run ID after writer creation fails", async 
   assert.equal(createAttempts, 1);
   assert.equal(run.preflightCalls.length, 0);
   assert.equal(run.providerCalls, 0);
+});
+
+// Break caught: hostile clock or UUID providers create a writer from invalid authority identifiers.
+test("request rejects hostile time and UUID outputs before writer creation", async () => {
+  for (const options of [
+    { now: () => "tomorrow" },
+    { now: () => { throw new Error("clock failed"); } },
+    { randomUUID: () => "../escape" },
+    { randomUUID: () => { throw new Error("uuid failed"); } },
+  ]) {
+    const run = fixture(options);
+    await assert.rejects(() => request(run), /(service_time|service_run_id|clock failed|uuid failed)/);
+    assert.equal(run.eventStore.createCalls.length, 0);
+    assert.equal(run.preflightCalls.length, 0);
+    assert.equal(run.providerCalls, 0);
+  }
 });
 
 // Break caught: invalid or widening admission timeouts survive service preflight.
@@ -494,6 +571,131 @@ test("approve requires an exact human binding and is idempotent", async () => {
   assert.equal(duplicate.lastEvent.type, "approval.granted");
   assert.equal(record.events.length, eventCount + 1);
   assert.equal(run.providerCalls, 0);
+});
+
+// Break caught: approval binding validation invokes proxy reflection before rejection.
+test("approve rejects binding proxies without invoking any reflective trap", async () => {
+  const run = fixture();
+  const awaiting = await request(run);
+  let traps = 0;
+  const binding = new Proxy(awaiting.approvalBinding, {
+    getPrototypeOf(target) {
+      traps += 1;
+      return Reflect.getPrototypeOf(target);
+    },
+    ownKeys(target) {
+      traps += 1;
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      traps += 1;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    get(target, property, receiver) {
+      traps += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  await assert.rejects(
+    () => run.service.approve({
+      runId: RUN_ID,
+      actor: HUMAN_ACTOR,
+      binding,
+      context: context({ source: "command" }),
+    }),
+    /approval_binding/,
+  );
+  assert.equal(traps, 0);
+  assert.equal(run.eventStore.runs.get(RUN_ID).events.length, 4);
+});
+
+// Break caught: concurrent approval races append twice rather than sharing one operation.
+test("concurrent approvals share exactly one append", async () => {
+  let releaseApproval;
+  const approvalGate = new Promise((resolve) => { releaseApproval = resolve; });
+  let approvalAppends = 0;
+  const store = eventStoreFake({
+    async beforeAppend(draft) {
+      if (draft.type !== "approval.granted") return;
+      approvalAppends += 1;
+      await approvalGate;
+    },
+  });
+  const run = fixture({ eventStore: store });
+  const awaiting = await request(run);
+  const input = {
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command" }),
+  };
+  const first = run.service.approve(input);
+  const second = run.service.approve(input);
+  await Promise.resolve();
+  assert.equal(approvalAppends, 1);
+  releaseApproval();
+  const [firstView, secondView] = await Promise.all([first, second]);
+  assert.equal(firstView.lastEvent.type, "approval.granted");
+  assert.equal(secondView.lastEvent.type, "approval.granted");
+  assert.equal(approvalAppends, 1);
+});
+
+// Break caught: failed approval retains writer authority, live tokens, or a replayable rejected promise.
+test("approval append failure closes and evicts the live run fail closed", async () => {
+  let approvalAppends = 0;
+  const store = eventStoreFake({
+    beforeAppend(draft) {
+      if (draft.type === "approval.granted") {
+        approvalAppends += 1;
+        throw new Error("injected approval append failure");
+      }
+    },
+  });
+  const run = fixture({ eventStore: store });
+  const awaiting = await request(run);
+  const input = {
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command" }),
+  };
+  const first = run.service.approve(input);
+  const second = run.service.approve(input);
+  await assert.rejects(() => first, /injected approval append failure/);
+  await assert.rejects(() => second, /injected approval append failure/);
+  const record = store.runs.get(RUN_ID);
+  assert.equal(approvalAppends, 1);
+  assert.equal(record.closeCalls, 1);
+  assert.equal(record.closed, true);
+  await assert.rejects(() => run.service.approve(input), /approval_run/);
+  assert.equal(approvalAppends, 1);
+});
+
+// Break caught: projection failure after durable approval leaves a live admitted run and open writer.
+test("approval projection failure closes and evicts the live run", async () => {
+  let approvalAppends = 0;
+  const store = eventStoreFake({
+    returnEvent(event, draft) {
+      if (draft.type !== "approval.granted") return event;
+      approvalAppends += 1;
+      return { ...event, payload: { invalid: true } };
+    },
+  });
+  const run = fixture({ eventStore: store });
+  const awaiting = await request(run);
+  const input = {
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command" }),
+  };
+  await assert.rejects(() => run.service.approve(input), /event_payload/);
+  const record = store.runs.get(RUN_ID);
+  assert.equal(approvalAppends, 1);
+  assert.equal(record.closeCalls, 1);
+  assert.equal(record.closed, true);
+  await assert.rejects(() => run.service.approve(input), /approval_run/);
+  assert.equal(approvalAppends, 1);
 });
 
 // Break caught: blocked, abandoned, or context-rebound runs gain approval authority.

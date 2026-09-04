@@ -56,7 +56,7 @@ interface LiveRun {
   readonly abortControllers: Map<string, AbortController>;
   readonly executions: Map<string, MemberExecution>;
   readonly events: TeamEvent[];
-  approvalPromise?: Promise<TeamEvent>;
+  approvalPromise?: Promise<TeamRunView>;
   approved: boolean;
 }
 
@@ -188,12 +188,14 @@ function validateCatalogEntry(
 ): CompiledTeam {
   const entry = catalog.resolve(teamRef);
   const match = ENTRY_REF.exec(entry.ref);
+  const requestedQualified = ENTRY_REF.test(teamRef);
   if (
     match === null ||
     match[1] !== entry.source ||
-    match[2] !== entry.definition?.metadata?.name
+    match[2] !== entry.definition?.metadata?.name ||
+    (requestedQualified ? entry.ref !== teamRef : entry.definition?.metadata?.name !== teamRef)
   ) {
-    return serviceError("catalog_identity", "resolved catalog provenance is inconsistent");
+    return serviceError("catalog_identity", "resolved catalog provenance contradicts the request");
   }
   if (entry.source === "project" && !context.projectTrusted) {
     return serviceError("catalog_trust", "project teams require a trusted project");
@@ -260,13 +262,18 @@ function boundedFailureReason(memberId: string, error: unknown): string {
   if (Buffer.from(detail, "utf8").toString("utf8") !== detail || detail.trim().length === 0) {
     detail = "host preflight failed";
   }
-  while (
-    detail.length > 0 &&
-    Buffer.byteLength(`${prefix}${detail}`, "utf8") > TEAM_LIMITS.descriptionBytes
-  ) {
-    detail = detail.slice(0, -1);
+
+  const remainingBytes = TEAM_LIMITS.descriptionBytes - Buffer.byteLength(prefix, "utf8");
+  const characters: string[] = [];
+  let bytes = 0;
+  for (const character of detail) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > remainingBytes) break;
+    characters.push(character);
+    bytes += characterBytes;
   }
-  return `${prefix}${detail || "host preflight failed"}`;
+  const bounded = characters.join("");
+  return `${prefix}${bounded || "host preflight failed"}`;
 }
 
 function snapshotMembers(team: CompiledTeam): Array<{ id: string; needs: string[] }> {
@@ -328,6 +335,15 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
     const event = await run.writer.append(eventDraft(dependencies, type, actor, payload));
     run.events.push(event);
     return event;
+  };
+
+  const abandonLiveRun = async (runId: string, run: LiveRun): Promise<void> => {
+    if (liveRuns.get(runId) === run) liveRuns.delete(runId);
+    run.admissions.splice(0, run.admissions.length);
+    run.abortControllers.clear();
+    run.executions.clear();
+    run.approvalPromise = undefined;
+    await run.writer.close().catch(() => undefined);
   };
 
   const service: TeamService = {
@@ -507,17 +523,27 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
         return serviceError("context_binding", "approval context does not match the requested run");
       }
       verifyApprovalBinding(run.binding, captured.binding as ApprovalBinding);
-      if (run.approved) return projectTeamRun(run.events, { live: true });
-      if (run.approvalPromise === undefined) {
-        run.approvalPromise = append(run, "approval.granted", actor, {
-          binding: run.binding,
-        }).then((event) => {
-          run.approved = true;
-          return event;
-        });
+      if (run.approved) {
+        try {
+          return projectTeamRun(run.events, { live: true });
+        } catch (error) {
+          await abandonLiveRun(captured.runId, run);
+          throw error;
+        }
       }
-      await run.approvalPromise;
-      return projectTeamRun(run.events, { live: true });
+      if (run.approvalPromise === undefined) {
+        run.approvalPromise = (async () => {
+          try {
+            await append(run, "approval.granted", actor, { binding: run.binding });
+            run.approved = true;
+            return projectTeamRun(run.events, { live: true });
+          } catch (error) {
+            await abandonLiveRun(captured.runId as string, run);
+            throw error;
+          }
+        })();
+      }
+      return run.approvalPromise;
     },
 
     async execute(): Promise<TeamRunView> {

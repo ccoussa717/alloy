@@ -766,4 +766,26 @@ test("approval verification requires exact primitive canonical binding shapes", 
     /approval_binding/,
   );
   assert.equal(getterCalls, 0);
+
+  let proxyTraps = 0;
+  const proxy = new Proxy(expected, {
+    getPrototypeOf(target) {
+      proxyTraps += 1;
+      return Reflect.getPrototypeOf(target);
+    },
+    ownKeys(target) {
+      proxyTraps += 1;
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      proxyTraps += 1;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    get(target, property, receiver) {
+      proxyTraps += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.throws(() => verifyApprovalBinding(expected, proxy), /approval_binding/);
+  assert.equal(proxyTraps, 0);
 });
