@@ -54,6 +54,13 @@ The portable package lives at `packages/pi-teams/`. Its package manifest exposes
 Pi coding-agent and TypeBox packages as peers. It directly depends on
 `yaml@2.9.0`; YAML must not be consumed as an undeclared transitive dependency.
 
+The public barrel is built incrementally so every task typechecks immediately:
+Task 1 exports only `core/types.ts` and `core/limits.ts`; Task 9 adds the service
+factory after `core/service.ts` exists; Task 11 adds the stock host factory after
+`adapters/stock-pi.ts` exists; and Task 13 adds the extension registration
+exports after `extension/index.ts` exists. It never exports a path before that
+module is created.
+
 The common extension layer uses only APIs present in both target runtimes:
 
 - `ExtensionAPI.registerCommand`;
@@ -195,6 +202,7 @@ export type Admission =
       effectiveCapabilities: TeamCapability[];
       effectiveTools: TeamToolName[];
       maxCostUsd: number;
+      timeoutMs: number;
       token: unknown;
     }
   | {
@@ -242,6 +250,19 @@ export interface MemberResult {
   error?: string;
 }
 
+export interface MemberExecution {
+  runId: string;
+  memberId: string;
+  handle: unknown;
+  result: Promise<MemberResult>;
+}
+
+export interface MemberContainmentInput {
+  runId: string;
+  memberId: string;
+  handle: unknown;
+}
+
 export interface TeamHost {
   readonly id: "stock-pi" | "alloy";
   capabilities(context: TeamRunContext): Promise<HostCapabilities>;
@@ -253,8 +274,12 @@ export interface TeamHost {
     input: MemberRunInput,
     context: TeamRunContext,
     signal: AbortSignal,
-  ): Promise<MemberResult>;
-  contain?(runId: string): Promise<void>;
+  ): MemberExecution;
+  containMember(
+    input: MemberContainmentInput,
+    context: TeamRunContext,
+    signal: AbortSignal,
+  ): Promise<void>;
 }
 
 export interface EventWriter {
@@ -370,9 +395,11 @@ export interface ScheduleState {
 ```
 
 `signal` is copied from the common Pi extension context and can only reduce a
-run's authority by cancelling work. `runtime` is an opaque adapter-owned value.
-Core logic never inspects it, serializes it, hashes it, or grants authority based
-on it.
+run's authority by cancelling work. `runtime` and `MemberExecution.handle` are
+opaque adapter-owned values. Core logic never inspects, serializes, hashes, or
+grants authority based on either value. `runMember` returns its execution handle
+synchronously with the started result promise so containment is callable while
+the member is still running.
 
 The service surface shared by the command and tool is:
 
@@ -463,11 +490,14 @@ export interface StockPiHostOptions {
 The policy helper treats a blocked host admission as blocked. For an admitted
 result it verifies that every effective capability/tool is requested by the
 member and allowed by package and host bounds, that the route still represents
-the member's semantic route, and that cost/timeout do not exceed the supplied
-ceilings. Operator policy and the live parent ceiling are enforced inside the
-host preflight; the core validates the returned narrowing before recording it.
-The effective run limits copy the manifest limits and reduce
-`maxConcurrency` to the host ceiling before policy hashing and approval.
+the member's semantic route, and that `maxCostUsd` and `timeoutMs` are positive
+and no greater than the supplied preflight ceilings. Operator policy and the
+live parent ceiling are enforced inside the host preflight; the core validates
+the returned narrowing before recording it. The effective run limits copy the
+manifest limits and reduce `maxConcurrency` to the host ceiling. Canonical
+public admissions—including each member's effective `timeoutMs`—and effective
+run limits form `policyDigest`, so the approval binding transitively binds every
+effective timeout.
 
 ## Manifest Format And Security Bounds
 
@@ -519,11 +549,15 @@ The parser enforces all of these fixed limits before compilation or model use:
 | concurrency | 3 |
 | maximum declared cost | USD 2.00 |
 | timeout | 300,000 ms |
+| containment and post-containment settlement deadline | 5,000 ms |
 | objective UTF-8 bytes | 16,384 |
 | description UTF-8 bytes | 1,024 |
 | instructions UTF-8 bytes per member | 8,192 |
 | member output UTF-8 bytes | 1,048,576 |
 | artifact result JSON bytes | 65,536 |
+
+The 5,000 ms containment deadline is an immutable package/service bound, not a
+manifest field and not a host-selectable widening.
 
 Parsing uses `yaml@2.9.0` in strict document mode. Duplicate mapping keys,
 aliases, anchors, merge keys, explicit/custom tags, directives other than the
@@ -600,8 +634,11 @@ preflights every member with that allocation before any member starts. Partial
 admission never starts an agent.
 
 A successful preflight records effective routes, actual model labels when
-known, tools, capabilities, concurrency, timeout, and maximum cost. The
-canonical preflight result forms `policyDigest`. An approval binds:
+known, tools, capabilities, concurrency, each member's positive effective
+`timeoutMs`, and maximum cost. A host may only narrow the requested timeout;
+zero, negative, nonfinite, fractional, or larger values block the run. The
+canonical public preflight admissions and effective run limits form
+`policyDigest`, including every effective timeout. An approval binds:
 
 ```ts
 export interface ApprovalBinding {
@@ -613,7 +650,9 @@ export interface ApprovalBinding {
 }
 ```
 
-A digest or requested-action mismatch rejects execution. Slice 1 has no
+Because `policyDigest` covers each effective `timeoutMs`, any timeout change
+invalidates the approval even when every other binding field is unchanged. A
+digest or requested-action mismatch rejects execution. Slice 1 has no
 predelegated model spending allowance: every model-requested run stops at
 `awaiting_approval`, and only a human command can append `approval.granted`.
 
@@ -634,10 +673,21 @@ the objective plus an ordered structured dependency array. It never receives
 an interpolated prompt template.
 
 If any member fails, times out, or produces an invalid artifact, no new member
-starts. The scheduler aborts running members, asks the host to contain remaining
-work when supported, records cancellation/failure evidence, and appends one
-terminal run event. A cancellation request likewise starts no new work and
-propagates the abort signal to every running member.
+starts. The service first aborts every running member controller, then
+immediately invokes `containMember` once for every running `MemberExecution`
+before awaiting any member result. Calls are started independently, so one
+synchronous host throw cannot prevent containment from being invoked for the
+remaining members. Each containment call and subsequent result settlement is
+raced against the fixed 5,000 ms Slice 1 containment deadline, so an
+abort-ignoring child cannot deadlock the run. Only after bounded containment
+does the service record cancellation/failure evidence and one terminal event.
+A containment rejection, containment timeout, or post-containment settlement
+timeout fails closed as `run.failed` with the reason recorded; it never reports
+`run.cancelled` or `run.completed` as if containment were proven. A result is
+settled whether it fulfills or rejects, so an ordinary abort rejection after
+successful containment still permits terminal cancellation. A cancellation
+request likewise starts no new work and follows the same abort-then-contain
+ordering for every running member.
 
 ## Event Authority
 
@@ -770,8 +820,11 @@ returning.
 
 `TeamService.status` and `view` reconstruct from events and verified artifacts;
 they do not trust in-memory summaries. `cancel` only reduces authority. It
-records intent, aborts live member controllers, invokes containment, and records
-a terminal cancellation after members settle. Cancelling an already terminal
+records intent, aborts all live member controllers, immediately starts bounded
+per-member containment, and only then awaits bounded member settlement. It
+records terminal cancellation only after containment and settlement succeed;
+otherwise it records terminal failure with the containment/settlement reason.
+Cancelling an already terminal
 run is idempotent and creates no event. A run abandoned by process exit is
 `incomplete`; because resume is excluded, a later service instance refuses to
 approve, execute, or append cancellation to it.
@@ -795,9 +848,11 @@ cost using one token per UTF-8 byte, and clones the model with an output-token
 cap whose worst-case listed price fits the member allocation; a model whose
 allocation cannot fund one output token is blocked. Zero-cost local models keep
 their host maximum. Provider credentials remain in Pi's normal model runtime
-and are not copied to files, argv, or team artifacts. The adapter subscribes
-for result/usage evidence, aborts the session on signal, timeout, or observed
-budget breach, and always disposes it.
+and are not copied to files, argv, or team artifacts. The adapter subscribes for result/usage evidence, returns a synchronous
+`MemberExecution` whose opaque handle tracks the session/controller lifecycle,
+aborts the session on signal, effective admission timeout, or observed budget
+breach, implements `containMember` by aborting and disposing only that tracked
+session, and always disposes it.
 
 ### Alloy Pi 0.82.1
 
@@ -810,8 +865,12 @@ existing credential broker, child policy, `runChildAgent`, budget accounting,
 and containment.
 
 The adapter always passes the four-tool read-only allowlist (or a manifest
-subset), `mode: "review"`, the admitted route/model, the manifest timeout, and
-the tighter team/global budget. It never imports or modifies Auto, Fusion,
+subset), `mode: "review"`, the admitted route/model, the effective admitted
+timeout, and the tighter team/global budget. `runMember` returns an adapter-owned
+handle while `spawnAgent` is pending; `containMember` uses that exact handle's
+abort path, which delegates child termination to Alloy's existing runner and
+containment rather than creating a second containment layer. It never imports
+or modifies Auto, Fusion,
 Fission, Forge, worktree code, or diagnostic workflows.
 
 ## Command And Tool Contract
@@ -870,7 +929,9 @@ Slice 1 is complete only when tests prove:
 - duplicate member and DAG cycle rejection;
 - namespace collisions, unambiguous short names, and project-trust gating;
 - semantic routes remain separate from actual models;
-- capability/tool intersection is tighten-only;
+- capability/tool and successful-admission timeout intersection is tighten-only;
+- effective member timeouts are public, policy-hashed, approval-bound, and used
+  for execution rather than the wider manifest request;
 - all-member preflight completes successfully before any member starts;
 - no provider spend occurs before human approval;
 - a model cannot approve or execute an unapproved run;
@@ -878,9 +939,14 @@ Slice 1 is complete only when tests prove:
 - malformed, truncated, reordered, unknown, and hash-invalid logs fail closed;
 - a nonterminal history projects as `incomplete`, not durably running;
 - dependency scheduling, concurrency bounds, failure stop, timeout, abort
-  propagation, containment, and terminal cancellation;
+  propagation, abort-before-containment ordering, per-running-member bounded
+  containment, abort-ignoring settlement bounds, containment failure, and
+  terminal cancellation;
 - artifact digest, size, identity, symlink, and path traversal enforcement;
-- stock and Alloy adapter contracts use only read-only authority;
+- stock and Alloy adapter contracts use only read-only authority and expose
+  callable-during-execution member handles for bounded containment;
+- the public barrel resolves after Tasks 1, 9, 11, and 13 without importing a
+  module that its task has not created;
 - a packed portable package registers once and works with stock Pi `0.84.2`;
 - Alloy's root extension with Pi `0.82.1` registers `/team` and `team` exactly
   once;

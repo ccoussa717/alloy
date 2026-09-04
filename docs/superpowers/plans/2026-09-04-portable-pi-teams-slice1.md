@@ -21,7 +21,9 @@
 - Reject duplicate keys, anchors, aliases, merge keys, custom tags, unknown fields, duplicate IDs, unknown dependencies, cycles, unsupported routes/capabilities/tools, invalid limits, symlinks, and escaped paths before model use.
 - Load `.pi/teams/*.yaml` only when the current host context affirmatively reports project trust; untrusted project files are not opened.
 - All members must pass preflight before any member starts, and no provider call occurs before a matching human approval.
-- Copy the common host abort signal into `TeamRunContext.signal`; it may only cancel work. Never inspect `TeamRunContext.runtime` in core code.
+- A successful admission includes a positive integer `timeoutMs` no greater than the requested member timeout; effective timeouts are public, policy-hashed, and approval-bound.
+- Copy the common host abort signal into `TeamRunContext.signal`; it may only cancel work. Never inspect `TeamRunContext.runtime` or `MemberExecution.handle` in core code.
+- On failure, timeout, or cancellation: abort first; immediately start per-running-member containment; bound containment and result settlement to 5,000 ms each; only then settle events. Any containment/settlement failure ends `run.failed`, never a falsely contained completion/cancellation.
 - Allocate `limits.maxCostUsd / limits.maxMembers` to each member so aggregate member ceilings cannot exceed the approved team ceiling.
 - Durable validated events are status authority; UI, process, callbacks, and child streams are not authority.
 - Event history is append-only, single-writer, contiguous, canonical SHA-256 hash-chained, mode `0600` under mode `0700` directories, and fsynced.
@@ -36,7 +38,7 @@
 
 - Create `packages/pi-teams/package.json`: standalone package metadata, peers, YAML dependency, Pi extension entry.
 - Create `packages/pi-teams/tsconfig.json`: no-emit strict check against the installed Alloy Pi types.
-- Create `packages/pi-teams/src/index.ts`: public portable exports.
+- Create `packages/pi-teams/src/index.ts`: incremental public barrel; it exports a module only after that task creates the module.
 - Create `packages/pi-teams/src/core/types.ts`: exact shared domain and port interfaces.
 - Create `packages/pi-teams/src/core/limits.ts`: immutable Slice 1 ceilings and validators.
 - Create `packages/pi-teams/src/core/manifest.ts`: strict YAML AST and manifest validation.
@@ -213,7 +215,7 @@ manifest commands/templates/model IDs, and manifest-defined authorization.
 
 **Interfaces:**
 - Consumes: Node.js `>=22.19.0`, root Pi `0.82.1`, TypeBox `1.1.38`.
-- Produces: every interface printed in the design's “Domain Interfaces” section; `TEAM_LIMITS`, `assertBoundedUtf8`, `assertIdentifier`, and package export `@alloy/pi-teams`.
+- Produces: every Task 1 domain/port interface printed in the design's “Domain Interfaces” section; `TEAM_LIMITS`, `assertBoundedUtf8`, `assertIdentifier`, and a package barrel that exports only `core/types.ts` and `core/limits.ts`.
 
 - [ ] **Step 1: Write the failing package-boundary test**
 
@@ -233,7 +235,13 @@ assert.equal(root.scripts["typecheck:teams"], "tsc -p packages/pi-teams/tsconfig
 
 Also read every file under `packages/pi-teams/src/core/`, when present, and
 assert it contains neither `@earendil-works/pi-coding-agent` nor `/lib/` or
-`lib/teams-host` import text.
+`lib/teams-host` import text. Read `src/index.ts` and build the expected ordered
+exports as `./core/types.ts`, `./core/limits.ts`, plus
+`./core/service.ts`, `./adapters/stock-pi.ts`, and `./extension/index.ts` only
+when each designated file exists. Assert the barrel equals that dynamically
+computed list and every export target exists. At Task 1 this proves the barrel
+contains exactly types/limits; the same test remains green as Tasks 9, 11, and
+13 add their module and export together.
 
 - [ ] **Step 2: Run the test to verify the package is absent**
 
@@ -286,6 +294,7 @@ export const TEAM_LIMITS = Object.freeze({
   concurrency: 3,
   costUsd: 2,
   timeoutMs: 300_000,
+  containmentTimeoutMs: 5_000,
   objectiveBytes: 16_384,
   descriptionBytes: 1_024,
   instructionBytes: 8_192,
@@ -300,7 +309,9 @@ export const IDENTIFIER = /^[a-z][a-z0-9-]{0,63}$/;
 `assertBoundedUtf8(value, field, maximum)` must require a well-formed string
 (`Buffer.from(value).toString("utf8") === value`), a nonempty trimmed value,
 and an inclusive UTF-8 byte ceiling. `assertIdentifier` applies `IDENTIFIER`.
-`src/index.ts` re-exports only public core/service/adapter/extension factories.
+At Task 1, `src/index.ts` exports only `./core/types.ts` and
+`./core/limits.ts`; do not mention not-yet-created service, adapter, or extension
+modules.
 
 - [ ] **Step 5: Run focused checks**
 
@@ -602,13 +613,18 @@ assert.equal(sha256Canonical({ b: 2, a: 1 }), sha256Canonical({ a: 1, b: 2 }));
 Test package/host/operator/parent/manifest intersection. A missing requested
 capability or tool blocks rather than silently widening or dropping it. Assert
 routes stay semantic in the compiled plan while `effectiveModel` exists only in
-admission. Assert per-member budget is `maxCostUsd / maxMembers`. Change each
-approval field separately and assert verification fails.
+admission. Assert per-member budget is `maxCostUsd / maxMembers`. Assert a host
+`timeoutMs` equal to or below the requested timeout is admitted and retained,
+while zero, negative, fractional, nonfinite, or larger timeouts block. Change
+each approval field separately and assert verification fails; then change only
+one admitted member's effective timeout, recompute `policyDigest`, and assert
+the previously issued binding fails.
 
 ```js
 assert.deepEqual(admitted.effectiveCapabilities, ["repo.read"]);
 assert.deepEqual(admitted.effectiveTools, ["read", "grep"]);
 assert.equal(admitted.maxCostUsd, 2 / 3);
+assert.equal(admitted.timeoutMs, 120_000);
 assert.equal(compiled.definition.spec.members[0].route, "research");
 assert.equal("model" in compiled.definition.spec.members[0], false);
 assert.throws(() => verifyApprovalBinding(expected, { ...expected, planDigest: "0".repeat(64) }), /approval_binding/);
@@ -646,11 +662,13 @@ export function verifyApprovalBinding(expected: ApprovalBinding, actual: Approva
 
 Treat a blocked host admission as blocked. For an admitted result, require every
 effective capability/tool in package, host, and manifest sets; require the
-semantic route, member allocation, and timeout to match the request; and
-preserve manifest tool order. Hash the public admissions plus effective limits,
-where effective `maxConcurrency` is the lesser of manifest and host ceilings.
-Host preflight remains responsible for operator and parent ceilings, and its
-opaque token is never hashed.
+semantic route and member allocation to match; require integer
+`0 < admission.timeoutMs <= input.timeoutMs`; and preserve manifest tool order.
+Hash the public admissions, including each effective `timeoutMs`, plus effective
+limits, where effective `maxConcurrency` is the lesser of manifest and host
+ceilings. Host preflight remains responsible for operator and parent ceilings,
+and its opaque token is never hashed. Approval binds the resulting policy
+digest, so any effective-timeout change invalidates approval.
 
 - [ ] **Step 6: Run focused tests and typecheck**
 
@@ -941,18 +959,21 @@ git commit -m "feat: schedule bounded team dags"
 **Files:**
 - Create: `packages/pi-teams/src/core/service.ts`
 - Create: `test/unit/teams-service.test.mjs`
+- Modify: `packages/pi-teams/src/index.ts`
 
 **Interfaces:**
 - Consumes: `TeamCatalog`, compiler/policy, `TeamHost`, `EventStore`, `ArtifactStore`, projection.
-- Produces: `createTeamService({ catalogFor, eventStore, artifactStore, host, now, randomUUID }): TeamService`; live admitted run records remain private.
+- Produces: `createTeamService({ catalogFor, eventStore, artifactStore, host, now, randomUUID }): TeamService`; live admitted run records remain private; the public barrel adds only the now-existing service factory.
 
 - [ ] **Step 1: Write failing request/preflight tests with fakes**
 
 Create fake stores and a host whose `preflightMember` records calls and whose
 `runMember` increments `providerCalls`. Assert request validates objective size,
 resolves/compiles once, preflights all three members in declaration order,
-passes `2 / 3` cost and `300000` timeout to each, and appends requested,
-snapshot, admitted, awaiting events. Assert `providerCalls === 0`.
+passes `2 / 3` cost and `300000` timeout to each, accepts each host's
+positive narrowed effective timeout, and appends requested, snapshot, admitted,
+awaiting events with public effective timeouts included. Assert
+`providerCalls === 0`.
 
 For each member position, return a blocked admission and assert all preflights
 still settle, `policy.blocked` then `run.blocked` are terminal, and no member
@@ -984,13 +1005,16 @@ export function createTeamService(input: TeamServiceDependencies): TeamService;
 ```
 
 Keep a private `Map<string, LiveRun>` containing writer, compiled team,
-admissions/tokens, context, binding, scheduler, and abort controllers. Validate
-the objective before creating a run. Write immutable snapshots, append request
-and snapshot events, ask host capabilities, intersect package/host bounds, and
-await `Promise.allSettled` for every member preflight. If any fails, append the
-complete blocked reasons and terminal block. If all pass, strip opaque tokens
-from the canonical admission payload, compute policy digest/binding, append
-admitted and awaiting events, and return a projection. Never call `runMember`.
+admissions/tokens, context, binding, scheduler, abort controllers, and running
+`MemberExecution` records. Validate the objective before creating a run. Write
+immutable snapshots, append request and snapshot events, ask host capabilities,
+intersect package/host bounds, and await `Promise.allSettled` for every member
+preflight. Validate each successful host admission with integer
+`0 < timeoutMs <= requested timeoutMs`. If any fails, append the complete
+blocked reasons and terminal block. If all pass, strip opaque tokens from the
+canonical admission payload while retaining effective `timeoutMs`, compute the
+policy digest/binding, append admitted and awaiting events, and return a
+projection. Never call `runMember`.
 
 - [ ] **Step 5: Implement human approval binding**
 
@@ -999,15 +1023,22 @@ run, compare all five binding fields in constant-time for digest strings,
 append `approval.granted`, and return the projected view. Keep approval and
 execution separate methods.
 
-- [ ] **Step 6: Run focused service tests**
+- [ ] **Step 6: Export the now-existing service factory**
+
+Add only `export { createTeamService } from "./core/service.ts";` to
+`packages/pi-teams/src/index.ts`; keep future stock-adapter and extension paths
+absent.
+
+- [ ] **Step 7: Run focused service tests**
 
 Run: `node --test test/unit/teams-service.test.mjs --test-name-pattern="request|preflight|approve" && npm run typecheck:teams`
-Expected: PASS; provider call count remains zero through approval.
+Expected: PASS; provider call count remains zero through approval, the public
+admissions retain narrowed timeouts, and the barrel resolves no future module.
 
-- [ ] **Step 7: Commit request authority**
+- [ ] **Step 8: Commit request authority**
 
 ```bash
-git add packages/pi-teams/src/core/service.ts test/unit/teams-service.test.mjs
+git add packages/pi-teams/src/core/service.ts packages/pi-teams/src/index.ts test/unit/teams-service.test.mjs
 git commit -m "feat: preflight and approve team runs"
 ```
 
@@ -1018,8 +1049,8 @@ git commit -m "feat: preflight and approve team runs"
 - Modify: `test/unit/teams-service.test.mjs`
 
 **Interfaces:**
-- Consumes: Task 9 live admission records, scheduler, host, artifact verification.
-- Produces: operational `execute`, `cancel`, `status`, and `view` methods on the existing `TeamService`.
+- Consumes: Task 9 live admission records, scheduler, host, artifact verification, synchronous `MemberExecution` handles, and required `TeamHost.containMember(input, context, signal): Promise<void>`.
+- Produces: operational `execute`, `cancel`, `status`, and `view` methods on the existing `TeamService`; private abort-first bounded containment/settlement helpers use `TEAM_LIMITS.containmentTimeoutMs === 5_000`.
 
 - [ ] **Step 1: Write failing successful-execution tests**
 
@@ -1043,10 +1074,23 @@ assert.equal((await service.status(runId, context)).status, "completed");
 
 - [ ] **Step 2: Write failing failure, timeout, and cancellation tests**
 
-Cover member rejection, invalid artifact on dependency read, timeout at exactly
-the manifest bound, caller signal abort, `/cancel` while two members run,
-containment invocation, no later starts, member cancellation events, and exactly
-one terminal event. Assert terminal cancel is idempotent. Construct a valid
+Cover member rejection, invalid artifact on dependency read, timeout at each
+member's effective admitted timeout (including a host-narrowed timeout), caller
+signal abort, and `/cancel` while two members run. Record call order and assert
+all running controllers abort first, then `containMember` is invoked once for
+every running
+`{ runId, memberId, handle }`, and no member result is awaited before all
+containment calls have started. Make the first containment call throw
+synchronously and assert later running members still receive containment calls.
+Assert no later starts, member cancellation evidence, and exactly one terminal
+event.
+
+Add a containment rejection case, a containment promise that never settles, and
+a member result that ignores abort and never settles. Advance a fake clock by
+5,000 ms and assert each run returns without deadlock as `run.failed` with the
+specific containment/settlement reason; it must not report `run.cancelled` or
+`run.completed`. Assert successful bounded containment plus settlement permits
+`run.cancelled`, and terminal cancel is idempotent. Construct a valid
 nonterminal history in a fresh service and assert status `incomplete` while
 approve/execute/cancel reject `resume_unsupported` without append.
 
@@ -1059,20 +1103,38 @@ Expected: FAIL because Task 9 does not drive members or cancellation.
 
 Append `run.started`, emit each newly ready event once, and launch only the IDs
 returned by `readyMembers`. Give each member its own controller linked to the
-run controller and timeout. On success, bound/write/re-read the artifact before
-`member.artifact_recorded` and `member.succeeded`; append
-`budget.observed` from returned usage and reject nonfinite/negative or
-allocation-exceeding cost. Pass only verified dependency text/refs to a
-successor. Continue via `Promise.race` until complete or a failure occurs.
+run controller and a timer using `admission.timeoutMs`; pass that same effective
+value as `MemberRunInput.timeoutMs`. Call synchronous `host.runMember`, verify
+its returned `runId`/`memberId`, and retain its opaque handle and result promise
+before yielding. On success, bound/write/re-read the artifact before
+`member.artifact_recorded` and `member.succeeded`; append `budget.observed` from
+returned usage and reject nonfinite/negative or allocation-exceeding cost. Pass
+only verified dependency text/refs to a successor. Continue via `Promise.race`
+until complete or a failure occurs.
 
 - [ ] **Step 5: Implement terminal failure and cancellation settlement**
 
-On any error, stop launching, abort all controllers, await all running promises
-with `Promise.allSettled`, call `host.contain?.(runId)`, append member failure or
-cancellation evidence once, then one `run.failed` or `run.cancelled`. `cancel`
-first appends `cancel.requested`. Close the writer and remove the live record
-only after terminal sync. A terminal cancel returns current projection without
-append; an absent/nonterminal persisted run rejects `resume_unsupported`.
+On any error, stop launching and abort every running controller first. Without
+awaiting between members, invoke `host.containMember` for every running
+execution using its `{ runId, memberId, handle }` and a containment signal. Wrap
+each invocation independently so a synchronous throw from one host call cannot
+prevent containment from starting for later members. Race every containment
+promise against the fixed 5,000 ms deadline; only after all containment calls
+have started and their bounded outcomes are
+known may the service await member results, also raced against a fresh 5,000 ms
+settlement deadline. Never use unbounded `Promise.allSettled` on child results.
+
+Append member failure/cancellation evidence once, then exactly one terminal
+event. `cancel` first appends `cancel.requested`. Emit `run.cancelled` only when
+all containment and settlement outcomes succeed; any containment rejection,
+containment timeout, or settlement timeout emits `run.failed` with stable reason
+`containment_failed`, `containment_timeout`, or `member_settlement_timeout` and
+must not claim completion/cancellation. A member result counts as settled when
+it fulfills or rejects; ordinary abort rejection does not turn a successfully
+contained cancellation into failure. Close the writer and remove the live
+record only after terminal sync. A terminal cancel returns current projection
+without append; an absent/nonterminal persisted run rejects
+`resume_unsupported`.
 
 - [ ] **Step 6: Implement event-backed status and verified view**
 
@@ -1105,7 +1167,7 @@ git commit -m "feat: execute and cancel durable team runs"
 
 **Interfaces:**
 - Consumes: common SDK `createAgentSession`, `DefaultResourceLoader`, `SessionManager.inMemory`; runtime context contains Pi `ExtensionContext`.
-- Produces: `createStockPiHost({ sdk?, agentDir? }): TeamHost` with only read-only capabilities.
+- Produces: `createStockPiHost({ sdk?, agentDir? }): TeamHost` with only read-only capabilities, synchronous `MemberExecution` handles, required per-member containment, and a newly added barrel export.
 
 - [ ] **Step 1: Write failing capabilities/preflight tests**
 
@@ -1114,7 +1176,9 @@ Inject a fake SDK and context model. Assert capabilities contain exactly
 model ID, missing model blocks, unsupported tools block, finite nonnegative
 pricing is required, and the equal member allocation produces an output token
 cap whose listed worst-case input plus output price does not exceed the
-allocation.
+allocation. Return `timeoutMs` on every successful admission; preserve the
+requested timeout when no host limit is tighter, return a smaller host limit
+when configured, and never widen it.
 
 ```js
 assert.deepEqual(await host.capabilities(context), {
@@ -1124,6 +1188,7 @@ assert.deepEqual(await host.capabilities(context), {
   supportsCancellation: true,
 });
 assert.equal(admission.effectiveModel, "anthropic/selected");
+assert.equal(admission.timeoutMs, 120_000);
 assert.ok(admission.token.model.maxTokens <= context.runtime.model.maxTokens);
 ```
 
@@ -1134,9 +1199,12 @@ subset, in-memory session manager, and a resource loader configured with
 `noExtensions`, `noSkills`, `noPromptTemplates`, `noThemes`, and
 `noContextFiles` all true. Assert the prompt is JSON data with objective,
 instructions, and ordered verified dependencies; it contains no interpolation
-syntax. Assert result/usage extraction, timeout/signal calls `session.abort`, and
-`session.dispose` occurs once on success and failure. Assert no write/edit/bash
-tool is enabled.
+syntax. Assert `runMember` synchronously returns `{ runId, memberId, handle, result }`
+before the child result settles. While it is pending, call `containMember` with
+that exact identity/handle and assert it aborts and disposes only that session.
+Assert result/usage extraction, effective admission timeout/signal calls
+`session.abort`, and `session.dispose` occurs once on success, failure, and
+containment. Assert no write/edit/bash tool is enabled.
 
 - [ ] **Step 3: Run adapter tests and verify missing module**
 
@@ -1154,24 +1222,36 @@ as one token per UTF-8 byte for the fixed prompt envelope and maximum possible
 verified dependencies. Convert model prices (per million tokens) to cost,
 subtract from the member allocation, and clone `model.maxTokens` down to the
 largest affordable integer output count. Block if price metadata is invalid or
-a priced model cannot fund one token. Keep the host's selected provider/model;
-never parse a model from route or manifest.
+a priced model cannot fund one token. Return an admitted integer `timeoutMs`
+that is positive and no larger than `MemberPreflightInput.timeoutMs`. Keep the
+host's selected provider/model; never parse a model from route or manifest.
 
 - [ ] **Step 5: Implement isolated read-only in-process sessions**
 
 Construct `SettingsManager`/`DefaultResourceLoader` with project resource
 discovery disabled, call `reload`, then `createAgentSession` with
-`SessionManager.inMemory(context.cwd)` and exact tools. Serialize a bounded JSON
-prompt, subscribe for final usage/model evidence, link abort and timeout to
-`session.abort()`, call `session.prompt`, take final assistant text, validate
-usage, and dispose/unsubscribe/clear timers in `finally`.
+`SessionManager.inMemory(context.cwd)` and exact tools. `runMember` immediately
+returns a host-owned handle and an async result that performs setup. Serialize a
+bounded JSON prompt, subscribe for final usage/model evidence, link abort and
+`admission.timeoutMs` to `session.abort()`, call `session.prompt`, take final
+assistant text, validate usage, and dispose/unsubscribe/clear timers in
+`finally`. `containMember` validates exact run/member/handle identity and aborts
+plus disposes that tracked session; it must be safe while async setup is still
+pending.
 
-- [ ] **Step 6: Run adapter, service, and type checks**
+- [ ] **Step 6: Export the now-existing stock host factory**
+
+Add only `export { createStockPiHost } from "./adapters/stock-pi.ts";` to
+`packages/pi-teams/src/index.ts`; retain the Task 1 and Task 9 exports and keep
+future extension paths absent.
+
+- [ ] **Step 7: Run adapter, service, and type checks**
 
 Run: `node --test test/unit/teams-stock-adapter.test.mjs test/unit/teams-service.test.mjs && npm run typecheck:teams`
-Expected: PASS against root Pi `0.82.1` types.
+Expected: PASS against root Pi `0.82.1` types; narrowed timeout, live handle,
+and containment assertions pass.
 
-- [ ] **Step 7: Commit stock Pi adaptation**
+- [ ] **Step 8: Commit stock Pi adaptation**
 
 ```bash
 git add packages/pi-teams/src/adapters/stock-pi.ts packages/pi-teams/src/index.ts test/unit/teams-stock-adapter.test.mjs
@@ -1209,7 +1289,8 @@ assert.throws(() => parseTeamCommand("approve"), /team_usage/);
 
 With one fake service instance, assert list/inspect/status/view dispatch exactly;
 `run` requests first, displays qualified team/effective routes/models/tools,
-concurrency/timeout/USD ceiling, and invokes approve then execute only after a
+effective run concurrency, every member's admitted `timeoutMs`, and the USD
+ceiling, and invokes approve then execute only after a
 true interactive confirmation. False confirmation and `hasUI: false` stop at
 awaiting approval. `/team approve` confirms the stored binding before approve
 and execute. `/team cancel` calls only cancel. Assert formatters are plain
@@ -1245,8 +1326,9 @@ or raw event payloads.
 - [ ] **Step 6: Implement the human-only approval flow**
 
 Register `team` once as a command. Build actor `{ kind: "human", id: "pi-user" }`.
-For run/approve, render the exact stored approval binding and policy before
-`ctx.ui.confirm`. If no dialog-capable UI exists, notify/print
+For run/approve, render the exact stored approval binding and policy—including
+each admitted member's effective `timeoutMs`—before `ctx.ui.confirm`. If no
+dialog-capable UI exists, notify/print
 `approval_required` and return. Call `service.approve` only in the confirmed
 branch, followed by `service.execute`. Do not expose approval through a shared
 generic dispatcher callable by the tool.
@@ -1273,7 +1355,7 @@ git commit -m "feat: add investigate team command"
 
 **Interfaces:**
 - Consumes: command registration, stock host, catalog/file stores, `TeamService`.
-- Produces: `registerTeamTool`, default portable extension, and `registerTeams(pi, options?)`; exactly one service is passed to both surfaces.
+- Produces: `registerTeamTool`, default portable extension, and `registerTeams(pi, options?)`; exactly one service is passed to both surfaces; the barrel adds named `registerTeams` and the portable default export only after `extension/index.ts` exists.
 
 - [ ] **Step 1: Write failing closed-schema and action tests**
 
@@ -1337,8 +1419,10 @@ Use a module `WeakSet<object>` to reject duplicate API registration. Resolve
 built-in/user/project roots, pass `ctx.isProjectTrusted()` to catalog loading,
 derive project ID from SHA-256 of canonical absolute cwd, copy `ctx.signal` to
 the explicit cancellation field, place `ctx` in the opaque runtime field,
-create exactly one service, then pass it to command
-and tool registration.
+create exactly one service, then pass it to command and tool registration. Add
+`export { registerTeams, default } from "./extension/index.ts";` to the public
+barrel only in this task, retaining the earlier types/limits, service, and stock
+host exports.
 
 - [ ] **Step 6: Run all extension tests and typecheck**
 
@@ -1364,16 +1448,22 @@ git commit -m "feat: expose one safe teams service"
 
 **Interfaces:**
 - Consumes: `prepareAgentLaunch`, `getRunningAgentCount`, `getAgentSpentCost`, `spawnAgent`, `resolveParentChildSpawnOpts`, portable `registerTeams`.
-- Produces: `createAlloyTeamsHost(dependencies?): TeamHost` and `registerTeams(pi)` Alloy wrapper.
+- Produces: `createAlloyTeamsHost(dependencies?): TeamHost` with narrowed effective timeout, synchronous `MemberExecution`, and per-member `containMember`; plus the `registerTeams(pi)` Alloy wrapper.
 
 - [ ] **Step 1: Write failing Alloy adapter contract tests**
 
 Inject spies for every Alloy primitive. Assert semantic route reaches
 `prepareAgentLaunch.requestedRole`, tools are always a manifest subset of the
 four read tools, current running/cost values are passed, and failed routing
-blocks. On run, assert `spawnAgent` receives the preflight route/model,
-`mode: "review"`, `background: false`, parent policy snapshot, timeout, signal,
-credential broker values, and member cost allocation. Assert no import text
+blocks. Assert the
+successful admission includes integer `timeoutMs` no greater than the requested
+value, and a widening router/host value blocks. On run, assert `spawnAgent`
+receives the preflight route/model, `mode: "review"`, `background: false`, parent
+policy snapshot, effective admitted timeout, signal, credential broker values,
+and member cost allocation. Assert `runMember` synchronously returns the exact
+run/member identity and opaque handle while `spawnAgent` is pending. Invoke
+`containMember` during execution and assert it aborts only that tracked handle.
+Assert no import text
 references `auto-workflow`, `fusion`, `fission`, `forge`, `worktree`, or
 diagnostics.
 
@@ -1381,6 +1471,8 @@ diagnostics.
 assert.equal(prepareCalls[0].requestedRole, "research");
 assert.deepEqual(prepareCalls[0].tools, ["read", "grep", "find", "ls"]);
 assert.deepEqual(parentCalls, [{ mode: "review" }]);
+assert.equal(admission.timeoutMs, 120_000);
+assert.equal(spawnCalls[0].timeoutMs, admission.timeoutMs);
 assert.equal(spawnCalls[0].budgetUsd, 2 / 3);
 ```
 
@@ -1416,11 +1508,15 @@ its tool set is `read`, `grep`, `find`, `ls`, and its maximum concurrency comes
 from the stricter team/global routing result.
 
 Fill each method only through the injected/default approved primitives. Convert
-`prepareAgentLaunch` success into an admission with an opaque frozen token;
-convert routing failures to stable reasons. Use `spawnAgent` for execution and
-map its full record to `MemberResult`. `contain` aborts handles tracked by this
-adapter only; it does not scan or kill unrelated agents. Do not implement a
-router, credential copy, subprocess spawn, ledger, or worktree path here.
+`prepareAgentLaunch` success into an admission with an opaque frozen token and
+an integer effective `timeoutMs` no greater than the requested value; convert
+routing or timeout widening failures to stable reasons. `runMember` synchronously
+creates a tracked host handle, starts `spawnAgent`, and returns its mapped result
+promise. `containMember` validates exact run/member/handle identity and aborts
+only that in-flight adapter-owned handle through Alloy's existing signal/child
+containment path; it does not scan or kill unrelated agents. Do not implement a
+router, credential copy, subprocess spawn, ledger, process-containment layer,
+or worktree path here.
 
 - [ ] **Step 5: Wire Alloy once through the root extension**
 
@@ -1461,7 +1557,8 @@ git commit -m "feat: adapt portable teams into Alloy"
 
 Assert the package/root/help documents name `builtin/investigate`, `/team list`,
 `/team run`, `team` tool, stock `0.84.2`, Alloy `0.82.1`, project trust,
-`incomplete`, and human approval. Assert they explicitly state no mutation,
+`incomplete`, human approval, effective timeout narrowing, and bounded
+abort-before-containment. Assert they explicitly state no mutation,
 resume, apply, push, publish, deploy, custom TUI, or Auto/Fusion/Fission
 refactor in Slice 1.
 
@@ -1497,8 +1594,10 @@ Expected: documentation test FAIL; stock test reports SKIP without the opt-in.
 
 Document installation through Pi package settings, three manifest locations,
 trust gating, fixed resource/security limits, all seven command forms, all tool
-actions, human approval, event/artifact paths, `incomplete` crash behavior,
-stock active-model routing, Alloy primitive reuse, and every Slice 1 exclusion.
+actions, human approval bound to effective member timeouts, event/artifact
+paths, `incomplete` crash behavior, the 5,000 ms abort-before-containment and
+settlement bounds, fail-closed containment errors, stock active-model routing,
+Alloy primitive reuse, and every Slice 1 exclusion.
 Add a concise root README section linking `packages/pi-teams/README.md`. Add
 plain `/team` help text to `lib/help-catalog.mjs`; do not add graphical UI code.
 
@@ -1587,8 +1686,13 @@ npm run typecheck:teams
 Expected: placeholder scan has no matches; tests/typecheck PASS. Manually compare the
 design validation list with Tasks 1–15 and verify every item has a named test.
 Verify `TeamHost`, `Admission`, `MemberPreflightInput`, `MemberRunInput`,
-`TeamService`, `ApprovalBinding`, `ArtifactRef`, and `TeamRunView` names and
-properties are identical at every producer and consumer.
+`MemberExecution`, `MemberContainmentInput`, `TeamService`, `ApprovalBinding`,
+`ArtifactRef`, and `TeamRunView` names and properties are identical at every
+producer and consumer. Verify successful admissions retain effective
+`timeoutMs`, `policyDigest` changes when only that timeout changes, and
+`runMember`/`containMember` signatures match both adapters and the service.
+Finally, inspect the barrel at the Task 1, Task 9, Task 11, and Task 13 commit
+boundaries and confirm no commit imports a module that does not yet exist.
 
 - [ ] **Step 11: Commit documentation and final verification wiring**
 
