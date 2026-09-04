@@ -30,6 +30,7 @@ import { registerAuthCommands } from "./auth-commands.ts";
 import { registerSidebar } from "./sidebar.ts";
 import { registerFission } from "./fission.ts";
 import { registerForge } from "./forge.ts";
+import { registerTeams } from "./teams.ts";
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,4 +70,5 @@ export default async function alloyExtension(pi: ExtensionAPI) {
   registerAgents(pi); // /agent /agents /profiles · multi-model sub-agents
   registerFission(pi);
   registerForge(pi);
+  registerTeams(pi);
 }
