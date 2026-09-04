@@ -65,6 +65,7 @@ function harness(launch = successfulLaunch()) {
       spentCalls.push(cwd);
       return 0.5;
     },
+    loadConfig: () => ({ orchestration: { maxConcurrency: 3 } }),
     resolveParentChildSpawnOpts: (input) => {
       parentCalls.push(input);
       return {
@@ -108,7 +109,7 @@ test("Alloy host routes semantic read-only members through existing admission pr
   assert.deepEqual(await host.capabilities(context), {
     capabilities: ["repo.read"],
     tools: ["read", "grep", "find", "ls"],
-    maxConcurrency: 1,
+    maxConcurrency: 2,
     supportsCancellation: true,
   });
 
@@ -124,7 +125,7 @@ test("Alloy host routes semantic read-only members through existing admission pr
   assert.equal(state.prepareCalls[0].activeChildren, 1);
   assert.equal(state.prepareCalls[0].spentCostUsd, 0.5);
   assert.equal(state.prepareCalls[0].modelRegistry, context.runtime.modelRegistry);
-  assert.deepEqual(state.runningCalls, ["/repo"]);
+  assert.deepEqual(state.runningCalls, ["/repo", "/repo"]);
   assert.deepEqual(state.spentCalls, ["/repo"]);
   assert.equal(admission.timeoutMs, 120_000);
   assert.equal(Number.isInteger(admission.timeoutMs), true);
@@ -263,22 +264,43 @@ test("Alloy run returns synchronously, reuses spawn policy, maps evidence, and c
     /execution identity/,
   );
 
+  const firstFull = {
+    ok: true,
+    text: "Evidence",
+    model: "provider/research-model",
+    actualModel: "provider/research-model",
+    error: null,
+    usage: { input: 11, output: 7, cost: 0.25, costKnown: true },
+  };
   first.pending.resolve({
-    full: {
-      ok: true,
-      text: "Evidence",
-      model: "provider/research-model",
-      usage: { input: 11, output: 7, cost: 0.25, costKnown: true },
+    record: {
+      ok: firstFull.ok,
+      model: firstFull.model,
+      actualModel: firstFull.actualModel,
+      error: firstFull.error,
+      usage: firstFull.usage,
     },
+    full: firstFull,
+    background: false,
   });
+  const secondFull = {
+    ok: false,
+    text: "",
+    model: "provider/research-model",
+    error: "aborted",
+    actualModel: "provider/research-model",
+    usage: { input: 0, output: 0, cost: 0, costKnown: true },
+  };
   second.pending.resolve({
-    full: {
-      ok: false,
-      text: "",
-      model: "provider/research-model",
-      error: "aborted",
-      usage: { input: 0, output: 0, cost: 0, costKnown: true },
+    record: {
+      ok: secondFull.ok,
+      model: secondFull.model,
+      actualModel: secondFull.actualModel,
+      error: secondFull.error,
+      usage: secondFull.usage,
     },
+    full: secondFull,
+    background: false,
   });
   assert.deepEqual(await execution.result, {
     ok: true,

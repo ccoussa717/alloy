@@ -62,5 +62,55 @@ node --test test/unit/teams-alloy-host.test.mjs test/unit/teams-registration.tes
 ## Scope And Residual Risk
 
 - No Auto, Fusion, Fission, Forge, worktree, or diagnostics implementation was changed or imported by the adapter.
-- The host advertises a conservative one-member scheduler ceiling; each spawn additionally carries Alloy's admitted global concurrency ceiling, so concurrency cannot widen beyond either authority. This favors containment and avoids preflight/execution races in the current TeamHost call order.
+- Superseded in Fix Round 1: host concurrency now derives from the portable ceiling and current Alloy configured capacity rather than a fixed one-member ceiling.
 - No live provider child was launched; child option propagation, asynchronous settlement, usage mapping, and exact-handle cancellation are covered with injected primitive contract tests.
+
+## Fix Round 1 (review follow-up)
+
+### RED
+
+The review regressions were added before production changes. The first focused run was intentionally red:
+
+```text
+node --test test/unit/teams-alloy-host.test.mjs test/unit/teams-alloy-host-review.test.mjs test/unit/teams-child-runner.test.mjs
+# tests 12
+# pass 3
+# fail 9
+```
+
+Failures demonstrated hard-coded concurrency, semantic-route and credential contradictions being admitted, missing confinement/subset propagation, unsafe result normalization, hostile error getter access, retained settled handles, and review-mode tool widening.
+
+### Corrections
+
+- Added one opt-in `preserveReadOnlyToolSubset` seam through `spawnAgent` to the existing child policy/runner. Review/plan behavior is unchanged for all existing callers; the opt-in validates a nonempty unique subset of `read`, `grep`, `find`, and `ls`, rejects `write`/`bash`, preserves the subset in the mechanical policy manifest and Pi `--tools` argument, and keeps `readRoot` confinement.
+- Added the existing `loadConfig` as an injected/default host dependency. Advertised host concurrency is now the minimum of the portable package ceiling and current configured global capacity after existing running agents; malformed or exhausted capacity fails closed.
+- Required successful route decisions to attest the exact semantic member route, exact model, exact tool subset, positive routing/budget limits, and recognized `runtime-key` credential evidence whose provider matches the admitted model.
+- Deep-captured and froze admission evidence as bounded plain data without invoking proxy/getter traps.
+- Made spawn normalization bounded and fail-closed for proxies, accessors, cycles, malformed or nonfinite usage, fractional/negative tokens, oversized text, over-budget cost, contradictory status, and missing/mismatched actual model evidence.
+- Preserved `actualModel` through the existing registry result and required both normalized model fields to agree with admission.
+- Passed the portable output ceiling into the existing child runner.
+- Removed settled adapter handles and covered wrong/stale same-host identity, already-aborted launch, repeated/concurrent live containment, synchronous throw, asynchronous rejection, and settlement races.
+
+### Fix-round files
+
+- `lib/teams-host.mjs`
+- `lib/agent-registry.mjs`
+- `lib/child-runner.mjs`
+- `test/unit/teams-alloy-host.test.mjs`
+- `test/unit/teams-alloy-host-review.test.mjs`
+- `test/unit/teams-child-runner.test.mjs`
+- `.superpowers/sdd/2026-09-04-portable-pi-teams-slice1/task-14-report.md`
+
+### Fix-round validation
+
+- Focused adapter, subset-runner, registration, and Fission smoke tests: 15 passed.
+- Teams plus relevant routing/child policy/runner tests: 310 passed.
+- Full root unit suite (`npm test`): 1,038 passed.
+- Isolated Alloy/Pi startup integration: 10 passed.
+- Portable Teams typecheck: passed.
+- TUI typecheck remains unavailable in this checkout because `tsgo` is not installed (`tsgo: command not found`, exit 127); no TUI code changed.
+- Syntax and `git diff --check`: passed.
+
+### Residual risk
+
+No live paid-provider child was launched. The exact subset reaches the real child policy builder and dry-run spawn-plan seam, while credential-safe child spawning remains covered by the existing child-runner and startup integration suites.
