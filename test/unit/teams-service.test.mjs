@@ -791,6 +791,79 @@ test("concurrent approvals share exactly one append", async () => {
   assert.equal(approvalAppends, 1);
 });
 
+// Break caught: approval can enqueue after cancellation owns lifecycle settlement.
+test("approve rejects after the synchronous cancel latch before cancel intent settles", async () => {
+  const cancelAppendEntered = deferred();
+  const releaseCancelAppend = deferred();
+  let approvalAppends = 0;
+  const store = eventStoreFake({
+    async beforeAppend(draft) {
+      if (draft.type === "cancel.requested") {
+        cancelAppendEntered.resolve();
+        await releaseCancelAppend.promise;
+      }
+      if (draft.type === "approval.granted") approvalAppends += 1;
+    },
+  });
+  const run = fixture({ eventStore: store });
+  const awaiting = await request(run);
+
+  const cancellation = run.service.cancel(
+    RUN_ID,
+    HUMAN_ACTOR,
+    context({ source: "command" }),
+  );
+  await cancelAppendEntered.promise;
+  const approval = run.service.approve({
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command" }),
+  });
+  await assert.rejects(() => approval, /approval_run/);
+  assert.equal(approvalAppends, 0);
+
+  releaseCancelAppend.resolve();
+  assert.equal((await cancellation).status, "cancelled");
+  const events = store.runs.get(RUN_ID).events;
+  assert.equal(events.some(({ type }) => type === "approval.granted"), false);
+  assert.deepEqual(events.slice(-2).map(({ type }) => type), [
+    "member.cancelled", "run.cancelled",
+  ]);
+});
+
+// Break caught: duplicate approval can race an execution-owned lifecycle operation.
+test("approve rejects while execution owns lifecycle settlement", async () => {
+  const result = deferred();
+  const run = fixture({
+    hostConcurrency: 1,
+    runMember(input, _context, signal) {
+      signal.addEventListener("abort", () => result.reject(new Error("aborted")), { once: true });
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: result.promise,
+      };
+    },
+  });
+  const awaiting = await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context());
+  await waitFor(() => run.runCalls.length === 1);
+  const approvalEvents = run.eventStore.runs.get(RUN_ID).events
+    .filter(({ type }) => type === "approval.granted").length;
+  await assert.rejects(() => run.service.approve({
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command" }),
+  }), /approval_run/);
+  assert.equal(run.eventStore.runs.get(RUN_ID).events
+    .filter(({ type }) => type === "approval.granted").length, approvalEvents);
+  await run.service.cancel(RUN_ID, HUMAN_ACTOR, context());
+  assert.equal((await execution).status, "cancelled");
+});
+
 // Break caught: failed approval retains writer authority, live tokens, or a replayable rejected promise.
 test("approval append failure closes and evicts the live run fail closed", async () => {
   let approvalAppends = 0;

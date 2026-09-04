@@ -1197,6 +1197,9 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       if (!sameRunContext(run.context, context)) {
         return serviceError("context_binding", "approval context does not match the requested run");
       }
+      if (run.stopCause !== undefined || run.operationPromise !== undefined) {
+        return serviceError("approval_run", "run lifecycle is already owned by execution or cancellation");
+      }
       verifyApprovalBinding(run.binding, captured.binding as ApprovalBinding);
       if (run.approved) {
         try {
@@ -1259,9 +1262,13 @@ export function createTeamService(dependencies: TeamServiceDependencies): TeamSe
       if (!sameRunContext(run.context, context)) {
         return serviceError("context_binding", "cancellation context does not match the requested run");
       }
+      const pendingApproval = run.approvalPromise;
       latchStop(run, { kind: "cancel", actor });
       if (run.operationPromise === undefined) {
-        return guardedOperation(run, () => settleLatchedRun(run));
+        return guardedOperation(run, async () => {
+          if (pendingApproval !== undefined) await pendingApproval;
+          return settleLatchedRun(run);
+        });
       }
       return run.operationPromise;
     },
