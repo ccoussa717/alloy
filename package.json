@@ -44,6 +44,7 @@
     "config",
     "docs/*.md",
     "docs/assets",
+    "packages/pi-teams",
     "scripts",
     "install.sh",
     "README.md",
@@ -61,6 +62,7 @@
     "test": "node --test test/unit/*.test.mjs",
     "test:tui": "bun --cwd tui test",
     "typecheck:tui": "bun run --cwd tui typecheck",
+    "typecheck:teams": "tsc -p packages/pi-teams/tsconfig.json",
     "verify:tui:pty": "bun run --cwd tui verify:pty",
     "verify:opentui-packed": "bash ./scripts/verify-opentui-packed.sh",
     "test:integration": "node --test --test-force-exit test/integration/*.e2e.test.mjs",
@@ -92,7 +94,11 @@
     "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
     "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "typebox": "1.1.38"
+    "typebox": "1.1.38",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   },
   "overrides": {
     "brace-expansion": "5.0.9",
