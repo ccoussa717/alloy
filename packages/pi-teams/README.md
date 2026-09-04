@@ -30,11 +30,14 @@ adding it to settings.
 ## Alloy setup
 
 Alloy root already registers Teams once through its root extension. When running
-Alloy 0.82.1 from this repository or its normal distribution, you **must not add the standalone package again**
-to user or project Pi package settings. There is
+Alloy 0.82.1 from this repository or its normal distribution, you
+**must not add the standalone package again** to user or project Pi package
+settings. There is
 no second Teams install step: launch Alloy normally, then use `/team list` or
-`/help teams`. Duplicate standalone registration is unsupported and fails
-closed rather than creating a second service or execution path.
+`/help teams`. If both are configured, Pi may retain both extension instances,
+and duplicate command/tool resolution is host-dependent. The module-local
+same-API registration guard only deduplicates calls within one loaded package
+instance; it does not protect against cross-package extension instances.
 
 The package declares these peer ranges:
 

@@ -62,14 +62,20 @@ test("portable package documentation states compatibility, operation, authority,
   }
 });
 
-test("portable documentation separates stock Pi setup from Alloy's built-in registration", () => {
+test("portable documentation separates stock Pi setup and accurately warns about cross-package duplicates", () => {
   const text = source(packageReadme);
-  requiresPhrases(text, [
+  const prose = text.replace(/\s+/g, " ");
+  requiresPhrases(prose, [
     "## Stock Pi setup",
     "## Alloy setup",
     "Alloy root already registers Teams",
     "must not add the standalone package again",
+    "Pi may retain both extension instances",
+    "duplicate command/tool resolution is host-dependent",
+    "module-local same-API registration guard",
+    "does not protect against cross-package extension instances",
   ], "package README setup");
+  assert.doesNotMatch(text, /duplicate standalone registration[^.]*fails closed/i);
 });
 
 test("root README links the portable Teams Slice 1 documentation and states both targets", () => {

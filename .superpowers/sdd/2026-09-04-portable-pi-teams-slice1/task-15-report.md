@@ -142,3 +142,22 @@ Three Important review findings were addressed with test-first changes.
 ### Residual minor
 
 Writer-close observability remains a documented, non-merge-blocking minor. The prior ruling stands: cleanup-error reporting/retry requires an explicit lifecycle design and must not restore evicted run authority or mask the initiating failure.
+
+## Fix Round 2
+
+One new Important documentation finding was addressed without changing runtime code or widening scope.
+
+### RED evidence
+
+The documentation boundary was first strengthened to require the actual cross-package behavior and reject the inaccurate fail-closed guarantee. `node --test test/unit/teams-docs.test.mjs` then failed as intended because the README did not state that Pi may retain both extension instances.
+
+### Correction
+
+The Alloy setup now keeps the operational instruction not to install the standalone package again but no longer promises cross-extension duplicate registration fails closed. It accurately warns that Pi may retain both extension instances and resolve duplicate commands/tools host-dependently. It also scopes the registration guard precisely: the module-local same-API guard deduplicates calls only within one loaded package instance and does not protect cross-package extension instances.
+
+### Validation
+
+- Documentation boundary: 4 passed.
+- All Teams unit tests: 254 passed.
+- Portable Teams typecheck: passed.
+- `git diff --check`: passed.
