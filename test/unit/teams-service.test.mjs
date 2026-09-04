@@ -153,6 +153,11 @@ function admitted(input, timeoutMs) {
 function fixture(options = {}) {
   const eventStore = options.eventStore ?? eventStoreFake();
   const preflightCalls = [];
+  const runCalls = [];
+  const containmentCalls = [];
+  const artifactWrites = [];
+  const artifactReads = [];
+  const artifacts = new Map();
   let providerCalls = 0;
   let capabilitiesCalls = 0;
   let catalogCalls = 0;
@@ -186,11 +191,19 @@ function fixture(options = {}) {
       }
       return admitted(input, timeouts[index]);
     },
-    runMember() {
+    runMember(input, receivedContext, signal) {
       providerCalls += 1;
+      runCalls.push({ input, context: receivedContext, signal });
+      if (options.runMember !== undefined) {
+        return options.runMember(input, receivedContext, signal, providerCalls - 1);
+      }
       throw new Error("runMember must not be called by request or approve");
     },
-    async containMember() {},
+    containMember(input, receivedContext, signal) {
+      containmentCalls.push({ input, context: receivedContext, signal });
+      return options.containMember?.(input, receivedContext, signal, containmentCalls.length - 1)
+        ?? Promise.resolve();
+    },
   };
   const service = createTeamService({
     async catalogFor(receivedContext) {
@@ -200,8 +213,34 @@ function fixture(options = {}) {
     },
     eventStore,
     artifactStore: {
-      async writeMember() { throw new Error("artifact writes are not used in Task 9"); },
-      async readVerified() { throw new Error("artifact reads are not used in Task 9"); },
+      async writeMember(projectId, runId, memberId, result) {
+        artifactWrites.push({ projectId, runId, memberId, result });
+        if (options.writeMember !== undefined) {
+          return options.writeMember(projectId, runId, memberId, result, artifactWrites.length - 1);
+        }
+        const ref = {
+          memberId,
+          outputPath: `artifacts/${memberId}/output.md`,
+          resultPath: `artifacts/${memberId}/result.json`,
+          outputBytes: Buffer.byteLength(result.text),
+          outputSha256: "b".repeat(64),
+          resultBytes: 64,
+          resultSha256: "c".repeat(64),
+        };
+        artifacts.set(memberId, { ref, text: result.text, result: structuredClone(result) });
+        return ref;
+      },
+      async readVerified(projectId, runId, ref) {
+        artifactReads.push({ projectId, runId, ref });
+        if (options.readVerified !== undefined) {
+          return options.readVerified(projectId, runId, ref, artifactReads.length - 1);
+        }
+        const artifact = artifacts.get(ref.memberId);
+        if (artifact === undefined || JSON.stringify(artifact.ref) !== JSON.stringify(ref)) {
+          throw new Error("artifact_integrity:missing or mismatched artifact");
+        }
+        return structuredClone({ text: artifact.text, result: artifact.result });
+      },
     },
     host,
     now: options.now ?? (() => NOW),
@@ -211,6 +250,11 @@ function fixture(options = {}) {
     service,
     eventStore,
     preflightCalls,
+    runCalls,
+    containmentCalls,
+    artifactWrites,
+    artifactReads,
+    artifacts,
     get providerCalls() { return providerCalls; },
     get capabilitiesCalls() { return capabilitiesCalls; },
     get catalogCalls() { return catalogCalls; },
@@ -771,7 +815,7 @@ test("approval append failure closes and evicts the live run fail closed", async
   assert.equal(approvalAppends, 1);
   assert.equal(record.closeCalls, 1);
   assert.equal(record.closed, true);
-  await assert.rejects(() => run.service.approve(input), /approval_run/);
+  await assert.rejects(() => run.service.approve(input), /resume_unsupported/);
   assert.equal(approvalAppends, 1);
 });
 
@@ -798,7 +842,7 @@ test("approval projection failure closes and evicts the live run", async () => {
   assert.equal(approvalAppends, 1);
   assert.equal(record.closeCalls, 1);
   assert.equal(record.closed, true);
-  await assert.rejects(() => run.service.approve(input), /approval_run/);
+  await assert.rejects(() => run.service.approve(input), /(approval_run|resume_unsupported)/);
   assert.equal(approvalAppends, 1);
 });
 
@@ -845,7 +889,7 @@ test("approve fails closed for blocked, abandoned, and runtime-mismatched runs",
       binding: awaiting.approvalBinding,
       context: context(),
     }),
-    /approval_run/,
+    /resume_unsupported/,
   );
 
   for (const changedContext of [
@@ -865,4 +909,398 @@ test("approve fails closed for blocked, abandoned, and runtime-mismatched runs",
     );
   }
   assert.equal(live.eventStore.runs.get(RUN_ID).events.length, 4);
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(predicate, message = "condition") {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`timed out waiting for ${message}`);
+}
+
+function successfulResult(memberId, overrides = {}) {
+  return {
+    ok: true,
+    text: `${memberId} evidence`,
+    model: `provider/${memberId}`,
+    usage: { input: 10, output: 5, costUsd: 0.1 },
+    ...overrides,
+  };
+}
+
+async function approveRequested(run, requestOverrides = {}) {
+  const awaiting = await request(run, requestOverrides);
+  await run.service.approve({
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context({ source: "command", signal: requestOverrides.context?.signal }),
+  });
+  return awaiting;
+}
+
+// Break caught: execution serializes independent roots or starts a dependent before verified artifacts.
+test("execute drives the approved DAG with bounded concurrency and verified dependencies", async () => {
+  const gates = new Map([
+    ["architecture", deferred()],
+    ["risks", deferred()],
+    ["lead", deferred()],
+  ]);
+  const started = [];
+  let active = 0;
+  let maximumActive = 0;
+  const run = fixture({
+    hostConcurrency: 2,
+    timeouts: [250_000, 120_000, 60_000],
+    runMember(input, receivedContext, signal) {
+      started.push(input.member.id);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      assert.equal(receivedContext.signal, signal);
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: { member: input.member.id },
+        result: gates.get(input.member.id).promise.finally(() => { active -= 1; }),
+      };
+    },
+  });
+  await approveRequested(run);
+
+  const completion = run.service.execute(RUN_ID, context({ signal: new AbortController().signal }));
+  await waitFor(() => started.length === 2, "root members to start");
+  assert.deepEqual([...started].sort(), ["architecture", "risks"]);
+  assert.equal(started.includes("lead"), false);
+
+  gates.get("architecture").resolve(successfulResult("architecture"));
+  await waitFor(() => run.artifactReads.some(({ ref }) => ref.memberId === "architecture"));
+  assert.equal(started.includes("lead"), false);
+
+  gates.get("risks").resolve(successfulResult("risks"));
+  await waitFor(() => started.includes("lead"), "lead to start");
+  const leadInput = run.runCalls.find(({ input }) => input.member.id === "lead").input;
+  assert.deepEqual(leadInput.dependencies.map(({ memberId }) => memberId), ["architecture", "risks"]);
+  assert.deepEqual(leadInput.dependencies.map(({ text }) => text), [
+    "architecture evidence", "risks evidence",
+  ]);
+  assert.deepEqual(run.runCalls.map(({ input }) => input.maxCostUsd), [2 / 3, 2 / 3, 2 / 3]);
+  assert.deepEqual(run.runCalls.map(({ input }) => input.timeoutMs), [250_000, 120_000, 60_000]);
+  assert.equal(maximumActive, 2);
+
+  gates.get("lead").resolve(successfulResult("lead"));
+  const completed = await completion;
+  assert.equal(completed.status, "completed");
+  assert.equal((await run.service.status(RUN_ID, context())).status, "completed");
+  assert.deepEqual(run.eventStore.runs.get(RUN_ID).events.slice(5).map(({ type }) => type), [
+    "run.started",
+    "member.ready", "member.started", "member.ready", "member.started",
+    "member.artifact_recorded", "member.succeeded", "budget.observed",
+    "member.artifact_recorded", "member.succeeded", "budget.observed",
+    "member.ready", "member.started",
+    "member.artifact_recorded", "member.succeeded", "budget.observed",
+    "run.completed",
+  ]);
+  assert.equal(run.eventStore.runs.get(RUN_ID).events.filter(({ type }) => type === "run.completed").length, 1);
+});
+
+// Break caught: cancellation awaits one child before aborting and containing every running sibling.
+test("cancel aborts all controllers then starts containment for every running handle", async () => {
+  const order = [];
+  const run = fixture({
+    hostConcurrency: 2,
+    runMember(input, _receivedContext, signal) {
+      const result = new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          order.push(`abort:${input.member.id}`);
+          reject(new Error("aborted"));
+        }, { once: true });
+      });
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: `handle:${input.member.id}`,
+        result,
+      };
+    },
+    containMember(input) {
+      order.push(`contain:${input.memberId}`);
+      if (input.memberId === "architecture") throw new Error("first containment failed");
+      return Promise.resolve();
+    },
+  });
+  await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context());
+  await waitFor(() => run.runCalls.length === 2, "two running members");
+  const cancelled = await run.service.cancel(RUN_ID, HUMAN_ACTOR, context({ source: "command" }));
+  assert.equal(cancelled.status, "failed");
+  assert.equal(cancelled.lastEvent.payload.reason, "containment_failed");
+  assert.deepEqual(order.slice(0, 2).sort(), ["abort:architecture", "abort:risks"]);
+  assert.deepEqual(order.slice(2), ["contain:architecture", "contain:risks"]);
+  assert.deepEqual(run.containmentCalls.map(({ input }) => input), [
+    { runId: RUN_ID, memberId: "architecture", handle: "handle:architecture" },
+    { runId: RUN_ID, memberId: "risks", handle: "handle:risks" },
+  ]);
+  assert.equal((await execution).status, "failed");
+  const events = run.eventStore.runs.get(RUN_ID).events;
+  assert.equal(events.filter(({ type }) => type === "cancel.requested").length, 1);
+  assert.equal(
+    events.filter(({ type }) => type.startsWith("run.") &&
+      ["run.failed", "run.cancelled", "run.completed"].includes(type)).length,
+    1,
+  );
+});
+
+// Break caught: successful containment is reported as cancellation before child settlement is proven.
+test("cancel records cancellation only after bounded containment and result settlement", async () => {
+  const results = new Map([
+    ["architecture", deferred()],
+    ["risks", deferred()],
+  ]);
+  const run = fixture({
+    hostConcurrency: 2,
+    runMember(input) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: results.get(input.member.id).promise,
+      };
+    },
+  });
+  await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context());
+  await waitFor(() => run.runCalls.length === 2);
+  const cancellation = run.service.cancel(RUN_ID, HUMAN_ACTOR, context());
+  await waitFor(() => run.containmentCalls.length === 2);
+  let settled = false;
+  cancellation.then(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  results.get("architecture").reject(new Error("aborted"));
+  results.get("risks").resolve(successfulResult("risks"));
+  const view = await cancellation;
+  assert.equal(view.status, "cancelled");
+  assert.equal((await execution).status, "cancelled");
+  assert.deepEqual(Object.values(view.members).map(({ status }) => status), [
+    "cancelled", "cancelled", "cancelled",
+  ]);
+  const eventCount = run.eventStore.runs.get(RUN_ID).events.length;
+  assert.equal((await run.service.cancel(RUN_ID, HUMAN_ACTOR, context())).status, "cancelled");
+  assert.equal(run.eventStore.runs.get(RUN_ID).events.length, eventCount);
+});
+
+// Break caught: status trusts process memory and view returns unverified in-memory member output.
+test("status and view validate durable events, choose latest, and reject Slice 1 resume", async () => {
+  const run = fixture({
+    hostConcurrency: 2,
+    runMember(input) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: Promise.resolve(successfulResult(input.member.id)),
+      };
+    },
+  });
+  await approveRequested(run);
+  await run.service.execute(RUN_ID, context());
+  const member = await run.service.view(RUN_ID, "architecture", context());
+  assert.equal(member.text, "architecture evidence");
+  assert.equal(member.run.status, "completed");
+  assert.equal(run.artifactReads.at(-1).ref.memberId, "architecture");
+  assert.equal((await run.service.view(RUN_ID, undefined, context())).status, "completed");
+  assert.equal((await run.service.status(undefined, context())).runId, RUN_ID);
+
+  const incompleteStore = eventStoreFake();
+  const source = fixture({ eventStore: incompleteStore });
+  const awaiting = await request(source);
+  await source.service.approve({
+    runId: RUN_ID,
+    actor: HUMAN_ACTOR,
+    binding: awaiting.approvalBinding,
+    context: context(),
+  });
+  const restarted = fixture({ eventStore: incompleteStore });
+  assert.equal((await restarted.service.status(RUN_ID, context())).status, "incomplete");
+  const eventCount = incompleteStore.runs.get(RUN_ID).events.length;
+  await assert.rejects(() => restarted.service.execute(RUN_ID, context()), /resume_unsupported/);
+  await assert.rejects(() => restarted.service.cancel(RUN_ID, HUMAN_ACTOR, context()), /resume_unsupported/);
+  assert.equal(incompleteStore.runs.get(RUN_ID).events.length, eventCount);
+});
+
+// Break caught: effective host timeout is ignored and a timed-out member can later start successors.
+test("execute enforces each effective admitted timeout and fails without later starts", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const run = fixture({
+    hostConcurrency: 1,
+    timeouts: [25, 120_000, 60_000],
+    runMember(input) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: new Promise(() => {}),
+      };
+    },
+  });
+  await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context());
+  await waitFor(() => run.runCalls.length === 1);
+  t.mock.timers.tick(25);
+  await waitFor(() => run.containmentCalls.length === 1, "timeout containment");
+  t.mock.timers.tick(TEAM_LIMITS.containmentTimeoutMs);
+  const failed = await execution;
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.lastEvent.payload.reason, "member_settlement_timeout");
+  assert.deepEqual(run.runCalls.map(({ input }) => input.member.id), ["architecture"]);
+});
+
+// Break caught: a member rejection does not stop or contain already-running siblings.
+test("member failure durably fails the member and contains remaining work", async () => {
+  const architecture = deferred();
+  const risks = deferred();
+  const run = fixture({
+    hostConcurrency: 2,
+    runMember(input, _context, signal) {
+      const gate = input.member.id === "architecture" ? architecture : risks;
+      signal.addEventListener("abort", () => gate.reject(new Error("aborted")), { once: true });
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: gate.promise,
+      };
+    },
+  });
+  await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context());
+  await waitFor(() => run.runCalls.length === 2);
+  architecture.resolve({
+    ...successfulResult("architecture"),
+    ok: false,
+    error: "provider failed",
+  });
+  const failed = await execution;
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.members.architecture.status, "failed");
+  assert.equal(failed.members.risks.status, "cancelled");
+  assert.equal(failed.members.lead.status, "cancelled");
+  assert.deepEqual(run.containmentCalls.map(({ input }) => input.memberId), ["risks"]);
+  assert.equal(run.runCalls.some(({ input }) => input.member.id === "lead"), false);
+});
+
+// Break caught: a dependency is trusted from memory instead of re-verified immediately before use.
+test("dependency verification failure prevents child host use and fails durably", async () => {
+  let run;
+  run = fixture({
+    hostConcurrency: 2,
+    runMember(input) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: Promise.resolve(successfulResult(input.member.id)),
+      };
+    },
+    readVerified(_projectId, _runId, ref, index) {
+      if (index >= 2 && ref.memberId === "architecture") {
+        throw new Error("artifact_integrity:tampered dependency");
+      }
+      const artifact = run.artifacts.get(ref.memberId);
+      return structuredClone({ text: artifact.text, result: artifact.result });
+    },
+  });
+  await approveRequested(run);
+  const failed = await run.service.execute(RUN_ID, context());
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.members.lead.status, "failed");
+  assert.equal(run.runCalls.some(({ input }) => input.member.id === "lead"), false);
+});
+
+// Break caught: caller abort is not copied into orchestration cancellation authority.
+test("caller abort cancels running members through durable containment", async () => {
+  const parent = new AbortController();
+  const run = fixture({
+    hostConcurrency: 2,
+    runMember(input, receivedContext, signal) {
+      assert.equal(receivedContext.signal, signal);
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
+      };
+    },
+  });
+  await approveRequested(run);
+  const execution = run.service.execute(RUN_ID, context({ signal: parent.signal }));
+  await waitFor(() => run.runCalls.length === 2);
+  parent.abort();
+  const cancelled = await execution;
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.lastEvent.type, "run.cancelled");
+});
+
+// Break caught: containment and settlement waits can deadlock cancellation indefinitely.
+test("containment and settlement deadlines fail closed with stable reasons", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const containmentRun = fixture({
+    hostConcurrency: 1,
+    runMember(input, _context, signal) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        }),
+      };
+    },
+    containMember() { return new Promise(() => {}); },
+  });
+  await approveRequested(containmentRun);
+  const containmentExecution = containmentRun.service.execute(RUN_ID, context());
+  await waitFor(() => containmentRun.runCalls.length === 1);
+  const containmentCancel = containmentRun.service.cancel(RUN_ID, HUMAN_ACTOR, context());
+  await waitFor(() => containmentRun.containmentCalls.length === 1);
+  t.mock.timers.tick(TEAM_LIMITS.containmentTimeoutMs);
+  assert.equal((await containmentCancel).lastEvent.payload.reason, "containment_timeout");
+  assert.equal((await containmentExecution).status, "failed");
+
+  // Use another UUID because claimed IDs are permanent within a service only; this is a fresh service.
+  const settlementRun = fixture({
+    hostConcurrency: 1,
+    runMember(input) {
+      return {
+        runId: input.runId,
+        memberId: input.member.id,
+        handle: input.member.id,
+        result: new Promise(() => {}),
+      };
+    },
+  });
+  await approveRequested(settlementRun);
+  const settlementExecution = settlementRun.service.execute(RUN_ID, context());
+  await waitFor(() => settlementRun.runCalls.length === 1);
+  const settlementCancel = settlementRun.service.cancel(RUN_ID, HUMAN_ACTOR, context());
+  await waitFor(() => settlementRun.containmentCalls.length === 1);
+  await Promise.resolve();
+  await Promise.resolve();
+  t.mock.timers.tick(TEAM_LIMITS.containmentTimeoutMs);
+  assert.equal((await settlementCancel).lastEvent.payload.reason, "member_settlement_timeout");
+  assert.equal((await settlementExecution).status, "failed");
 });
