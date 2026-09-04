@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 
 import { sha256Canonical } from "./compiler.ts";
+import { assertBoundedUtf8, TEAM_LIMITS } from "./limits.ts";
 import type {
   Admission,
   ApprovalBinding,
@@ -36,7 +37,22 @@ function sameAuthority<T extends string>(actual: readonly T[], expected: readonl
 }
 
 export function intersectMemberPolicy(input: PolicyIntersectionInput): PolicyDecision {
-  if (!input.admission.ok) return input.admission;
+  let admissionRecord: DataRecord;
+  try {
+    admissionRecord = inspectDataRecord(input.admission, "policy_admission", "admission");
+  } catch {
+    return blocked(input, "policy_admission:malformed host admission");
+  }
+  const ok = admissionRecord.descriptors.ok?.value;
+  if (ok === false) {
+    try {
+      return normalizeBlockedHostAdmission(input, admissionRecord);
+    } catch {
+      return blocked(input, "policy_admission:malformed blocked host admission");
+    }
+  }
+  if (ok !== true) return blocked(input, "policy_admission:ok must be a boolean literal");
+  const admission = input.admission as Extract<Admission, { ok: true }>;
 
   const requestedCapabilities = input.member.capabilities;
   if (
@@ -44,7 +60,7 @@ export function intersectMemberPolicy(input: PolicyIntersectionInput): PolicyDec
       !PACKAGE_CAPABILITIES.includes(capability as (typeof PACKAGE_CAPABILITIES)[number]) ||
       !input.host.capabilities.includes(capability)
     ) ||
-    !sameAuthority(input.admission.effectiveCapabilities, requestedCapabilities)
+    !sameAuthority(admission.effectiveCapabilities, requestedCapabilities)
   ) {
     return blocked(input, "policy_capability:requested capabilities were not fully admitted");
   }
@@ -55,37 +71,37 @@ export function intersectMemberPolicy(input: PolicyIntersectionInput): PolicyDec
       !PACKAGE_TOOLS.includes(tool as (typeof PACKAGE_TOOLS)[number]) ||
       !input.host.tools.includes(tool)
     ) ||
-    !sameAuthority(input.admission.effectiveTools, requestedTools)
+    !sameAuthority(admission.effectiveTools, requestedTools)
   ) {
     return blocked(input, "policy_tool:requested tools were not fully admitted");
   }
 
-  if (input.admission.memberId !== input.member.id) {
+  if (admission.memberId !== input.member.id) {
     return blocked(input, "policy_member:admission member does not match request");
   }
-  if (input.admission.effectiveRoute !== input.member.route) {
+  if (admission.effectiveRoute !== input.member.route) {
     return blocked(input, "policy_route:effective route does not match semantic route");
   }
   if (
     !Number.isFinite(input.maxCostUsd) ||
     input.maxCostUsd <= 0 ||
-    !Number.isFinite(input.admission.maxCostUsd) ||
-    input.admission.maxCostUsd !== input.maxCostUsd
+    !Number.isFinite(admission.maxCostUsd) ||
+    admission.maxCostUsd !== input.maxCostUsd
   ) {
     return blocked(input, "policy_cost:effective allocation does not match request");
   }
   if (
     !Number.isInteger(input.timeoutMs) ||
     input.timeoutMs <= 0 ||
-    !Number.isInteger(input.admission.timeoutMs) ||
-    input.admission.timeoutMs <= 0 ||
-    input.admission.timeoutMs > input.timeoutMs
+    !Number.isInteger(admission.timeoutMs) ||
+    admission.timeoutMs <= 0 ||
+    admission.timeoutMs > input.timeoutMs
   ) {
     return blocked(input, "policy_timeout:effective timeout must positively narrow the request");
   }
 
   return {
-    ...input.admission,
+    ...admission,
     effectiveCapabilities: [...requestedCapabilities] as TeamCapability[],
     effectiveTools: [...requestedTools] as TeamToolName[],
   };
@@ -218,6 +234,49 @@ const BLOCKED_KEYS = [
   "reason",
 ] as const;
 
+function normalizeBlockedHostAdmission(
+  input: PolicyIntersectionInput,
+  record: DataRecord,
+): PolicyDecision {
+  requireExactKeys(record, BLOCKED_KEYS, "policy_admission", "admission");
+  const memberId = record.descriptors.memberId!.value;
+  const maxCostUsd = record.descriptors.maxCostUsd!.value;
+  const reason = record.descriptors.reason!.value;
+  if (memberId !== input.member.id) {
+    return shapeError("policy_admission", "blocked memberId must match the requested member");
+  }
+  if (
+    record.descriptors.effectiveRoute!.value !== null ||
+    record.descriptors.effectiveModel!.value !== null ||
+    readDataArray(record.descriptors.effectiveCapabilities!.value, "effectiveCapabilities").length !== 0 ||
+    readDataArray(record.descriptors.effectiveTools!.value, "effectiveTools").length !== 0
+  ) {
+    return shapeError("policy_admission", "blocked effective authority must be empty");
+  }
+  if (
+    typeof maxCostUsd !== "number" ||
+    !Number.isFinite(maxCostUsd) ||
+    maxCostUsd !== input.maxCostUsd
+  ) {
+    return shapeError("policy_admission", "blocked maxCostUsd must match the requested allocation");
+  }
+  try {
+    assertBoundedUtf8(reason, "admission.reason", TEAM_LIMITS.descriptionBytes);
+  } catch {
+    return shapeError("policy_admission", "blocked reason must be bounded, nonblank UTF-8 text");
+  }
+  return {
+    ok: false,
+    memberId,
+    effectiveRoute: null,
+    effectiveModel: null,
+    effectiveCapabilities: [],
+    effectiveTools: [],
+    maxCostUsd,
+    reason,
+  };
+}
+
 function normalizePublicAdmission(value: unknown): PublicAdmission {
   const record = inspectDataRecord(value, "policy_admission", "admission");
   const ok = record.descriptors.ok?.value;
@@ -305,6 +364,17 @@ export function policyDigest(
     return shapeError("policy_admission", "admissions must match the compiled member count");
   }
 
+  if (
+    typeof limits.maxCostUsd !== "number" ||
+    !Number.isFinite(limits.maxCostUsd) ||
+    limits.maxCostUsd <= 0 ||
+    !Number.isInteger(limits.timeoutMs) ||
+    limits.timeoutMs <= 0
+  ) {
+    return shapeError("policy_admission", "effective cost and timeout limits must be positive");
+  }
+  const memberAllocation = limits.maxCostUsd / team.definition.spec.limits.maxMembers;
+  const timeoutCeiling = Math.min(limits.timeoutMs, team.definition.spec.limits.timeoutMs);
   const expectedById = new Map(expectedMembers.map((member) => [member.id, member]));
   const normalizedById = new Map<string, PublicAdmission>();
   for (const value of admissionValues) {
@@ -313,8 +383,19 @@ export function policyDigest(
     if (expected === undefined || normalizedById.has(admission.memberId)) {
       return shapeError("policy_admission", "admission member IDs must be unique and compiled");
     }
-    if (admission.ok && admission.effectiveRoute !== expected.route) {
-      return shapeError("policy_admission", "effective route must match the compiled semantic route");
+    if (admission.maxCostUsd !== memberAllocation) {
+      return shapeError("policy_admission", "member cost must match the approved allocation");
+    }
+    if (
+      admission.ok &&
+      (
+        admission.effectiveRoute !== expected.route ||
+        !sameAuthority(admission.effectiveCapabilities, expected.capabilities) ||
+        !sameAuthority(admission.effectiveTools, expected.tools) ||
+        admission.timeoutMs > timeoutCeiling
+      )
+    ) {
+      return shapeError("policy_admission", "effective member authority exceeds compiled limits");
     }
     normalizedById.set(admission.memberId, admission);
   }

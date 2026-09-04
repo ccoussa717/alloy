@@ -122,9 +122,21 @@ function policyInput(overrides = {}) {
 
 function admissionsForTeam() {
   return [
-    admitted({ memberId: "architecture", effectiveRoute: "research" }),
-    admitted({ memberId: "risks", effectiveRoute: "review" }),
-    admitted({ memberId: "lead", effectiveRoute: "planning" }),
+    admitted({
+      memberId: "architecture",
+      effectiveRoute: "research",
+      effectiveTools: ["read", "grep"],
+    }),
+    admitted({
+      memberId: "risks",
+      effectiveRoute: "review",
+      effectiveTools: ["grep", "find"],
+    }),
+    admitted({
+      memberId: "lead",
+      effectiveRoute: "planning",
+      effectiveTools: ["read", "ls"],
+    }),
   ];
 }
 
@@ -408,9 +420,13 @@ test("policy blocks mismatched member identity, semantic route, or allocation", 
   }
 });
 
-// Break caught: blocked host preflight is accidentally converted into an admitted decision.
-test("policy preserves a blocked host admission", () => {
-  const blocked = {
+// Break caught: a valid blocked host result is returned by reference instead of normalized.
+test("policy validates and normalizes a blocked host admission", () => {
+  const hostBlocked = blockedAdmission("reader");
+  const decision = intersectMemberPolicy(policyInput({ admission: hostBlocked }));
+
+  assert.notEqual(decision, hostBlocked);
+  assert.deepEqual(decision, {
     ok: false,
     memberId: "reader",
     effectiveRoute: null,
@@ -419,8 +435,50 @@ test("policy preserves a blocked host admission", () => {
     effectiveTools: [],
     maxCostUsd: 2 / 3,
     reason: "operator_denied",
-  };
-  assert.equal(intersectMemberPolicy(policyInput({ admission: blocked })), blocked);
+  });
+});
+
+// Break caught: malformed blocked host results pass through, including accessors and opaque data.
+test("policy rejects malformed blocked host admissions without invoking accessors", () => {
+  let getterCalls = 0;
+  const accessor = blockedAdmission("reader");
+  Object.defineProperty(accessor, "ok", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return false;
+    },
+  });
+  const accessorDecision = intersectMemberPolicy(policyInput({ admission: accessor }));
+  assert.equal(getterCalls, 0);
+  assert.equal(accessorDecision.ok, false);
+  assert.match(accessorDecision.reason, /^policy_admission:/);
+
+  const malformed = [
+    blockedAdmission("other"),
+    blockedAdmission("reader", { token: { opaque: true } }),
+    blockedAdmission("reader", { unknown: true }),
+    blockedAdmission("reader", { reason: "   " }),
+    blockedAdmission("reader", { reason: "x".repeat(1_025) }),
+    blockedAdmission("reader", { reason: "\ud800" }),
+    blockedAdmission("reader", { maxCostUsd: 1 }),
+  ];
+  for (const admission of malformed) {
+    const decision = intersectMemberPolicy(policyInput({ admission }));
+    assert.equal(decision.ok, false);
+    assert.equal(decision.memberId, "reader");
+    assert.match(decision.reason, /^policy_admission:/);
+    assert.deepEqual(Object.keys(decision).sort(), [
+      "effectiveCapabilities",
+      "effectiveModel",
+      "effectiveRoute",
+      "effectiveTools",
+      "maxCostUsd",
+      "memberId",
+      "ok",
+      "reason",
+    ]);
+  }
 });
 
 // Break caught: compilation substitutes a concrete model for a semantic route.
@@ -507,6 +565,26 @@ test("policy digest requires one admission per compiled member and binds declara
     assert.throws(() => policyDigest(value, limits, compiled), /policy_admission/);
   }
 });
+
+// Break caught: well-shaped admissions can contradict compiled member and effective-limit authority.
+for (const [name, change] of [
+  ["package-supported but unrequested tools", { effectiveTools: ["read", "grep", "find"] }],
+  ["missing requested tools", { effectiveTools: ["read"] }],
+  ["the approved per-member allocation", { maxCostUsd: 1 }],
+  ["the effective timeout ceiling", { timeoutMs: 300_001 }],
+]) {
+  test(`policy digest rejects authority contradicting ${name}`, () => {
+    const compiled = compileTeam(entry());
+    const limits = definition().spec.limits;
+    const base = admissionsForTeam();
+    const contradictory = { ...base[0], ...change };
+
+    assert.throws(
+      () => policyDigest([contradictory, base[1], base[2]], limits, compiled),
+      /policy_admission/,
+    );
+  });
+}
 
 // Break caught: malformed or extended successful admission objects are normalized and hashed.
 test("policy digest rejects malformed successful public admission shapes", () => {
