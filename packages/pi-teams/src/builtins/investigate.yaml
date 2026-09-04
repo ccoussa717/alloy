@@ -1,0 +1,28 @@
+apiVersion: pi.dev/teams/v1alpha1
+kind: Team
+metadata:
+  name: investigate
+  description: Parallel repository investigation with lead synthesis
+spec:
+  limits:
+    maxConcurrency: 2
+    maxCostUsd: 2
+    timeoutMs: 300000
+    maxMembers: 3
+  members:
+    - id: architecture
+      route: research
+      capabilities: [repo.read]
+      tools: [read, grep, find, ls]
+      instructions: Map the relevant architecture and cite repository evidence.
+    - id: risks
+      route: review
+      capabilities: [repo.read]
+      tools: [read, grep, find, ls]
+      instructions: Identify compatibility, security, and failure-mode risks.
+    - id: lead
+      route: planning
+      capabilities: [repo.read]
+      tools: [read, grep, find, ls]
+      needs: [architecture, risks]
+      instructions: Synthesize the verified member evidence into one answer.
