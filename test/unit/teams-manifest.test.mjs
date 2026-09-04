@@ -99,6 +99,33 @@ test("unsafe YAML features are rejected before conversion", () => {
   }
 });
 
+test("unknown directives rejected even when the YAML parser only warns", () => {
+  const source = `%UNKNOWN ignored\n---\n${VALID}`;
+  assert.throws(
+    () => parseTeamManifest(source, "unknown-directive.yaml"),
+    errorCode("manifest_directive"),
+  );
+});
+
+test("the default YAML tag prefix cannot be redefined", () => {
+  const source = `%TAG !! tag:example.com,2026:custom/\n---\n${VALID}`;
+  assert.throws(
+    () => parseTeamManifest(source, "default-tag-redefinition.yaml"),
+    errorCode("manifest_directive"),
+  );
+});
+
+test("only the YAML 1.2 version directive is allowed", () => {
+  assert.equal(
+    parseTeamManifest(`%YAML 1.2\n---\n${VALID}`, "yaml-1.2.yaml").metadata.name,
+    "investigate",
+  );
+  assert.throws(
+    () => parseTeamManifest(`%YAML 1.1\n---\n${VALID}`, "yaml-1.1.yaml"),
+    errorCode("manifest_directive"),
+  );
+});
+
 function oversizedUtf8(bytes) {
   return "a".repeat(bytes);
 }
@@ -183,8 +210,7 @@ const SCHEMA_REJECTIONS = [
   ["unsupported route", VALID.replace("planning", "implementation"), "manifest_route"],
   ["unsupported capability", VALID.replace("repo.read", "repo.write-isolated"), "manifest_capability"],
   ["unsupported tool", VALID.replace("find, ls", "find, bash"), "manifest_tool"],
-  ["unknown dependency", VALID.replace("needs: [architecture, risks]", "needs: [architecture, missing]"), "manifest_dependency"],
-  ["self dependency", VALID.replace("needs: [architecture, risks]", "needs: [lead]"), "manifest_dependency"],
+  ["invalid dependency identifier", VALID.replace("needs: [architecture, risks]", "needs: [architecture, Missing]"), "manifest_dependency"],
   ["mismatched member limit", VALID.replace("maxMembers: 3", "maxMembers: 2"), "manifest_max_members"],
   ["concurrency above members", VALID.replace("maxConcurrency: 2", "maxConcurrency: 4"), "manifest_concurrency"],
   ["boolean limit", VALID.replace("maxConcurrency: 2", "maxConcurrency: true"), "manifest_limit"],
@@ -206,6 +232,26 @@ test("exact schema and semantic constraints reject unsupported manifests", () =>
       name,
     );
   }
+});
+
+test("dependency membership and graph validation are deferred to compilation", () => {
+  const unknownDependency = VALID.replace(
+    "needs: [architecture, risks]",
+    "needs: [architecture, missing]",
+  );
+  const selfDependency = VALID.replace(
+    "needs: [architecture, risks]",
+    "needs: [lead]",
+  );
+
+  assert.deepEqual(
+    parseTeamManifest(unknownDependency, "unknown-dependency.yaml").spec.members[2].needs,
+    ["architecture", "missing"],
+  );
+  assert.deepEqual(
+    parseTeamManifest(selfDependency, "self-dependency.yaml").spec.members[2].needs,
+    ["lead"],
+  );
 });
 
 test("semantic text and numeric ceilings are inclusive", () => {

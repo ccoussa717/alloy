@@ -392,14 +392,28 @@ export function parseTeamManifest(source: string, origin: string): TeamDefinitio
     throw new ManifestError("manifest_yaml", document.errors[0]!.message, origin);
   }
   const directives = document.directives;
-  const tags = directives === undefined
-    ? []
-    : Object.keys(directives.tags).filter((tag) => tag !== "!!");
-  if (tags.length > 0) {
+  const directiveLines = source
+    .split(/\r\n|\n|\r/)
+    .filter((line) => line.startsWith("%"));
+  const hasOnlyAllowedDirective = directiveLines.every((line) =>
+    /^%YAML[ \t]+1\.2(?:[ \t]+#.*)?[ \t]*$/.test(line)
+  );
+  const hasDefaultTags =
+    directives !== undefined &&
+    Object.keys(directives.tags).length === 1 &&
+    directives.tags["!!"] === "tag:yaml.org,2002:";
+  if (
+    !hasOnlyAllowedDirective ||
+    directives?.yaml.version !== "1.2" ||
+    !hasDefaultTags
+  ) {
     throw new ManifestError("manifest_directive", "directive is not allowed", origin);
   }
 
   inspectYamlNode(document.contents, 1, { nodes: 0 }, origin);
+  if (document.warnings.length > 0) {
+    throw new ManifestError("manifest_yaml", document.warnings[0]!.message, origin);
+  }
   const manifest = requireMapping(
     normalizePlainValue(document.toJS({ maxAliasCount: 0 }), origin),
     "manifest",
@@ -447,17 +461,6 @@ export function parseTeamManifest(source: string, origin: string): TeamDefinitio
       );
     }
     memberIds.add(member.id);
-  }
-  for (const member of members) {
-    for (const dependency of member.needs) {
-      if (dependency === member.id || !memberIds.has(dependency)) {
-        throw new ManifestError(
-          "manifest_dependency",
-          `invalid dependency ${dependency} for ${member.id}`,
-          origin,
-        );
-      }
-    }
   }
 
   return nullPrototype({
