@@ -484,8 +484,16 @@ export interface StockPiHostOptions {
     | "SessionManager"
   >;
   agentDir?: string;
+  maxTimeoutMs?: number;
 }
 ```
+
+`StockPiHostOptions.maxTimeoutMs` is an operator ceiling. When present, it must
+be a positive integer no greater than `TEAM_LIMITS.timeoutMs` (300,000 ms), and
+it is validated before any SDK access, model inspection, or provider use. Stock
+preflight returns `min(MemberPreflightInput.timeoutMs, maxTimeoutMs)`; when the
+option is absent it preserves the requested timeout. The option can only narrow
+and never widens a shorter request.
 
 The policy helper treats a blocked host admission as blocked. For an admitted
 result it verifies that every effective capability/tool is requested by the
@@ -836,7 +844,10 @@ approve, execute, or append cancellation to it.
 The stock adapter supports only `repo.read`, `read`, `grep`, `find`, and `ls`.
 For Slice 1 it maps every semantic route to the active operator-selected session
 model. A missing active model blocks preflight. This is host-owned routing: the
-manifest cannot select a provider or model.
+manifest cannot select a provider or model. The optional operator
+`maxTimeoutMs` ceiling is validated before SDK/model use and the admitted stock
+timeout is `min(requested timeoutMs, maxTimeoutMs)`; without the option it is the
+requested timeout.
 
 Each member uses `createAgentSession` with the active model, an in-memory
 `SessionManager`, an explicit four-tool allowlist narrowed by the member, and a
@@ -932,6 +943,9 @@ Slice 1 is complete only when tests prove:
 - capability/tool and successful-admission timeout intersection is tighten-only;
 - effective member timeouts are public, policy-hashed, approval-bound, and used
   for execution rather than the wider manifest request;
+- stock `maxTimeoutMs` preserves the request when absent, narrows when smaller,
+  never widens a shorter request, and rejects invalid ceilings before SDK/model
+  use;
 - all-member preflight completes successfully before any member starts;
 - no provider spend occurs before human approval;
 - a model cannot approve or execute an unapproved run;

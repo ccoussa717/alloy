@@ -22,6 +22,7 @@
 - Load `.pi/teams/*.yaml` only when the current host context affirmatively reports project trust; untrusted project files are not opened.
 - All members must pass preflight before any member starts, and no provider call occurs before a matching human approval.
 - A successful admission includes a positive integer `timeoutMs` no greater than the requested member timeout; effective timeouts are public, policy-hashed, and approval-bound.
+- Optional stock `maxTimeoutMs` is an operator ceiling: validate a positive integer `<= 300_000` before SDK/model use and admit `min(requested timeoutMs, maxTimeoutMs)` without widening.
 - Copy the common host abort signal into `TeamRunContext.signal`; it may only cancel work. Never inspect `TeamRunContext.runtime` or `MemberExecution.handle` in core code.
 - On failure, timeout, or cancellation: abort first; immediately start per-running-member containment; bound containment and result settlement to 5,000 ms each; only then settle events. Any containment/settlement failure ends `run.failed`, never a falsely contained completion/cancellation.
 - Allocate `limits.maxCostUsd / limits.maxMembers` to each member so aggregate member ceilings cannot exceed the approved team ceiling.
@@ -138,6 +139,7 @@ export interface StockPiHostOptions {
     | "SessionManager"
   >;
   agentDir?: string;
+  maxTimeoutMs?: number;
 }
 
 export type TeamCommand =
@@ -1167,7 +1169,7 @@ git commit -m "feat: execute and cancel durable team runs"
 
 **Interfaces:**
 - Consumes: common SDK `createAgentSession`, `DefaultResourceLoader`, `SessionManager.inMemory`; runtime context contains Pi `ExtensionContext`.
-- Produces: `createStockPiHost({ sdk?, agentDir? }): TeamHost` with only read-only capabilities, synchronous `MemberExecution` handles, required per-member containment, and a newly added barrel export.
+- Produces: `createStockPiHost({ sdk?, agentDir?, maxTimeoutMs? }): TeamHost` with only read-only capabilities, a validated tighten-only operator timeout ceiling, synchronous `MemberExecution` handles, required per-member containment, and a newly added barrel export.
 
 - [ ] **Step 1: Write failing capabilities/preflight tests**
 
@@ -1176,21 +1178,47 @@ Inject a fake SDK and context model. Assert capabilities contain exactly
 model ID, missing model blocks, unsupported tools block, finite nonnegative
 pricing is required, and the equal member allocation produces an output token
 cap whose listed worst-case input plus output price does not exceed the
-allocation. Return `timeoutMs` on every successful admission; preserve the
-requested timeout when no host limit is tighter, return a smaller host limit
-when configured, and never widen it.
+allocation. Put these exact cases in a test named `stock timeout ceiling` and
+count SDK/model inspection calls:
 
 ```js
-assert.deepEqual(await host.capabilities(context), {
-  capabilities: ["repo.read"],
-  tools: ["read", "grep", "find", "ls"],
-  maxConcurrency: 3,
-  supportsCancellation: true,
-});
-assert.equal(admission.effectiveModel, "anthropic/selected");
-assert.equal(admission.timeoutMs, 120_000);
-assert.ok(admission.token.model.maxTokens <= context.runtime.model.maxTokens);
+const preserved = await createStockPiHost({ sdk }).preflightMember(
+  { member, maxCostUsd: 2 / 3, timeoutMs: 300_000 }, context,
+);
+assert.equal(preserved.ok && preserved.timeoutMs, 300_000);
+
+const boundary = await createStockPiHost({ sdk, maxTimeoutMs: 300_000 }).preflightMember(
+  { member, maxCostUsd: 2 / 3, timeoutMs: 300_000 }, context,
+);
+assert.equal(boundary.ok && boundary.timeoutMs, 300_000);
+
+const narrowedHost = createStockPiHost({ sdk, maxTimeoutMs: 120_000 });
+const narrowed = await narrowedHost.preflightMember(
+  { member, maxCostUsd: 2 / 3, timeoutMs: 300_000 }, context,
+);
+assert.equal(narrowed.ok && narrowed.timeoutMs, 120_000);
+
+const shorterRequest = await narrowedHost.preflightMember(
+  { member, maxCostUsd: 2 / 3, timeoutMs: 60_000 }, context,
+);
+assert.equal(shorterRequest.ok && shorterRequest.timeoutMs, 60_000);
+
+for (const value of [null, true, "120000", 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 300_001]) {
+  const callsBefore = sdkModelCalls;
+  assert.throws(
+    () => createStockPiHost({ sdk, maxTimeoutMs: value }),
+    /stock_timeout_ceiling/,
+  );
+  assert.equal(sdkModelCalls, callsBefore);
+}
 ```
+
+Also assert capabilities remain exactly `repo.read` and the four tools, every
+semantic route resolves to the active model ID, missing model blocks,
+unsupported tools block, pricing is finite/nonnegative, and the output token cap
+fits the allocation. The preservation case proves absence of the option does
+not narrow; the shorter-request case proves a larger valid ceiling never
+widens.
 
 - [ ] **Step 2: Write failing run/abort/resource-isolation tests**
 
@@ -1208,8 +1236,11 @@ containment. Assert no write/edit/bash tool is enabled.
 
 - [ ] **Step 3: Run adapter tests and verify missing module**
 
-Run: `node --test test/unit/teams-stock-adapter.test.mjs`
-Expected: FAIL with `ERR_MODULE_NOT_FOUND`.
+Run: `node --test --test-name-pattern="stock timeout ceiling" test/unit/teams-stock-adapter.test.mjs`
+Expected: FAIL with `ERR_MODULE_NOT_FOUND` because `stock-pi.ts` does not exist;
+the named test is the exact Critical D red and must later fail with the narrowed
+value still `300000` or a missing `stock_timeout_ceiling` if an implementer
+first creates only a module shell.
 
 - [ ] **Step 4: Implement strict stock preflight and budget cap**
 
@@ -1222,9 +1253,13 @@ as one token per UTF-8 byte for the fixed prompt envelope and maximum possible
 verified dependencies. Convert model prices (per million tokens) to cost,
 subtract from the member allocation, and clone `model.maxTokens` down to the
 largest affordable integer output count. Block if price metadata is invalid or
-a priced model cannot fund one token. Return an admitted integer `timeoutMs`
-that is positive and no larger than `MemberPreflightInput.timeoutMs`. Keep the
-host's selected provider/model; never parse a model from route or manifest.
+a priced model cannot fund one token. Validate `input.maxTimeoutMs` once during
+host construction: when defined it must be an integer in
+`1..TEAM_LIMITS.timeoutMs`, otherwise throw `stock_timeout_ceiling` before
+reading the SDK or context model. Preflight returns
+`Math.min(MemberPreflightInput.timeoutMs, maxTimeoutMs)` when configured and the
+requested value otherwise. It never widens a shorter request. Keep the host's
+selected provider/model; never parse a model from route or manifest.
 
 - [ ] **Step 5: Implement isolated read-only in-process sessions**
 
@@ -1247,8 +1282,11 @@ future extension paths absent.
 
 - [ ] **Step 7: Run adapter, service, and type checks**
 
-Run: `node --test test/unit/teams-stock-adapter.test.mjs test/unit/teams-service.test.mjs && npm run typecheck:teams`
-Expected: PASS against root Pi `0.82.1` types; narrowed timeout, live handle,
+Run: `node --test --test-name-pattern="stock timeout ceiling" test/unit/teams-stock-adapter.test.mjs && node --test test/unit/teams-stock-adapter.test.mjs test/unit/teams-service.test.mjs && npm run typecheck:teams`
+Expected: the named Critical D test PASS first, then all adapter/service tests and
+typecheck PASS against root Pi `0.82.1`; absent-ceiling preservation,
+300,000 ms valid-boundary acceptance, 120,000 ms narrowing, shorter-request
+non-widening, all nine invalid values with zero SDK/model access, live handle,
 and containment assertions pass.
 
 - [ ] **Step 8: Commit stock Pi adaptation**
@@ -1557,8 +1595,8 @@ git commit -m "feat: adapt portable teams into Alloy"
 
 Assert the package/root/help documents name `builtin/investigate`, `/team list`,
 `/team run`, `team` tool, stock `0.84.2`, Alloy `0.82.1`, project trust,
-`incomplete`, human approval, effective timeout narrowing, and bounded
-abort-before-containment. Assert they explicitly state no mutation,
+`incomplete`, human approval, effective timeout narrowing, stock
+`maxTimeoutMs` operator-ceiling validation, and bounded abort-before-containment. Assert they explicitly state no mutation,
 resume, apply, push, publish, deploy, custom TUI, or Auto/Fusion/Fission
 refactor in Slice 1.
 
@@ -1691,7 +1729,9 @@ Verify `TeamHost`, `Admission`, `MemberPreflightInput`, `MemberRunInput`,
 producer and consumer. Verify successful admissions retain effective
 `timeoutMs`, `policyDigest` changes when only that timeout changes, and
 `runMember`/`containMember` signatures match both adapters and the service.
-Finally, inspect the barrel at the Task 1, Task 9, Task 11, and Task 13 commit
+Verify `StockPiHostOptions.maxTimeoutMs?: number` matches the spec, rejects
+invalid values before SDK/model use, and implements
+`min(requested timeoutMs, maxTimeoutMs)` without widening. Finally, inspect the barrel at the Task 1, Task 9, Task 11, and Task 13 commit
 boundaries and confirm no commit imports a module that does not yet exist.
 
 - [ ] **Step 11: Commit documentation and final verification wiring**
