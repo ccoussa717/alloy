@@ -623,7 +623,8 @@ class ProxyNetwork:
                 or metadata.get("Ingress") is not False
                 or metadata.get("Internal") is not False
                 or ipam.get("Driver") != "default"
-                or ipam.get("Options") is not None
+                or "Options" not in ipam
+                or ipam["Options"] is not None
             ):
                 raise ProxyStateError("Docker network has unsupported empty IPAM configuration")
             return ()

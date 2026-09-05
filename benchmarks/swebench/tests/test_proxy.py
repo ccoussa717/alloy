@@ -642,6 +642,7 @@ class ProxyNetworkTests(unittest.TestCase):
             ("internal", {**builtin(), "Internal": True}, "unsupported empty IPAM"),
             ("ipam-driver", {**builtin(), "IPAM": {"Driver": "plugin", "Options": None, "Config": None}}, "unsupported empty IPAM"),
             ("ipam-options", {**builtin(), "IPAM": {"Driver": "default", "Options": {}, "Config": None}}, "unsupported empty IPAM"),
+            ("missing-ipam-options", {**builtin(), "IPAM": {"Driver": "default", "Config": None}}, "unsupported empty IPAM"),
             ("plugin-empty", {**builtin(name="plugin", driver="plugin"), "IPAM": {"Driver": "plugin", "Options": None, "Config": []}}, "unsupported empty IPAM"),
         )
         for name, metadata, message in cases:
