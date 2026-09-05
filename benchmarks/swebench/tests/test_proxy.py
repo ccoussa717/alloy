@@ -1,4 +1,5 @@
 import http.client
+import ipaddress
 import json
 import os
 import signal
@@ -582,6 +583,52 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertTrue(
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
+
+    def test_ipv4_subnets_accepts_real_builtin_empty_ipam_shapes(self):
+        host = {
+            "Name": "host",
+            "Driver": "host",
+            "IPAM": {"Driver": "default", "Options": None, "Config": None},
+        }
+        none = {
+            "Name": "none",
+            "Driver": "null",
+            "IPAM": {"Driver": "default", "Options": None, "Config": []},
+        }
+        bridge = {
+            "Name": "bridge",
+            "Driver": "bridge",
+            "IPAM": {
+                "Driver": "default",
+                "Options": None,
+                "Config": [{"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}],
+            },
+        }
+
+        self.assertEqual(ProxyNetwork._ipv4_subnets(host), ())
+        self.assertEqual(ProxyNetwork._ipv4_subnets(none), ())
+        self.assertEqual(
+            ProxyNetwork._ipv4_subnets(bridge),
+            (ipaddress.ip_network("172.17.0.0/16"),),
+        )
+
+    def test_ipv4_subnets_rejects_malformed_or_partially_malformed_configurations(self):
+        valid = {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}
+        malformed = (
+            {},
+            {"IPAM": None},
+            {"IPAM": {}},
+            {"IPAM": {"Config": ""}},
+            {"IPAM": {"Config": [{}]}},
+            {"IPAM": {"Config": [{"Subnet": None}]}},
+            {"IPAM": {"Config": [{"Subnet": 1}]}},
+            {"IPAM": {"Config": [{"Subnet": "not-a-network"}]}},
+            {"IPAM": {"Config": [valid, {}]}},
+            {"IPAM": {"Config": ["not-an-object"]}},
+        )
+        for metadata in malformed:
+            with self.subTest(metadata=metadata), self.assertRaisesRegex(ProxyStateError, "IPAM"):
+                ProxyNetwork._ipv4_subnets(metadata)
 
     def test_rejects_every_proxy_interface_drift_with_bounded_diagnostics(self):
         agent_network = "alloy-swe-agent-272812a7"

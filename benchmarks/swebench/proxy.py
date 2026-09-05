@@ -602,8 +602,15 @@ class ProxyNetwork:
 
     @staticmethod
     def _ipv4_subnets(metadata: dict[str, object]) -> tuple[ipaddress.IPv4Network, ...]:
-        ipam = ProxyNetwork._mapping(metadata.get("IPAM"))
-        configs = ipam.get("Config")
+        ipam = metadata.get("IPAM")
+        if not isinstance(ipam, dict) or "Config" not in ipam:
+            raise ProxyStateError("Docker network has invalid IPAM configuration")
+        configs = ipam["Config"]
+        # Docker's built-in host and none networks legitimately report no IPAM
+        # ranges as either null or an empty list. They contribute no IPv4 range;
+        # every non-empty entry remains mandatory to parse.
+        if configs is None or configs == []:
+            return ()
         if not isinstance(configs, list):
             raise ProxyStateError("Docker network has invalid IPAM configuration")
         subnets = []
@@ -611,8 +618,6 @@ class ProxyNetwork:
             if not isinstance(config, dict):
                 raise ProxyStateError("Docker network has invalid IPAM configuration")
             subnet = config.get("Subnet")
-            if subnet is None:
-                continue
             if not isinstance(subnet, str):
                 raise ProxyStateError("Docker network has invalid IPAM subnet")
             try:
