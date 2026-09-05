@@ -29,6 +29,7 @@ AA_STATUS_BIN = "/usr/sbin/aa-status"
 UNAME_BIN = "/usr/bin/uname"
 RUNC_BIN = "/usr/bin/runc"
 DOCKER_COMMAND_TIMEOUT_SECONDS = 30
+DOCKER_EXPORT_TIMEOUT_SECONDS = 300
 
 FIXED_ENV = MappingProxyType({
     "HOME": "/root",
@@ -197,6 +198,29 @@ class DockerRuntime:
             check=check,
             timeout=effective_timeout,
             env=FIXED_ENV,
+        )
+
+    def copy_export(
+        self,
+        container_id: str,
+        destination: Path,
+        *,
+        timeout: float = DOCKER_EXPORT_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+            or timeout > DOCKER_EXPORT_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "Docker export timeout must be a positive finite number of seconds "
+                f"not exceeding {DOCKER_EXPORT_TIMEOUT_SECONDS}"
+            )
+        return self._run(
+            self._docker_arguments("cp", f"{container_id}:/export/agent.tar", str(destination)),
+            timeout=timeout,
         )
 
     @staticmethod

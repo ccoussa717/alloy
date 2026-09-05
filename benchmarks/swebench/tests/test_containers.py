@@ -5,6 +5,7 @@ import os
 import socket
 import stat
 import subprocess
+import time
 import tempfile
 import types
 import unittest
@@ -1361,6 +1362,32 @@ class DockerRuntimeTests(unittest.TestCase):
         for invalid in (0, -1, float("inf"), float("nan"), True, "30"):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "finite"):
                 self.runtime(runner, command_timeout_seconds=invalid)
+
+    def test_export_copy_uses_bounded_operation_timeout_and_rejects_overrides(self):
+        runner = ScriptedRunner(completed())
+        runtime = self.runtime(runner)
+
+        runtime.copy_export("container-id", Path("/tmp/agent.tar"))
+
+        self.assertEqual(
+            runner.calls[0][0],
+            runtime._docker_arguments("cp", "container-id:/export/agent.tar", "/tmp/agent.tar"),
+        )
+        self.assertEqual(
+            runner.calls[0][1]["timeout"], containers.DOCKER_EXPORT_TIMEOUT_SECONDS
+        )
+        for invalid in (0, -1, 301, float("inf"), float("nan"), True, "300"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "export timeout"):
+                runtime.copy_export("container-id", Path("/tmp/agent.tar"), timeout=invalid)
+
+    def test_command_boundary_kills_and_waits_for_real_timeout(self):
+        runtime = self.runtime(subprocess.run)
+        started = time.monotonic()
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            runtime._run(["/bin/sleep", "5"], timeout=0.05)
+
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_wait_returns_exit_code(self):
         runner = ScriptedRunner(completed("17\n"))

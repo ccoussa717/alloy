@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import subprocess
 import tempfile
@@ -21,6 +22,7 @@ from benchmarks.swebench.authority import HostConfig, VerifiedCandidate
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerHandle,
+    DOCKER_EXPORT_TIMEOUT_SECONDS,
     DaemonIdentity,
     MountSpec,
     PreflightReport,
@@ -860,6 +862,47 @@ class TrustedRunServicesTests(unittest.TestCase):
             services.agent_teardown(state)
         self.assertFalse(services.agent_absent)
         self.assertNotIn("agent_absent", state.manifest.get("teardown", {}))
+
+    def test_patch_capture_uses_explicit_bounded_export_copy_timeout(self):
+        class ExportRuntime:
+            def __init__(self):
+                self.copy_export = mock.Mock()
+
+            def create_volume(self, *_args):
+                pass
+
+            def initialize_volume(self, *_args):
+                pass
+
+            def create(self, spec):
+                return ContainerHandle(spec.name, "export-helper", "run")
+
+            def wait(self, *_args, **_kwargs):
+                return 0
+
+            def force_remove(self, *_args):
+                pass
+
+        runtime = ExportRuntime()
+        services, state, _proxy = self.services(runtime)
+        services.writer = ResultWriter(self.root / "results", "export-run")
+        services.agent_absent = True
+        services.config.fetcher.target_repository = self.root / "target"
+        services.config.fetcher.target_repository.mkdir()
+
+        with (
+            mock.patch(
+                "benchmarks.swebench.coordinator.validate_exported_tar",
+                return_value=contextlib.nullcontext(object()),
+            ),
+            mock.patch("benchmarks.swebench.coordinator.reconstruct_trusted_checkout"),
+            mock.patch("benchmarks.swebench.coordinator.capture_patch", return_value=b""),
+        ):
+            services.patch_capture(state)
+
+        runtime.copy_export.assert_called_once_with(
+            "export-helper", services.export_path, timeout=DOCKER_EXPORT_TIMEOUT_SECONDS,
+        )
 
     def test_concrete_cleanup_finishes_scratch_before_signed_success_is_persisted(self):
         services, state, _proxy = self.services(AgentBoundaryRuntime())

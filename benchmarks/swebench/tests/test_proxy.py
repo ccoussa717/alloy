@@ -294,10 +294,16 @@ class FakeRuntime:
         self.profile = load_profile(PROFILE_PATH, REPO_ROOT)
         self.handle = ContainerHandle("alloy-proxy-run-123", "proxy-id", "run-123")
         self.networks = set()
+        self.network_remove_commands = []
         self.network_config = {}
         self.foreign_networks = {}
         self.network_create_failures = {}
         self.network_create_timeouts = {}
+        self.delayed_network_creates = {}
+        self.persistent_network_create_uncertainty = set()
+        self.timed_out_network_creates = set()
+        self.network_inspect_timeouts = set()
+        self.command_timeout_seconds = 0.01
         self.network_connect_failure = None
         self.network_attachment_overrides = {}
         self.network_endpoint_counter = 0
@@ -343,6 +349,21 @@ class FakeRuntime:
             return subprocess.CompletedProcess(arguments, 0, stdout="\n".join(names), stderr="")
         if action[:2] == ["network", "inspect"]:
             name = action[2]
+            if (
+                name in self.network_inspect_timeouts
+                or (
+                    name in self.persistent_network_create_uncertainty
+                    and name in self.timed_out_network_creates
+                )
+            ):
+                raise subprocess.TimeoutExpired(arguments, self.command_timeout_seconds)
+            remaining = self.delayed_network_creates.get(name)
+            if remaining is not None:
+                if remaining <= 0:
+                    self.networks.add(name)
+                    del self.delayed_network_creates[name]
+                else:
+                    self.delayed_network_creates[name] = remaining - 1
             if name in self.foreign_networks:
                 return subprocess.CompletedProcess(
                     arguments, 0, stdout=json.dumps([self.foreign_networks[name]]), stderr=""
@@ -379,6 +400,14 @@ class FakeRuntime:
             name = action[-1]
             timeout = self.network_create_timeouts.get(name)
             if timeout is not None:
+                self.timed_out_network_creates.add(name)
+                if name in self.delayed_network_creates:
+                    internal = "--internal" in action
+                    self.network_config[name] = (
+                        internal,
+                        action[action.index("--gateway") + 1],
+                        action[action.index("--subnet") + 1],
+                    )
                 raise subprocess.TimeoutExpired(
                     arguments, timeout, output="REDACT-ME" * 1024, stderr="REDACT-ME" * 1024,
                 )
@@ -396,6 +425,7 @@ class FakeRuntime:
                     action[action.index("--subnet") + 1],
                 )
         if action[:2] == ["network", "rm"]:
+            self.network_remove_commands.append(action[-1])
             self.networks.discard(action[-1])
         if action[:3] == ["network", "disconnect", "none"]:
             self.containers[action[-1]]["NetworkSettings"]["Networks"].pop("none", None)
@@ -696,6 +726,34 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertTrue(self.locks[0].closed)
+
+    def test_timed_out_network_create_reconciles_late_materialization_before_cleanup(self):
+        name = "alloy-swe-egress-272812a7"
+        self.runtime.network_create_timeouts[name] = 30
+        self.runtime.delayed_network_creates[name] = 1
+
+        with self.assertRaisesRegex(ProxyStateError, "timed out"):
+            self.network.start("run-123")
+
+        self.assertEqual(self.runtime.networks, set())
+        self.assertIn(name, self.runtime.network_remove_commands)
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
+        self.assertTrue(self.network._closed)
+        self.assertTrue(self.locks[0].closed)
+
+    def test_persistent_network_create_uncertainty_fails_closed(self):
+        name = "alloy-swe-egress-272812a7"
+        self.runtime.network_create_timeouts[name] = 30
+        self.runtime.persistent_network_create_uncertainty.add(name)
+
+        with self.assertRaises(ProxyCleanupError) as raised:
+            self.network.start("run-123")
+
+        self.assertLess(len(str(raised.exception)), 1024)
+        self.assertFalse(self.network._closed)
+        self.assertTrue(self.network._uncertain_networks)
+        self.assertFalse(self.locks[0].closed)
 
     def test_agent_network_create_conflict_is_daemon_authoritative_and_cleans(self):
         name = "alloy-swe-agent-272812a7"

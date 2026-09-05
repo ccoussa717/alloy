@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import signal
@@ -54,6 +55,7 @@ FIXED_ENV = {
 SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 TOKEN_PREFIX = "alloy-swe-"
 PROXY_CONTAINER_PREFIX = "alloy-proxy-"
+NETWORK_SETTLEMENT_POLL_SECONDS = 0.05
 HOP_HEADERS = {
     "expect",
     "keep-alive",
@@ -112,6 +114,10 @@ EGRESS_ALLOCATION = NetworkAllocation(
 
 
 class ProxyStateError(RuntimeError):
+    pass
+
+
+class DockerCommandTimeoutError(ProxyStateError):
     pass
 
 
@@ -367,6 +373,7 @@ class ProxyNetwork:
         self._nft_table: str | None = None
         self._relay: HostRelay | None = None
         self._container: "ContainerHandle | None" = None
+        self._uncertain_networks: set[tuple[str, str]] = set()
         self._atexit_registered = False
         self._previous_sigterm = None
         self._closed = True
@@ -402,7 +409,7 @@ class ProxyNetwork:
         except subprocess.TimeoutExpired as error:
             # Never include TimeoutExpired output: Docker may have emitted
             # unbounded daemon diagnostics while the command was hung.
-            raise ProxyStateError("Docker command timed out before completion") from error
+            raise DockerCommandTimeoutError("Docker command timed out before completion") from error
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "no Docker diagnostic").strip()
             raise ProxyStateError(
@@ -531,6 +538,45 @@ class ProxyNetwork:
         if self._inspect_network(name, absent_ok=True) is not None:
             raise ProxyStateError("could not prove Docker network removal")
 
+    def _settle_uncertain_network(self, name: str, run_id: str) -> None:
+        timeout = getattr(self.runtime, "command_timeout_seconds", None)
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ProxyStateError("Docker command timeout is unavailable for network settlement")
+        window = float(timeout)
+        deadline = time.monotonic() + (4 * window)
+        absent_since: float | None = None
+        while time.monotonic() < deadline:
+            try:
+                metadata = self._inspect_network(name, absent_ok=True)
+                if metadata is None:
+                    observed_absence = time.monotonic()
+                    if absent_since is None:
+                        absent_since = observed_absence
+                    elif observed_absence - absent_since >= window:
+                        return
+                else:
+                    absent_since = None
+                    actual_name, actual_run = self._owned_network(metadata)
+                    if (actual_name, actual_run) != (name, run_id):
+                        raise ProxyStateError("foreign Docker network ownership changed")
+                    if self._mapping(metadata.get("Containers")):
+                        raise ProxyStateError("refusing to remove active gate-owned Docker network")
+                    self._docker("network", "rm", name)
+                    absent_since = None
+            except DockerCommandTimeoutError:
+                # A timed-out inspect or remove cannot prove absence. Continue until
+                # the bounded reconciliation deadline, then fail closed.
+                absent_since = None
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(NETWORK_SETTLEMENT_POLL_SECONDS, window, remaining))
+        raise ProxyStateError("timed-out network create cleanup remains uncertain")
+
     def _nft(self, arguments: Sequence[str], *, input: str | None = None, check: bool = True):
         return self.nft_runner(
             [NFT_BIN, *arguments],
@@ -624,7 +670,11 @@ class ProxyNetwork:
         if internal:
             arguments.append("--internal")
         arguments.append(name)
-        self._docker(*arguments)
+        try:
+            self._docker(*arguments)
+        except DockerCommandTimeoutError:
+            self._uncertain_networks.add((name, run_id))
+            raise
         metadata = self._inspect_network(name)
         assert metadata is not None
         actual_name, actual_run = self._owned_network(metadata)
@@ -1003,7 +1053,12 @@ class ProxyNetwork:
         for name in (self._egress_network, self._agent_network):
             if name is not None and self._run_id is not None:
                 try:
-                    self._remove_network(name, self._run_id)
+                    key = (name, self._run_id)
+                    if key in self._uncertain_networks:
+                        self._settle_uncertain_network(*key)
+                        self._uncertain_networks.remove(key)
+                    else:
+                        self._remove_network(name, self._run_id)
                 except BaseException as error:
                     errors.append(error)
                 else:

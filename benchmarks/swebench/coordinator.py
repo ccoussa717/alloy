@@ -42,6 +42,7 @@ from benchmarks.swebench.cleanup import (
 from benchmarks.swebench.containers import (
     CleanupUncertainError,
     ContainerHandle,
+    DOCKER_EXPORT_TIMEOUT_SECONDS,
     ContainerSpec,
     DockerRuntime,
     MountSpec,
@@ -623,10 +624,10 @@ class TrustedRunServices:
                 raise RuntimeError("confined agent export failed")
             scratch = self._scratch()
             self.export_path = scratch / "agent.tar"
-            runtime._run(
-                runtime._docker_arguments(
-                    "cp", f"{helper.container_id}:/export/agent.tar", str(self.export_path)
-                )
+            runtime.copy_export(
+                helper.container_id,
+                self.export_path,
+                timeout=DOCKER_EXPORT_TIMEOUT_SECONDS,
             )
         finally:
             runtime.force_remove(helper)
