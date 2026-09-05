@@ -299,7 +299,10 @@ class FakeRuntime:
         self.network_config = {}
         self.foreign_networks = {}
         self.network_create_failures = {}
+        self.network_create_failure_materializes = set()
         self.network_create_timeouts = {}
+        self.network_create_attempted = set()
+        self.network_inspect_timeouts_after_create = set()
         self.delayed_network_creates = {}
         self.persistent_network_create_uncertainty = set()
         self.timed_out_network_creates = set()
@@ -353,6 +356,10 @@ class FakeRuntime:
             if (
                 name in self.network_inspect_timeouts
                 or (
+                    name in self.network_inspect_timeouts_after_create
+                    and name in self.network_create_attempted
+                )
+                or (
                     name in self.persistent_network_create_uncertainty
                     and name in self.timed_out_network_creates
                 )
@@ -399,6 +406,7 @@ class FakeRuntime:
             return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(value), stderr="")
         if action[:2] == ["network", "create"]:
             name = action[-1]
+            self.network_create_attempted.add(name)
             timeout = self.network_create_timeouts.get(name)
             if timeout is not None:
                 self.timed_out_network_creates.add(name)
@@ -414,6 +422,13 @@ class FakeRuntime:
                 )
             diagnostic = self.network_create_failures.get(name)
             if diagnostic is not None:
+                if name in self.network_create_failure_materializes:
+                    self.networks.add(name)
+                    self.network_config[name] = (
+                        "--internal" in action,
+                        action[action.index("--gateway") + 1],
+                        action[action.index("--subnet") + 1],
+                    )
                 raise subprocess.CalledProcessError(
                     1, arguments, output="", stderr=diagnostic
                 )
@@ -438,12 +453,12 @@ class FakeRuntime:
             address = action[action.index("--ip") + 1]
             network = action[-2]
             config = self.network_config[network]
-            _internal, gateway, subnet = config
+            internal, gateway, subnet = config
             self.network_endpoint_counter += 1
             attachment = {
                 "IPAddress": address,
                 "IPPrefixLen": int(subnet.rpartition("/")[2]),
-                "Gateway": gateway,
+                "Gateway": "" if internal else gateway,
                 "GlobalIPv6Address": "",
                 "EndpointID": f"{self.network_endpoint_counter:064x}",
             }
@@ -631,6 +646,32 @@ class ProxyNetworkTests(unittest.TestCase):
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
 
+    def test_accepts_real_internal_endpoint_without_gateway(self):
+        agent_network = "alloy-swe-agent-272812a7"
+        egress_network = "alloy-swe-egress-272812a7"
+        self.network._validate_proxy_interfaces(
+            {
+                "NetworkSettings": {
+                    "Networks": {
+                        agent_network: {
+                            "IPAddress": "198.18.0.2",
+                            "IPPrefixLen": 28,
+                            "GlobalIPv6Address": "",
+                            "EndpointID": "a" * 64,
+                        },
+                        egress_network: {
+                            "IPAddress": "198.18.0.18",
+                            "IPPrefixLen": 28,
+                            "Gateway": "198.18.0.17",
+                            "GlobalIPv6Address": "",
+                            "EndpointID": "b" * 64,
+                        },
+                    }
+                }
+            },
+            ((agent_network, AGENT_ALLOCATION), (egress_network, EGRESS_ALLOCATION)),
+        )
+
     def test_rejects_every_proxy_interface_drift_with_bounded_diagnostics(self):
         agent_network = "alloy-swe-agent-272812a7"
         egress_network = "alloy-swe-egress-272812a7"
@@ -639,7 +680,7 @@ class ProxyNetworkTests(unittest.TestCase):
             return {
                 "IPAddress": str(allocation.proxy),
                 "IPPrefixLen": allocation.subnet.prefixlen,
-                "Gateway": str(allocation.gateway),
+                "Gateway": "" if allocation.role == "agent" else str(allocation.gateway),
                 "GlobalIPv6Address": "",
                 "EndpointID": endpoint_id,
             }
@@ -650,6 +691,8 @@ class ProxyNetworkTests(unittest.TestCase):
             ("ipv6-only", lambda value: value[agent_network].update(IPAddress="2001:db8::2"), "IPv4"),
             ("wrong-ip", lambda value: value[agent_network].update(IPAddress="198.18.0.3"), "address"),
             ("wrong-prefix", lambda value: value[agent_network].update(IPPrefixLen=24), "prefix"),
+            ("agent-gateway-present", lambda value: value[agent_network].update(Gateway="198.18.0.1"), "gateway"),
+            ("egress-gateway-missing", lambda value: value[egress_network].pop("Gateway"), "gateway"),
             ("wrong-gateway", lambda value: value[egress_network].update(Gateway="198.18.0.19"), "gateway"),
             ("duplicate-interface", lambda value: value[egress_network].update(EndpointID="a" * 64), "duplicate"),
             ("extra-network", lambda value: value.update(foreign={}), "membership"),
@@ -788,50 +831,74 @@ class ProxyNetworkTests(unittest.TestCase):
                 state_dir=self.state_dir,
             )
 
-    def test_agent_network_create_conflict_is_daemon_authoritative_and_quarantines(self):
+    def test_agent_network_create_conflict_proves_absence_and_clears_intent(self):
         name = "alloy-swe-agent-272812a7"
         self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
 
-        with self.assertRaises(ProxyCleanupError) as raised:
+        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
             self.network.start("run-123")
-        self.assertRegex(str(raised.exception.original_error), r"network create.*Pool overlaps")
 
         commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
         self.assertTrue(any(command[3:5] == ("network", "create") for command in commands))
-        self.assertFalse(any(
-            command[3:6] == ("network", "ls", "--format")
-            and command[-1] == "{{.ID}}"
-            for command in commands
-        ))
         self.assertEqual(self.runtime.networks, set())
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertEqual(self.relays, [])
-        self.assertFalse(self.locks[0].closed)
-        self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
+        self.assertTrue(self.locks[0].closed)
+        self.assertEqual(list((self.state_dir / "proxy-network-intents").glob("*.intent")), [])
 
-    def test_egress_network_create_conflict_cleans_agent_and_quarantines_egress(self):
+    def test_egress_network_create_conflict_cleans_agent_and_clears_intent(self):
         name = "alloy-swe-egress-272812a7"
         self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
 
-        with self.assertRaises(ProxyCleanupError) as raised:
+        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
             self.network.start("run-123")
-        self.assertRegex(str(raised.exception.original_error), r"network create.*Pool overlaps")
 
         commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
         creates = [command for command in commands if command[3:5] == ("network", "create")]
         self.assertEqual([command[-1] for command in creates], [
             "alloy-swe-agent-272812a7", "alloy-swe-egress-272812a7",
         ])
-        self.assertFalse(any(
-            command[3:6] == ("network", "ls", "--format")
-            and command[-1] == "{{.ID}}"
-            for command in commands
-        ))
         self.assertEqual(self.runtime.networks, set())
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertEqual(self.relays, [])
+        self.assertTrue(self.locks[0].closed)
+        self.assertEqual(list((self.state_dir / "proxy-network-intents").glob("*.intent")), [])
+
+    def test_conflict_with_observed_owned_network_removes_and_clears_intent(self):
+        name = "alloy-swe-agent-272812a7"
+        self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
+        self.runtime.network_create_failure_materializes.add(name)
+
+        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
+            self.network.start("run-123")
+
+        self.assertIn(name, self.runtime.network_remove_commands)
+        self.assertEqual(self.runtime.networks, set())
+        self.assertTrue(self.locks[0].closed)
+        self.assertEqual(list((self.state_dir / "proxy-network-intents").glob("*.intent")), [])
+
+    def test_transport_create_failure_retains_quarantine(self):
+        name = "alloy-swe-agent-272812a7"
+        self.runtime.network_create_failures[name] = "Cannot connect to the Docker daemon"
+
+        with self.assertRaises(ProxyCleanupError):
+            self.network.start("run-123")
+
+        self.assertFalse(self.network._closed)
+        self.assertFalse(self.locks[0].closed)
+        self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
+
+    def test_conflict_with_uncertain_inspection_retains_quarantine(self):
+        name = "alloy-swe-agent-272812a7"
+        self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
+        self.runtime.network_inspect_timeouts_after_create.add(name)
+
+        with self.assertRaises(ProxyCleanupError):
+            self.network.start("run-123")
+
+        self.assertFalse(self.network._closed)
         self.assertFalse(self.locks[0].closed)
         self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
 

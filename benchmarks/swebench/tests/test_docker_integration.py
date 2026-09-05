@@ -36,7 +36,6 @@ from benchmarks.swebench.profile import load_profile
 from benchmarks.swebench.proxy import (
     AGENT_ALLOCATION,
     EGRESS_ALLOCATION,
-    ProxyCleanupError,
     ProxyNetwork,
     ProxyStateError,
 )
@@ -453,7 +452,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         work = self.root / "work"
         scratch = [] if not work.exists() else [str(path) for path in work.iterdir()]
         relay = []
-        if proxy is not None and (not proxy._closed or proxy._relay is not None):
+        if proxy is not None and proxy._relay is not None:
             relay.append(repr(getattr(proxy._relay, "address", proxy._relay)))
         if services is not None and getattr(services, "_scratch_dir", None) is not None:
             scratch.append(str(services._scratch_dir))
@@ -671,9 +670,8 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                 state_dir=self.proxy_state,
             )
             self.runs.append((run_id, proxy, None))
-            with self.assertRaises(ProxyCleanupError) as raised:
+            with self.assertRaisesRegex(ProxyStateError, r"network create.*[Oo]verlap"):
                 proxy.start(run_id)
-            self.assertRegex(str(raised.exception.original_error), r"network create.*[Oo]verlap")
             self._assert_no_leaks(run_id, proxy)
 
     def test_daemon_network_create_races_have_one_winner_and_cleanup(self):
@@ -757,10 +755,8 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                         self.assertNotEqual(external_result.returncode, 0)
                         self.assertRegex(external_result.stderr, r"[Oo]verlap")
                     else:
-                        self.assertIsInstance(error, ProxyCleanupError)
-                        self.assertRegex(
-                            str(error.original_error), r"network create.*[Oo]verlap"
-                        )
+                        self.assertIsInstance(error, ProxyStateError)
+                        self.assertRegex(str(error), r"network create.*[Oo]verlap")
                         self.assertEqual(external_result.returncode, 0)
                         # An agent loss creates no gate state; an egress loss
                         # must also have removed the already-created agent network.

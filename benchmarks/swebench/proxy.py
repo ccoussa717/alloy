@@ -120,6 +120,10 @@ class DockerCommandTimeoutError(ProxyStateError):
     pass
 
 
+class DockerDaemonRejectionError(ProxyStateError):
+    """A synchronous, daemon-originated Docker command rejection."""
+
+
 class ProxyCleanupError(CleanupUncertaintyError):
     def __init__(
         self,
@@ -557,7 +561,12 @@ class ProxyNetwork:
             raise DockerCommandTimeoutError("Docker command timed out before completion") from error
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "no Docker diagnostic").strip()
-            raise ProxyStateError(
+            error_type = (
+                DockerDaemonRejectionError
+                if detail.startswith("Error response from daemon:")
+                else ProxyStateError
+            )
+            raise error_type(
                 f"Docker {' '.join(arguments)} failed: {detail[-1024:]!r}"
             ) from error
 
@@ -780,7 +789,16 @@ class ProxyNetwork:
         key = (name, run_id)
         self._intents.create(*key)
         self._network_intents.add(key)
-        self._docker(*arguments)
+        try:
+            self._docker(*arguments)
+        except DockerDaemonRejectionError:
+            # A daemon-originated nonzero result conclusively completed the create
+            # request. Prove its uniquely named resource is absent, or remove the
+            # observed owned resource, before clearing the durable intent.
+            self._remove_network(name, run_id)
+            self._intents.clear(name)
+            self._network_intents.remove(key)
+            raise
         metadata = self._inspect_network(name)
         assert metadata is not None
         actual_name, actual_run = self._owned_network(metadata)
@@ -855,16 +873,24 @@ class ProxyNetwork:
             interface = ipaddress.ip_interface(f"{address}/{prefix}")
             if interface.network != allocation.subnet:
                 raise ProxyStateError(f"proxy {allocation.role} interface subnet drifted")
-            if not isinstance(gateway, str):
-                raise ProxyStateError(f"proxy {allocation.role} interface lacks an IPv4 gateway")
-            try:
-                gateway_ip = ipaddress.ip_address(gateway)
-            except ValueError as error:
-                raise ProxyStateError(
-                    f"proxy {allocation.role} interface has an invalid IPv4 gateway"
-                ) from error
-            if gateway_ip != allocation.gateway:
-                raise ProxyStateError(f"proxy {allocation.role} interface gateway drifted")
+            if allocation.role == "agent":
+                # Docker reports no endpoint gateway for an internal bridge. The
+                # network's IPAM gateway remains separately pinned and verified.
+                if gateway not in (None, ""):
+                    raise ProxyStateError("proxy agent interface gateway drifted")
+            else:
+                if not isinstance(gateway, str):
+                    raise ProxyStateError(
+                        f"proxy {allocation.role} interface lacks an IPv4 gateway"
+                    )
+                try:
+                    gateway_ip = ipaddress.ip_address(gateway)
+                except ValueError as error:
+                    raise ProxyStateError(
+                        f"proxy {allocation.role} interface has an invalid IPv4 gateway"
+                    ) from error
+                if gateway_ip != allocation.gateway:
+                    raise ProxyStateError(f"proxy {allocation.role} interface gateway drifted")
             if attachment.get("GlobalIPv6Address") not in (None, ""):
                 raise ProxyStateError(f"proxy {allocation.role} interface IPv6 drifted")
             endpoint_id = attachment.get("EndpointID")
