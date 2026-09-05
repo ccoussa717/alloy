@@ -584,17 +584,18 @@ class ProxyNetworkTests(unittest.TestCase):
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
 
-    def test_ipv4_subnets_accepts_real_builtin_empty_ipam_shapes(self):
-        host = {
-            "Name": "host",
-            "Driver": "host",
-            "IPAM": {"Driver": "default", "Options": None, "Config": None},
-        }
-        none = {
-            "Name": "none",
-            "Driver": "null",
-            "IPAM": {"Driver": "default", "Options": None, "Config": []},
-        }
+    def test_ipv4_subnets_accepts_only_exact_builtin_empty_ipam_shapes(self):
+        def builtin(name, driver, config):
+            return {
+                "Name": name,
+                "Driver": driver,
+                "Scope": "local",
+                "Attachable": False,
+                "Ingress": False,
+                "Internal": False,
+                "IPAM": {"Driver": "default", "Options": None, "Config": config},
+            }
+
         bridge = {
             "Name": "bridge",
             "Driver": "bridge",
@@ -605,12 +606,47 @@ class ProxyNetworkTests(unittest.TestCase):
             },
         }
 
-        self.assertEqual(ProxyNetwork._ipv4_subnets(host), ())
-        self.assertEqual(ProxyNetwork._ipv4_subnets(none), ())
+        self.assertEqual(ProxyNetwork._ipv4_subnets(builtin("host", "host", None)), ())
+        self.assertEqual(ProxyNetwork._ipv4_subnets(builtin("none", "null", [])), ())
         self.assertEqual(
             ProxyNetwork._ipv4_subnets(bridge),
             (ipaddress.ip_network("172.17.0.0/16"),),
         )
+
+    def test_ipv4_subnets_rejects_empty_ipam_except_exact_builtin_shapes(self):
+        def builtin(name="host", driver="host", config=None):
+            return {
+                "Name": name,
+                "Driver": driver,
+                "Scope": "local",
+                "Attachable": False,
+                "Ingress": False,
+                "Internal": False,
+                "IPAM": {"Driver": "default", "Options": None, "Config": config},
+            }
+
+        class DerivedDict(dict):
+            pass
+
+        cases = (
+            ("metadata-not-plain", DerivedDict(builtin()), "invalid IPAM"),
+            ("ipam-not-plain", {**builtin(), "IPAM": DerivedDict(builtin()["IPAM"])}, "invalid IPAM"),
+            ("custom-name", builtin(name="custom"), "unsupported empty IPAM"),
+            ("host-wrong-driver", builtin(driver="bridge"), "unsupported empty IPAM"),
+            ("none-wrong-driver", builtin(name="none", driver="host", config=[]), "unsupported empty IPAM"),
+            ("host-list-not-null", builtin(config=[]), "unsupported empty IPAM"),
+            ("none-null-not-list", builtin(name="none", driver="null"), "unsupported empty IPAM"),
+            ("wrong-scope", {**builtin(), "Scope": "swarm"}, "unsupported empty IPAM"),
+            ("attachable", {**builtin(), "Attachable": True}, "unsupported empty IPAM"),
+            ("ingress", {**builtin(), "Ingress": True}, "unsupported empty IPAM"),
+            ("internal", {**builtin(), "Internal": True}, "unsupported empty IPAM"),
+            ("ipam-driver", {**builtin(), "IPAM": {"Driver": "plugin", "Options": None, "Config": None}}, "unsupported empty IPAM"),
+            ("ipam-options", {**builtin(), "IPAM": {"Driver": "default", "Options": {}, "Config": None}}, "unsupported empty IPAM"),
+            ("plugin-empty", {**builtin(name="plugin", driver="plugin"), "IPAM": {"Driver": "plugin", "Options": None, "Config": []}}, "unsupported empty IPAM"),
+        )
+        for name, metadata, message in cases:
+            with self.subTest(name=name), self.assertRaisesRegex(ProxyStateError, message):
+                ProxyNetwork._ipv4_subnets(metadata)
 
     def test_ipv4_subnets_rejects_malformed_or_partially_malformed_configurations(self):
         valid = {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}

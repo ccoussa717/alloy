@@ -602,16 +602,32 @@ class ProxyNetwork:
 
     @staticmethod
     def _ipv4_subnets(metadata: dict[str, object]) -> tuple[ipaddress.IPv4Network, ...]:
+        # Docker network inspect is decoded from JSON.  The authority-bearing
+        # no-subnet exception therefore requires plain objects with direct,
+        # exact values; only built-in host and none have no IPv4 allocation.
+        if type(metadata) is not dict:
+            raise ProxyStateError("Docker network has invalid IPAM configuration")
         ipam = metadata.get("IPAM")
-        if not isinstance(ipam, dict) or "Config" not in ipam:
+        if type(ipam) is not dict or "Config" not in ipam:
             raise ProxyStateError("Docker network has invalid IPAM configuration")
         configs = ipam["Config"]
-        # Docker's built-in host and none networks legitimately report no IPAM
-        # ranges as either null or an empty list. They contribute no IPv4 range;
-        # every non-empty entry remains mandatory to parse.
-        if configs is None or configs == []:
+        if configs is None or (type(configs) is list and not configs):
+            builtin_shape = (
+                ("host", "host", None),
+                ("none", "null", []),
+            )
+            if (
+                (metadata.get("Name"), metadata.get("Driver"), configs) not in builtin_shape
+                or metadata.get("Scope") != "local"
+                or metadata.get("Attachable") is not False
+                or metadata.get("Ingress") is not False
+                or metadata.get("Internal") is not False
+                or ipam.get("Driver") != "default"
+                or ipam.get("Options") is not None
+            ):
+                raise ProxyStateError("Docker network has unsupported empty IPAM configuration")
             return ()
-        if not isinstance(configs, list):
+        if type(configs) is not list:
             raise ProxyStateError("Docker network has invalid IPAM configuration")
         subnets = []
         for config in configs:

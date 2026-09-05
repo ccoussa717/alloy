@@ -563,6 +563,29 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         marker = json.loads((checkout / "fixture-marker.json").read_text())
         return marker, patch
 
+    def test_builtin_network_inspections_match_empty_ipam_allowlist_before_gate_start(self):
+        expected = {
+            "host": ("host", None),
+            "none": ("null", []),
+        }
+        for name, (driver, config) in expected.items():
+            with self.subTest(name=name):
+                inspection = json.loads(self._docker("network", "inspect", name).stdout)
+                self.assertEqual(len(inspection), 1)
+                metadata = inspection[0]
+                self.assertIs(type(metadata), dict)
+                self.assertEqual(metadata.get("Name"), name)
+                self.assertEqual(metadata.get("Driver"), driver)
+                self.assertEqual(metadata.get("Scope"), "local")
+                self.assertIs(metadata.get("Attachable"), False)
+                self.assertIs(metadata.get("Ingress"), False)
+                self.assertIs(metadata.get("Internal"), False)
+                self.assertIs(type(metadata.get("IPAM")), dict)
+                self.assertEqual(metadata["IPAM"].get("Driver"), "default")
+                self.assertIs(metadata["IPAM"].get("Options"), None)
+                self.assertEqual(metadata["IPAM"].get("Config"), config)
+                self.assertEqual(ProxyNetwork._ipv4_subnets(metadata), ())
+
     def test_proxy_inspects_exact_static_interface_assignments(self):
         run_id = "docker-static-proxy-" + uuid.uuid4().hex
         runtime = DockerRuntime(self.profile, REPO_ROOT)
