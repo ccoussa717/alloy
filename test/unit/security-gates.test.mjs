@@ -179,6 +179,25 @@ function releaseFixture(overrides = {}) {
   Object.assign(packages, overrides.packages || {});
   mkdirSync(join(directory, "bin"), { recursive: true });
   writeFileSync(join(directory, "bin", "alloy.mjs"), "");
+  mkdirSync(join(directory, "tui"), { recursive: true });
+  writeFileSync(
+    join(directory, "tui", "package.json"),
+    JSON.stringify({ name: "alloy-tui", version: pkg.version }),
+  );
+  mkdirSync(join(directory, "extensions"), { recursive: true });
+  writeFileSync(
+    join(directory, "extensions", "ui.ts"),
+    `const VERSION = process.env.ALLOY_VERSION || "${pkg.version}";\n`,
+  );
+  mkdirSync(join(directory, "lib"), { recursive: true });
+  writeFileSync(
+    join(directory, "lib", "child-runner.mjs"),
+    `out.ALLOY_VERSION = process.env.ALLOY_VERSION || out.ALLOY_VERSION || "${pkg.version}";\n`,
+  );
+  writeFileSync(
+    join(directory, "lib", "mcp-client.mjs"),
+    `{ name: "alloy", version: process.env.ALLOY_VERSION || "${pkg.version}" },\n`,
+  );
   mkdirSync(join(directory, "benchmarks", "swebench"), { recursive: true });
   writeFileSync(join(directory, "benchmarks", "swebench", "runner.py"), "");
   mkdirSync(join(directory, "scripts"), { recursive: true });
@@ -465,6 +484,139 @@ globalThis.fetch = async (input, options) => {
     });
     assert.equal(privatePackage.status, 0, privatePackage.stderr || privatePackage.stdout);
   });
+
+  it("requires root, TUI, and shrinkwrap versions to match dynamically", () => {
+    const tuiDirectory = releaseFixture();
+    const tuiPath = join(tuiDirectory, "tui", "package.json");
+    const tui = JSON.parse(readFileSync(tuiPath, "utf8"));
+    tui.version = "9.9.9";
+    writeFileSync(tuiPath, JSON.stringify(tui));
+    const tuiResult = run(process.execPath, [script], { cwd: tuiDirectory });
+    assert.notEqual(tuiResult.status, 0);
+    assert.match(tuiResult.stderr, /tui\/package\.json version must match package\.json/);
+
+    const shrinkwrapDirectory = releaseFixture();
+    const shrinkwrapPath = join(shrinkwrapDirectory, "npm-shrinkwrap.json");
+    const shrinkwrap = JSON.parse(readFileSync(shrinkwrapPath, "utf8"));
+    shrinkwrap.packages[""].version = "9.9.9";
+    writeFileSync(shrinkwrapPath, JSON.stringify(shrinkwrap));
+    const shrinkwrapResult = run(process.execPath, [script], { cwd: shrinkwrapDirectory });
+    assert.notEqual(shrinkwrapResult.status, 0);
+    assert.match(shrinkwrapResult.stderr, /package and shrinkwrap identity must match/);
+  });
+
+  for (const [path, replacement] of [
+    ["extensions/ui.ts", 'const VERSION = process.env.ALLOY_VERSION || "9.9.9";'],
+    [
+      "lib/child-runner.mjs",
+      'out.ALLOY_VERSION = process.env.ALLOY_VERSION || out.ALLOY_VERSION || "9.9.9";',
+    ],
+    [
+      "lib/mcp-client.mjs",
+      '{ name: "alloy", version: process.env.ALLOY_VERSION || "9.9.9" },',
+    ],
+  ]) {
+    it(`requires the executable version fallback in ${path} to match package.json`, () => {
+      const directory = releaseFixture();
+      writeFileSync(join(directory, path), `${replacement}\n`);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} version fallback must match package\\.json`));
+    });
+
+    it(`accepts the executable version fallback in ${path} with CRLF line endings`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      writeFileSync(sourcePath, readFileSync(sourcePath, "utf8").replaceAll("\n", "\r\n"));
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
+    it(`accepts the executable version fallback in ${path} after regex syntax`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8");
+      writeFileSync(sourcePath, `const syntax = /^[!#$%&'*+.^_\`|~]$/;\n${source}`);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
+    it(`accepts the executable version fallback in ${path} inside a nested template expression`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      const nestedSource = [
+        "const nested = `escaped \\` and \\${literal} ${",
+        "  (() => {",
+        "    const inner = `inner`;",
+        ...(path === "lib/mcp-client.mjs"
+          ? ["    return [", source, "    ];"]
+          : [source, "    return inner;"]),
+        "  })()",
+        "}`;",
+        "",
+      ].join("\n");
+      writeFileSync(sourcePath, nestedSource);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    });
+
+    it(`requires exactly one executable version fallback in ${path}`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8");
+      writeFileSync(sourcePath, source + source);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+    });
+
+    it(`does not treat a commented fallback in ${path} as executable`, () => {
+      for (const wrapComment of [
+        (source) => `// ${source}\n`,
+        (source) => `/*\n${source}\n*/\n`,
+      ]) {
+        const directory = releaseFixture();
+        const sourcePath = join(directory, path);
+        const source = readFileSync(sourcePath, "utf8").trim();
+        writeFileSync(sourcePath, wrapComment(source));
+        const result = run(process.execPath, [script], { cwd: directory });
+
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+      }
+    });
+
+    it(`does not treat a fallback string in ${path} as executable`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      writeFileSync(sourcePath, `const inert = \`\n${source}\n\`;\n`);
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+    });
+
+    it(`does not treat fallback text in an inner nested template in ${path} as executable`, () => {
+      const directory = releaseFixture();
+      const sourcePath = join(directory, path);
+      const source = readFileSync(sourcePath, "utf8").trim();
+      writeFileSync(
+        sourcePath,
+        ["const inert = `outer ${", "  `inner", source, "  `", "}`;", ""].join("\n"),
+      );
+      const result = run(process.execPath, [script], { cwd: directory });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} must contain exactly one executable version fallback`));
+    });
+  }
 
   it("rejects benchmark tooling in the runtime package boundary", () => {
     const directory = releaseFixture({ pkg: { files: ["bin", "benchmarks/swebench"] } });

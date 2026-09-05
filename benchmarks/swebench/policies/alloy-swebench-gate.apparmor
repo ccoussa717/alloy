@@ -1,0 +1,33 @@
+#include <tunables/global>
+
+profile alloy-swebench-gate flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+  deny network raw,
+  deny network packet,
+
+  file,
+  capability,
+  umount,
+  deny mount,
+  deny pivot_root,
+  deny ptrace (read, trace),
+  signal (send, receive) peer=alloy-swebench-gate,
+  signal receive peer=unconfined,
+  deny signal send peer=unconfined,
+
+  deny /proc/acpi/** rwklx,
+  deny /proc/*/mem rwklx,
+  deny /proc/kcore rwklx,
+  deny /proc/keys rwklx,
+  deny /proc/sys/** wklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/timer_list rwklx,
+  deny /proc/timer_stats rwklx,
+  deny /sys/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+}

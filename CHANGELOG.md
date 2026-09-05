@@ -10,11 +10,14 @@ and releases use [semantic versioning](https://semver.org/).
 ### Added
 - **Maintainers can smoke-test an exact release candidate against one pinned
   SWE-bench Lite instance.** Fast model-free contract tests run in Linux CI,
-  while source-only commands bootstrap the evaluator and verify immutable
-  candidate provenance through `dry-run` without adding benchmark tooling or
-  Python dependencies to installed or packed Alloy runtimes. Real execution
-  fails closed pending trusted agent isolation and immutable dataset/evaluator
-  integrity pins.
+  while source-only commands provision independently pinned root-owned
+  authority, verify immutable candidate, dataset, model, image, evaluator, and
+  confinement provenance, and enforce a signed one-attempt release flow. Agent
+  execution is container-confined away from host, result, evaluator, dataset,
+  and Docker authority; terminal evidence is signed only after verified cleanup,
+  with explicit audited authorization required for one retry. Benchmark tooling
+  and Python dependencies remain outside installed and packed Alloy runtimes,
+  and npm publication remains blocked.
 
 ## [1.1.25] - 2026-08-17
 
