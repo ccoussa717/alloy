@@ -620,7 +620,10 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                 attachment = networks[name]
                 self.assertEqual(attachment["IPAddress"], str(allocation.proxy))
                 self.assertEqual(attachment["IPPrefixLen"], allocation.subnet.prefixlen)
-                self.assertEqual(attachment["Gateway"], str(allocation.gateway))
+                if allocation.role == "agent":
+                    self.assertIn(attachment.get("Gateway"), (None, ""))
+                else:
+                    self.assertEqual(attachment["Gateway"], str(allocation.gateway))
                 self.assertNotIn(attachment["EndpointID"], endpoint_ids)
                 endpoint_ids.add(attachment["EndpointID"])
 
