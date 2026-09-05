@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import ipaddress
 import json
@@ -19,6 +20,7 @@ from benchmarks.swebench.artifacts import ResultWriter
 from benchmarks.swebench.attempts import GateSigner
 from benchmarks.swebench.authority import VerifiedCandidate
 from benchmarks.swebench.containers import (
+    DOCKER_COMMAND_TIMEOUT_SECONDS,
     DockerRuntime,
     MountSpec,
 )
@@ -51,6 +53,7 @@ FIXTURES = Path(__file__).parent / "fixtures/agents"
 LABEL = "alloy.swebench.gate"
 BENCH_ROOT = PROFILE_PATH.parent
 VENV_PYTHON = BENCH_ROOT / ".venv/bin/python"
+RACE_THREAD_GRACE_SECONDS = 5
 
 
 class _Upstream(BaseHTTPRequestHandler):
@@ -411,6 +414,27 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
             timeout=timeout,
         )
 
+    @contextlib.contextmanager
+    def _external_network(self, name, subnet, gateway):
+        self._docker(
+            "network", "create", "--driver", "bridge",
+            "--subnet", str(subnet), "--gateway", str(gateway), name,
+        )
+        try:
+            yield
+        finally:
+            self._docker("network", "rm", name, check=False)
+
+    def _defer_race_cleanup(self, threads, run_id, proxy, external):
+        def cleanup_after_threads_exit():
+            for thread in threads:
+                thread.join()
+            self._emergency_cleanup(run_id, proxy, None)
+            self._docker("network", "rm", external, check=False)
+
+        finalizer = threading.Thread(target=cleanup_after_threads_exit, daemon=True)
+        finalizer.start()
+
     def _resource_inventory(self, run_id, proxy=None, services=None):
         label = f"{LABEL}={run_id}"
         containers = self._docker("ps", "-aq", "--filter", f"label={label}", check=False).stdout.split()
@@ -598,32 +622,51 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
 
         self._assert_no_leaks(run_id, proxy)
 
+    def test_broad_overlap_cleanup_covers_setup_failures(self):
+        def injected_preflight_failure():
+            runtime = DockerRuntime(self.profile, REPO_ROOT)
+            with mock.patch.object(
+                runtime, "preflight", side_effect=RuntimeError("injected preflight failure")
+            ):
+                runtime.preflight()
+
+        failures = (
+            ("preflight", injected_preflight_failure),
+            ("construction", lambda: ProxyNetwork(
+                DockerRuntime(self.profile, REPO_ROOT), self.proxy_image_id, REPO_ROOT,
+                "https://invalid.example", install_signal_handlers=False,
+            )),
+        )
+        for phase, setup in failures:
+            overlap = "alloy-fixed-overlap-" + uuid.uuid4().hex
+            with self.subTest(phase=phase), self.assertRaisesRegex((RuntimeError, ValueError), "failure|origin"):
+                with self._external_network(overlap, AGENT_ALLOCATION.subnet, AGENT_ALLOCATION.gateway):
+                    setup()
+            result = self._docker("network", "inspect", overlap, check=False)
+            self.assertNotEqual(result.returncode, 0, f"{phase} failure leaked broad overlap network")
+
     def test_daemon_rejects_broad_overlap_early_and_cleans(self):
         # Both fixed /28s lie within this /24, but startup creates the agent
         # network first. This test therefore proves only the aggregate overlap
         # rejection at that early boundary; the exact egress conflict is raced below.
         run_id = "docker-static-broad-collision-" + uuid.uuid4().hex
         overlap = "alloy-fixed-overlap-" + uuid.uuid4().hex
-        self._docker(
-            "network", "create", "--driver", "bridge",
-            "--subnet", "198.18.0.0/24", "--gateway", "198.18.0.1", overlap,
-        )
-        runtime = DockerRuntime(self.profile, REPO_ROOT)
-        runtime.preflight()
-        proxy = ProxyNetwork(
-            runtime,
-            self.proxy_image_id,
-            REPO_ROOT,
-            f"http://127.0.0.1:{self.upstream.server_port}",
-            install_signal_handlers=False,
-        )
-        self.runs.append((run_id, proxy, None))
-        try:
+        with self._external_network(
+            overlap, ipaddress.ip_network("198.18.0.0/24"), ipaddress.ip_address("198.18.0.1"),
+        ):
+            runtime = DockerRuntime(self.profile, REPO_ROOT)
+            runtime.preflight()
+            proxy = ProxyNetwork(
+                runtime,
+                self.proxy_image_id,
+                REPO_ROOT,
+                f"http://127.0.0.1:{self.upstream.server_port}",
+                install_signal_handlers=False,
+            )
+            self.runs.append((run_id, proxy, None))
             with self.assertRaisesRegex(ProxyStateError, r"network create.*[Oo]verlap"):
                 proxy.start(run_id)
             self._assert_no_leaks(run_id, proxy)
-        finally:
-            self._docker("network", "rm", overlap, check=False)
 
     def test_daemon_network_create_races_have_one_winner_and_cleanup(self):
         for allocation in (AGENT_ALLOCATION, EGRESS_ALLOCATION):
@@ -663,16 +706,27 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                     except BaseException as error:
                         outcome["external_error"] = error
 
-                gate_thread = threading.Thread(target=run_gate)
-                external_thread = threading.Thread(target=run_external)
+                gate_thread = threading.Thread(target=run_gate, daemon=True)
+                external_thread = threading.Thread(target=run_external, daemon=True)
+                threads = (gate_thread, external_thread)
                 gate_thread.start()
                 external_thread.start()
-                deadline = time.monotonic() + 60
-                for thread in (gate_thread, external_thread):
+                deadline = time.monotonic() + DOCKER_COMMAND_TIMEOUT_SECONDS + RACE_THREAD_GRACE_SECONDS
+                for thread in threads:
                     thread.join(timeout=max(0, deadline - time.monotonic()))
+                still_running = [thread.name for thread in threads if thread.is_alive()]
+                deferred_cleanup = False
                 try:
-                    self.assertFalse(gate_thread.is_alive(), "gate startup did not finish its create race")
-                    self.assertFalse(external_thread.is_alive(), "external Docker create did not finish")
+                    if still_running:
+                        # A daemon that ignored the production command timeout must not
+                        # pin the test process or race teardown of the startup lifecycle.
+                        deferred_cleanup = True
+                        self.runs.remove((run_id, proxy, None))
+                        self._defer_race_cleanup(threads, run_id, proxy, external)
+                        self.fail(
+                            "Docker create race exceeded command timeout plus grace: "
+                            + ", ".join(still_running)
+                        )
                     self.assertNotIn("external_error", outcome)
                     external_result = outcome["external"]
                     endpoint = outcome.get("endpoint")
@@ -699,10 +753,16 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                         # must also have removed the already-created agent network.
                         self._assert_no_leaks(run_id, proxy)
                 finally:
-                    if not proxy._closed:
-                        proxy.close()
-                    self._docker("network", "rm", external, check=False)
-                self._assert_no_leaks(run_id, proxy)
+                    if not deferred_cleanup:
+                        # Successful joins above establish that teardown cannot run
+                        # concurrently with a live startup thread.
+                        for thread in threads:
+                            thread.join()
+                        if not proxy._closed:
+                            proxy.close()
+                        self._docker("network", "rm", external, check=False)
+                if not deferred_cleanup:
+                    self._assert_no_leaks(run_id, proxy)
 
     def test_host_results_dataset_evaluator_and_docker_socket_are_unreadable(self):
         evidence = self.run_fixture("read-host.sh")

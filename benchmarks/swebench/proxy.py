@@ -392,18 +392,22 @@ class ProxyNetwork:
         return hashlib.sha256(run_id.encode("ascii")).hexdigest()[:8]
 
     def _docker(self, *arguments: str, check: bool = True):
-        self.runtime._assert_daemon_identity()
         try:
+            self.runtime._assert_daemon_identity()
             result = self.runtime._run(
                 [DOCKER_BIN, "--host", DOCKER_ENDPOINT, *arguments], check=check
             )
+            self.runtime._assert_daemon_identity()
+            return result
+        except subprocess.TimeoutExpired as error:
+            # Never include TimeoutExpired output: Docker may have emitted
+            # unbounded daemon diagnostics while the command was hung.
+            raise ProxyStateError("Docker command timed out before completion") from error
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "no Docker diagnostic").strip()
             raise ProxyStateError(
                 f"Docker {' '.join(arguments)} failed: {detail[-1024:]!r}"
             ) from error
-        self.runtime._assert_daemon_identity()
-        return result
 
     @staticmethod
     def _json(result, label: str) -> object:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import stat
@@ -27,6 +28,8 @@ APPARMOR_PARSER_BIN = "/usr/sbin/apparmor_parser"
 AA_STATUS_BIN = "/usr/sbin/aa-status"
 UNAME_BIN = "/usr/bin/uname"
 RUNC_BIN = "/usr/bin/runc"
+DOCKER_COMMAND_TIMEOUT_SECONDS = 30
+
 FIXED_ENV = MappingProxyType({
     "HOME": "/root",
     "LANG": "C.UTF-8",
@@ -146,10 +149,19 @@ class DockerRuntime:
         authority_root: Path,
         *,
         runner: Runner = subprocess.run,
+        command_timeout_seconds: float = DOCKER_COMMAND_TIMEOUT_SECONDS,
     ) -> None:
+        if (
+            isinstance(command_timeout_seconds, bool)
+            or not isinstance(command_timeout_seconds, (int, float))
+            or not math.isfinite(command_timeout_seconds)
+            or command_timeout_seconds <= 0
+        ):
+            raise ValueError("Docker command timeout must be a positive finite number of seconds")
         self.profile = profile
         self.authority_root = authority_root.resolve()
         self.runner = runner
+        self.command_timeout_seconds = float(command_timeout_seconds)
         self.seccomp_path = (
             self.authority_root / profile.security_policy.seccomp_path
         ).resolve()
@@ -170,12 +182,20 @@ class DockerRuntime:
         prepared_arguments = list(arguments)
         if before_run is not None:
             before_run()
+        effective_timeout = self.command_timeout_seconds if timeout is None else timeout
+        if (
+            isinstance(effective_timeout, bool)
+            or not isinstance(effective_timeout, (int, float))
+            or not math.isfinite(effective_timeout)
+            or effective_timeout <= 0
+        ):
+            raise ValueError("Docker command timeout must be a positive finite number of seconds")
         return self.runner(
             prepared_arguments,
             capture_output=True,
             text=True,
             check=check,
-            timeout=timeout,
+            timeout=effective_timeout,
             env=FIXED_ENV,
         )
 

@@ -96,8 +96,8 @@ class DockerRuntimeTests(unittest.TestCase):
             mounts=(self.mount,),
         )
 
-    def runtime(self, runner):
-        return DockerRuntime(self.profile, REPO_ROOT, runner=runner)
+    def runtime(self, runner, **kwargs):
+        return DockerRuntime(self.profile, REPO_ROOT, runner=runner, **kwargs)
 
     def docker_info(self):
         return {
@@ -1348,6 +1348,19 @@ class DockerRuntimeTests(unittest.TestCase):
                         runtime.create(spec)
             finally:
                 unix_socket.close()
+
+    def test_docker_commands_receive_a_validated_finite_timeout(self):
+        runner = ScriptedRunner(completed())
+        runtime = self.runtime(runner)
+
+        runtime._run(runtime._docker_arguments("version"))
+
+        self.assertEqual(
+            runner.calls[0][1]["timeout"], containers.DOCKER_COMMAND_TIMEOUT_SECONDS
+        )
+        for invalid in (0, -1, float("inf"), float("nan"), True, "30"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "finite"):
+                self.runtime(runner, command_timeout_seconds=invalid)
 
     def test_wait_returns_exit_code(self):
         runner = ScriptedRunner(completed("17\n"))

@@ -297,6 +297,7 @@ class FakeRuntime:
         self.network_config = {}
         self.foreign_networks = {}
         self.network_create_failures = {}
+        self.network_create_timeouts = {}
         self.network_connect_failure = None
         self.network_attachment_overrides = {}
         self.network_endpoint_counter = 0
@@ -376,6 +377,11 @@ class FakeRuntime:
             return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(value), stderr="")
         if action[:2] == ["network", "create"]:
             name = action[-1]
+            timeout = self.network_create_timeouts.get(name)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(
+                    arguments, timeout, output="REDACT-ME" * 1024, stderr="REDACT-ME" * 1024,
+                )
             diagnostic = self.network_create_failures.get(name)
             if diagnostic is not None:
                 raise subprocess.CalledProcessError(
@@ -675,6 +681,20 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertTrue(self.relays[0].closed)
+        self.assertTrue(self.locks[0].closed)
+
+    def test_docker_timeout_is_redacted_bounded_and_cleans_created_networks(self):
+        name = "alloy-swe-egress-272812a7"
+        self.runtime.network_create_timeouts[name] = 30
+
+        with self.assertRaisesRegex(ProxyStateError, "timed out") as raised:
+            self.network.start("run-123")
+
+        self.assertNotIn("REDACT-ME", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 512)
+        self.assertEqual(self.runtime.networks, set())
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
         self.assertTrue(self.locks[0].closed)
 
     def test_agent_network_create_conflict_is_daemon_authoritative_and_cleans(self):
