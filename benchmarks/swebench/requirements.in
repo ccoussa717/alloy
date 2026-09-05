@@ -44,7 +44,7 @@ nodeenv==1.10.0
 numpy==2.5.2
 packaging==26.3
 pandas==3.0.5
-pip==25.1.1
+pip==26.2
 platformdirs==4.11.3
 pre-commit==4.6.2
 propcache==0.5.2
