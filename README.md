@@ -33,6 +33,7 @@
   - [Forge](#forge-full-multi-model-spine)
   - [CLI and CI](#cli-and-ci)
 - [The product layer on Pi](#the-product-layer-on-pi)
+- [Portable Teams Slice 1](#portable-teams-slice-1)
 - [Safety that travels with the work](#safety-that-travels-with-the-work)
 - [Commands worth knowing](#commands-worth-knowing)
 - [Project status](#project-status)
@@ -511,6 +512,16 @@ interactive rendering and bridges extension dialogs, notifications, status,
 widgets, and editor/title updates over Pi RPC. Print, JSON, and explicit RPC
 modes continue to launch Pi directly. The full boundary is documented in
 [Architecture](docs/ARCHITECTURE.md) and [Product boundary](docs/BOUNDARY.md).
+
+## Portable Teams Slice 1
+
+Alloy includes the portable, read-only `builtin/investigate` team through one
+`/team` command and one `team` tool. The same package targets **Alloy 0.82.1**
+and **stock Pi 0.84.2**; model requests stop at human approval, and team members
+receive only repository-confined `read`, `grep`, `find`, and `ls` tools.
+Installation, catalog trust, commands, approvals, run evidence, crash behavior,
+authority limits, standalone stock routing, and explicit exclusions are in the
+[`@alloy/pi-teams` package documentation](packages/pi-teams/README.md).
 
 ## Safety that travels with the work
 

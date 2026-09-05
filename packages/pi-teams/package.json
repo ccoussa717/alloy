@@ -1,0 +1,16 @@
+{
+  "name": "@alloy/pi-teams",
+  "version": "0.1.0",
+  "description": "Portable read-only team orchestration for Pi",
+  "type": "module",
+  "private": true,
+  "files": ["src", "README.md"],
+  "exports": { ".": "./src/index.ts", "./extension": "./src/extension/index.ts" },
+  "pi": { "extensions": ["./src/extension/index.ts"] },
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": { "yaml": "2.9.0" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.82.1 <0.85.0",
+    "typebox": ">=1.1.38 <2"
+  }
+}
