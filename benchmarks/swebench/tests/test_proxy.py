@@ -1,5 +1,4 @@
 import http.client
-import ipaddress
 import json
 import os
 import signal
@@ -297,6 +296,7 @@ class FakeRuntime:
         self.networks = set()
         self.network_config = {}
         self.foreign_networks = {}
+        self.network_create_failures = {}
         self.network_connect_failure = None
         self.network_attachment_overrides = {}
         self.network_endpoint_counter = 0
@@ -376,6 +376,11 @@ class FakeRuntime:
             return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(value), stderr="")
         if action[:2] == ["network", "create"]:
             name = action[-1]
+            diagnostic = self.network_create_failures.get(name)
+            if diagnostic is not None:
+                raise subprocess.CalledProcessError(
+                    1, arguments, output="", stderr=diagnostic
+                )
             self.networks.add(name)
             internal = "--internal" in action
             if "--subnet" in action and "--gateway" in action:
@@ -584,89 +589,6 @@ class ProxyNetworkTests(unittest.TestCase):
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
 
-    def test_ipv4_subnets_accepts_only_exact_builtin_empty_ipam_shapes(self):
-        def builtin(name, driver, config):
-            return {
-                "Name": name,
-                "Driver": driver,
-                "Scope": "local",
-                "Attachable": False,
-                "Ingress": False,
-                "Internal": False,
-                "IPAM": {"Driver": "default", "Options": None, "Config": config},
-            }
-
-        bridge = {
-            "Name": "bridge",
-            "Driver": "bridge",
-            "IPAM": {
-                "Driver": "default",
-                "Options": None,
-                "Config": [{"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}],
-            },
-        }
-
-        self.assertEqual(ProxyNetwork._ipv4_subnets(builtin("host", "host", None)), ())
-        self.assertEqual(ProxyNetwork._ipv4_subnets(builtin("none", "null", [])), ())
-        self.assertEqual(
-            ProxyNetwork._ipv4_subnets(bridge),
-            (ipaddress.ip_network("172.17.0.0/16"),),
-        )
-
-    def test_ipv4_subnets_rejects_empty_ipam_except_exact_builtin_shapes(self):
-        def builtin(name="host", driver="host", config=None):
-            return {
-                "Name": name,
-                "Driver": driver,
-                "Scope": "local",
-                "Attachable": False,
-                "Ingress": False,
-                "Internal": False,
-                "IPAM": {"Driver": "default", "Options": None, "Config": config},
-            }
-
-        class DerivedDict(dict):
-            pass
-
-        cases = (
-            ("metadata-not-plain", DerivedDict(builtin()), "invalid IPAM"),
-            ("ipam-not-plain", {**builtin(), "IPAM": DerivedDict(builtin()["IPAM"])}, "invalid IPAM"),
-            ("custom-name", builtin(name="custom"), "unsupported empty IPAM"),
-            ("host-wrong-driver", builtin(driver="bridge"), "unsupported empty IPAM"),
-            ("none-wrong-driver", builtin(name="none", driver="host", config=[]), "unsupported empty IPAM"),
-            ("host-list-not-null", builtin(config=[]), "unsupported empty IPAM"),
-            ("none-null-not-list", builtin(name="none", driver="null"), "unsupported empty IPAM"),
-            ("wrong-scope", {**builtin(), "Scope": "swarm"}, "unsupported empty IPAM"),
-            ("attachable", {**builtin(), "Attachable": True}, "unsupported empty IPAM"),
-            ("ingress", {**builtin(), "Ingress": True}, "unsupported empty IPAM"),
-            ("internal", {**builtin(), "Internal": True}, "unsupported empty IPAM"),
-            ("ipam-driver", {**builtin(), "IPAM": {"Driver": "plugin", "Options": None, "Config": None}}, "unsupported empty IPAM"),
-            ("ipam-options", {**builtin(), "IPAM": {"Driver": "default", "Options": {}, "Config": None}}, "unsupported empty IPAM"),
-            ("missing-ipam-options", {**builtin(), "IPAM": {"Driver": "default", "Config": None}}, "unsupported empty IPAM"),
-            ("plugin-empty", {**builtin(name="plugin", driver="plugin"), "IPAM": {"Driver": "plugin", "Options": None, "Config": []}}, "unsupported empty IPAM"),
-        )
-        for name, metadata, message in cases:
-            with self.subTest(name=name), self.assertRaisesRegex(ProxyStateError, message):
-                ProxyNetwork._ipv4_subnets(metadata)
-
-    def test_ipv4_subnets_rejects_malformed_or_partially_malformed_configurations(self):
-        valid = {"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}
-        malformed = (
-            {},
-            {"IPAM": None},
-            {"IPAM": {}},
-            {"IPAM": {"Config": ""}},
-            {"IPAM": {"Config": [{}]}},
-            {"IPAM": {"Config": [{"Subnet": None}]}},
-            {"IPAM": {"Config": [{"Subnet": 1}]}},
-            {"IPAM": {"Config": [{"Subnet": "not-a-network"}]}},
-            {"IPAM": {"Config": [valid, {}]}},
-            {"IPAM": {"Config": ["not-an-object"]}},
-        )
-        for metadata in malformed:
-            with self.subTest(metadata=metadata), self.assertRaisesRegex(ProxyStateError, "IPAM"):
-                ProxyNetwork._ipv4_subnets(metadata)
-
     def test_rejects_every_proxy_interface_drift_with_bounded_diagnostics(self):
         agent_network = "alloy-swe-agent-272812a7"
         egress_network = "alloy-swe-egress-272812a7"
@@ -755,20 +677,48 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertTrue(self.relays[0].closed)
         self.assertTrue(self.locks[0].closed)
 
-    def test_rejects_fixed_subnet_collision_before_network_creation(self):
-        self.runtime.foreign_networks["foreign-network"] = {
-            "Name": "foreign-network",
-            "Driver": "bridge",
-            "IPAM": {"Config": [{"Gateway": "198.18.0.1", "Subnet": "198.18.0.0/24"}]},
-        }
+    def test_agent_network_create_conflict_is_daemon_authoritative_and_cleans(self):
+        name = "alloy-swe-agent-272812a7"
+        self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
 
-        with self.assertRaisesRegex(ProxyStateError, "fixed agent subnet.*foreign-network"):
+        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
             self.network.start("run-123")
 
+        commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
+        self.assertTrue(any(command[3:5] == ("network", "create") for command in commands))
         self.assertFalse(any(
-            call[0] == "docker" and call[1][3:5] == ("network", "create")
-            for call in self.runtime.calls
+            command[3:6] == ("network", "ls", "--format")
+            and command[-1] == "{{.ID}}"
+            for command in commands
         ))
+        self.assertEqual(self.runtime.networks, set())
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
+        self.assertEqual(self.relays, [])
+        self.assertTrue(self.locks[0].closed)
+
+    def test_egress_network_create_conflict_cleans_created_agent_network(self):
+        name = "alloy-swe-egress-272812a7"
+        self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
+
+        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
+            self.network.start("run-123")
+
+        commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
+        creates = [command for command in commands if command[3:5] == ("network", "create")]
+        self.assertEqual([command[-1] for command in creates], [
+            "alloy-swe-agent-272812a7", "alloy-swe-egress-272812a7",
+        ])
+        self.assertFalse(any(
+            command[3:6] == ("network", "ls", "--format")
+            and command[-1] == "{{.ID}}"
+            for command in commands
+        ))
+        self.assertEqual(self.runtime.networks, set())
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
+        self.assertEqual(self.relays, [])
+        self.assertTrue(self.locks[0].closed)
 
     def test_reconciles_only_empty_owned_state_and_refuses_active_or_foreign_state(self):
         stale = {

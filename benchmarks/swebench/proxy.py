@@ -99,8 +99,8 @@ class NetworkAllocation:
 
 
 # These fixed, disjoint benchmarking allocations make the trusted firewall's
-# exact source and relay assertions stable.  The process lock admits only one gate
-# lifecycle at a time; startup rejects any pre-existing Docker overlap.
+# exact source and relay assertions stable. The process lock admits only one gate
+# lifecycle at a time; Docker atomically rejects any overlapping network creation.
 AGENT_ALLOCATION = NetworkAllocation(
     "agent", ipaddress.ip_network("198.18.0.0/28"),
     ipaddress.ip_address("198.18.0.1"), ipaddress.ip_address("198.18.0.2"),
@@ -600,69 +600,6 @@ class ProxyNetwork:
                 raise ProxyStateError("active gate-owned nftables state exists")
             self._delete_firewall(name, owner)
 
-    @staticmethod
-    def _ipv4_subnets(metadata: dict[str, object]) -> tuple[ipaddress.IPv4Network, ...]:
-        # Docker network inspect is decoded from JSON.  The authority-bearing
-        # no-subnet exception therefore requires plain objects with direct,
-        # exact values; only built-in host and none have no IPv4 allocation.
-        if type(metadata) is not dict:
-            raise ProxyStateError("Docker network has invalid IPAM configuration")
-        ipam = metadata.get("IPAM")
-        if type(ipam) is not dict or "Config" not in ipam:
-            raise ProxyStateError("Docker network has invalid IPAM configuration")
-        configs = ipam["Config"]
-        if configs is None or (type(configs) is list and not configs):
-            builtin_shape = (
-                ("host", "host", None),
-                ("none", "null", []),
-            )
-            if (
-                (metadata.get("Name"), metadata.get("Driver"), configs) not in builtin_shape
-                or metadata.get("Scope") != "local"
-                or metadata.get("Attachable") is not False
-                or metadata.get("Ingress") is not False
-                or metadata.get("Internal") is not False
-                or ipam.get("Driver") != "default"
-                or "Options" not in ipam
-                or ipam["Options"] is not None
-            ):
-                raise ProxyStateError("Docker network has unsupported empty IPAM configuration")
-            return ()
-        if type(configs) is not list:
-            raise ProxyStateError("Docker network has invalid IPAM configuration")
-        subnets = []
-        for config in configs:
-            if not isinstance(config, dict):
-                raise ProxyStateError("Docker network has invalid IPAM configuration")
-            subnet = config.get("Subnet")
-            if not isinstance(subnet, str):
-                raise ProxyStateError("Docker network has invalid IPAM subnet")
-            try:
-                parsed = ipaddress.ip_network(subnet, strict=True)
-            except ValueError as error:
-                raise ProxyStateError("Docker network has invalid IPAM subnet") from error
-            if parsed.version == 4:
-                subnets.append(parsed)
-        return tuple(subnets)
-
-    def _assert_allocations_available(self, allocations: Sequence[NetworkAllocation]) -> None:
-        result = self._docker("network", "ls", "--format", "{{.ID}}")
-        for identifier in result.stdout.splitlines():
-            if not identifier:
-                continue
-            metadata = self._inspect_network(identifier)
-            assert metadata is not None
-            name = metadata.get("Name")
-            if not isinstance(name, str) or not name:
-                raise ProxyStateError("Docker network has invalid identity")
-            for existing in self._ipv4_subnets(metadata):
-                for allocation in allocations:
-                    if allocation.subnet.overlaps(existing):
-                        raise ProxyStateError(
-                            f"fixed {allocation.role} subnet {allocation.subnet} collides with "
-                            f"Docker network {name} subnet {existing}"
-                        )
-
     def _create_network(
         self,
         name: str,
@@ -951,7 +888,6 @@ class ProxyNetwork:
             self._lock = self.lock_factory()
             self._arm_cleanup()
             self._reconcile()
-            self._assert_allocations_available((AGENT_ALLOCATION, EGRESS_ALLOCATION))
             self._agent_network = agent_network
             agent = self._create_network(
                 agent_network, run_id, f"asa{token}", AGENT_ALLOCATION, internal=True
