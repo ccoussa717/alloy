@@ -700,6 +700,75 @@ class ProxyNetwork:
         return str(allocation.gateway), str(allocation.proxy)
 
     @staticmethod
+    def _validate_proxy_interfaces(
+        inspection: dict[str, object],
+        expected: Sequence[tuple[str, NetworkAllocation]],
+    ) -> None:
+        network_settings = ProxyNetwork._mapping(inspection.get("NetworkSettings"))
+        networks = network_settings.get("Networks")
+        expected_by_name = dict(expected)
+        if not isinstance(networks, dict) or set(networks) != set(expected_by_name):
+            raise ProxyStateError("proxy network membership drifted")
+        endpoint_ids = set()
+        for name, allocation in expected:
+            attachment = networks.get(name)
+            if not isinstance(attachment, dict):
+                raise ProxyStateError(f"proxy {allocation.role} interface is malformed")
+            address = attachment.get("IPAddress")
+            prefix = attachment.get("IPPrefixLen")
+            gateway = attachment.get("Gateway")
+            if not isinstance(address, str):
+                raise ProxyStateError(f"proxy {allocation.role} interface lacks an IPv4 address")
+            try:
+                address_ip = ipaddress.ip_address(address)
+            except ValueError as error:
+                raise ProxyStateError(
+                    f"proxy {allocation.role} interface has an invalid IPv4 address"
+                ) from error
+            if address_ip.version != 4:
+                raise ProxyStateError(f"proxy {allocation.role} interface requires IPv4")
+            if address_ip != allocation.proxy:
+                raise ProxyStateError(f"proxy {allocation.role} interface address drifted")
+            if type(prefix) is not int or prefix != allocation.subnet.prefixlen:
+                raise ProxyStateError(f"proxy {allocation.role} interface prefix drifted")
+            interface = ipaddress.ip_interface(f"{address}/{prefix}")
+            if interface.network != allocation.subnet:
+                raise ProxyStateError(f"proxy {allocation.role} interface subnet drifted")
+            if not isinstance(gateway, str):
+                raise ProxyStateError(f"proxy {allocation.role} interface lacks an IPv4 gateway")
+            try:
+                gateway_ip = ipaddress.ip_address(gateway)
+            except ValueError as error:
+                raise ProxyStateError(
+                    f"proxy {allocation.role} interface has an invalid IPv4 gateway"
+                ) from error
+            if gateway_ip != allocation.gateway:
+                raise ProxyStateError(f"proxy {allocation.role} interface gateway drifted")
+            if attachment.get("GlobalIPv6Address") not in (None, ""):
+                raise ProxyStateError(f"proxy {allocation.role} interface IPv6 drifted")
+            endpoint_id = attachment.get("EndpointID")
+            if not isinstance(endpoint_id, str) or re.fullmatch(r"[0-9a-f]{64}", endpoint_id) is None:
+                raise ProxyStateError(f"proxy {allocation.role} interface identity drifted")
+            if endpoint_id in endpoint_ids:
+                raise ProxyStateError("proxy network interfaces have duplicate endpoint identities")
+            endpoint_ids.add(endpoint_id)
+
+    def _inspect_proxy_interfaces(
+        self,
+        handle: "ContainerHandle",
+        spec: object,
+        expected: Sequence[tuple[str, NetworkAllocation]],
+    ) -> dict[str, object]:
+        evidence = self.runtime.inspect_security(
+            handle, spec, expected_networks=tuple(name for name, _allocation in expected)
+        )
+        inspection = evidence.get("inspection")
+        if not isinstance(inspection, dict):
+            raise ProxyStateError("Docker returned malformed proxy inspection evidence")
+        self._validate_proxy_interfaces(inspection, expected)
+        return evidence
+
+    @staticmethod
     def _ruleset(
         table: str,
         run_id: str,
@@ -777,6 +846,7 @@ class ProxyNetwork:
     def _connect_proxy(
         self,
         handle: "ContainerHandle",
+        spec: object,
         agent_network: str,
         agent_ip: str,
         egress_network: str,
@@ -784,7 +854,13 @@ class ProxyNetwork:
     ) -> None:
         self._docker("network", "disconnect", "none", handle.container_id)
         self._docker("network", "connect", "--ip", egress_ip, egress_network, handle.container_id)
+        self._inspect_proxy_interfaces(handle, spec, ((egress_network, EGRESS_ALLOCATION),))
         self._docker("network", "connect", "--ip", agent_ip, agent_network, handle.container_id)
+        self._inspect_proxy_interfaces(
+            handle,
+            spec,
+            ((agent_network, AGENT_ALLOCATION), (egress_network, EGRESS_ALLOCATION)),
+        )
 
     def _stop_proxy(self, handle: "ContainerHandle") -> None:
         self._docker(
@@ -882,6 +958,7 @@ class ProxyNetwork:
             )
             self._connect_proxy(
                 self._container,
+                proxy_spec,
                 agent_network,
                 agent_ip,
                 egress_network,

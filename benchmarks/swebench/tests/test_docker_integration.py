@@ -31,7 +31,12 @@ from benchmarks.swebench.dataset import write_private_dataset_json
 from benchmarks.swebench.evaluator import EvaluationResult, EvaluatorEnvironment
 from benchmarks.swebench.fetch import ArtifactFetcher
 from benchmarks.swebench.profile import load_profile
-from benchmarks.swebench.proxy import ProxyNetwork
+from benchmarks.swebench.proxy import (
+    AGENT_ALLOCATION,
+    EGRESS_ALLOCATION,
+    ProxyNetwork,
+    ProxyStateError,
+)
 from benchmarks.swebench.tests.routed_endpoints import (
     CausalProxyNetworkMixin,
     DNS_ENDPOINT,
@@ -557,6 +562,64 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         subprocess.run(["git", "apply", str(patch_path)], cwd=checkout, check=True)
         marker = json.loads((checkout / "fixture-marker.json").read_text())
         return marker, patch
+
+    def test_proxy_inspects_exact_static_interface_assignments(self):
+        run_id = "docker-static-proxy-" + uuid.uuid4().hex
+        runtime = DockerRuntime(self.profile, REPO_ROOT)
+        runtime.preflight()
+        proxy = ProxyNetwork(
+            runtime,
+            self.proxy_image_id,
+            REPO_ROOT,
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            install_signal_handlers=False,
+        )
+        self.runs.append((run_id, proxy, None))
+
+        with proxy.running(run_id) as endpoint:
+            self.assertEqual(endpoint.host, str(AGENT_ALLOCATION.proxy))
+            inspection = endpoint.inspection["inspection"]
+            networks = inspection["NetworkSettings"]["Networks"]
+            agent_network = f"alloy-swe-agent-{ProxyNetwork._token(run_id)}"
+            egress_network = f"alloy-swe-egress-{ProxyNetwork._token(run_id)}"
+            self.assertEqual(set(networks), {agent_network, egress_network})
+            endpoint_ids = set()
+            for name, allocation in (
+                (agent_network, AGENT_ALLOCATION),
+                (egress_network, EGRESS_ALLOCATION),
+            ):
+                attachment = networks[name]
+                self.assertEqual(attachment["IPAddress"], str(allocation.proxy))
+                self.assertEqual(attachment["IPPrefixLen"], allocation.subnet.prefixlen)
+                self.assertEqual(attachment["Gateway"], str(allocation.gateway))
+                self.assertNotIn(attachment["EndpointID"], endpoint_ids)
+                endpoint_ids.add(attachment["EndpointID"])
+
+        self._assert_no_leaks(run_id, proxy)
+
+    def test_proxy_rejects_overlapping_fixed_subnet_before_gate_resource_creation(self):
+        run_id = "docker-static-collision-" + uuid.uuid4().hex
+        overlap = "alloy-fixed-overlap-" + uuid.uuid4().hex
+        self._docker(
+            "network", "create", "--driver", "bridge",
+            "--subnet", "198.18.0.0/24", "--gateway", "198.18.0.1", overlap,
+        )
+        self.addCleanup(self._docker, "network", "rm", overlap, check=False)
+        runtime = DockerRuntime(self.profile, REPO_ROOT)
+        runtime.preflight()
+        proxy = ProxyNetwork(
+            runtime,
+            self.proxy_image_id,
+            REPO_ROOT,
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            install_signal_handlers=False,
+        )
+        self.runs.append((run_id, proxy, None))
+
+        with self.assertRaisesRegex(ProxyStateError, "fixed agent subnet.*collides"):
+            proxy.start(run_id)
+
+        self._assert_no_leaks(run_id, proxy)
 
     def test_host_results_dataset_evaluator_and_docker_socket_are_unreadable(self):
         evidence = self.run_fixture("read-host.sh")

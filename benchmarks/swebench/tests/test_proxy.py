@@ -19,6 +19,7 @@ from benchmarks.swebench.proxy import (
     HEADER_LIMIT,
     BODY_LIMIT,
     AGENT_ALLOCATION,
+    EGRESS_ALLOCATION,
     ProxyCleanupError,
     ProxyNetwork,
     ProxyPolicy,
@@ -296,6 +297,8 @@ class FakeRuntime:
         self.network_config = {}
         self.foreign_networks = {}
         self.network_connect_failure = None
+        self.network_attachment_overrides = {}
+        self.network_endpoint_counter = 0
         self.containers = {}
 
     def _assert_daemon_identity(self, handle=None):
@@ -382,10 +385,27 @@ class FakeRuntime:
                 )
         if action[:2] == ["network", "rm"]:
             self.networks.discard(action[-1])
-        if action[:2] == ["network", "connect"] and self.network_connect_failure is not None:
-            raise subprocess.CalledProcessError(
-                1, arguments, output="", stderr=self.network_connect_failure
-            )
+        if action[:3] == ["network", "disconnect", "none"]:
+            self.containers[action[-1]]["NetworkSettings"]["Networks"].pop("none", None)
+        if action[:2] == ["network", "connect"]:
+            if self.network_connect_failure is not None:
+                raise subprocess.CalledProcessError(
+                    1, arguments, output="", stderr=self.network_connect_failure
+                )
+            address = action[action.index("--ip") + 1]
+            network = action[-2]
+            config = self.network_config[network]
+            _internal, gateway, subnet = config
+            self.network_endpoint_counter += 1
+            attachment = {
+                "IPAddress": address,
+                "IPPrefixLen": int(subnet.rpartition("/")[2]),
+                "Gateway": gateway,
+                "GlobalIPv6Address": "",
+                "EndpointID": f"{self.network_endpoint_counter:064x}",
+            }
+            attachment.update(self.network_attachment_overrides.get(network, {}))
+            self.containers[action[-1]]["NetworkSettings"]["Networks"][network] = attachment
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     def create(self, spec):
@@ -395,15 +415,19 @@ class FakeRuntime:
             "Name": "/" + self.handle.name,
             "Config": {"Labels": {"alloy.swebench.gate": self.handle.run_id}},
             "State": {"Running": True, "Status": "running"},
+            "NetworkSettings": {"Networks": {"none": {}}},
         }
         return self.handle
 
     def inspect_security(self, handle, spec, *, expected_networks=()):
         self.calls.append(("inspect-security", handle, spec, expected_networks))
+        networks = self.containers[handle.container_id]["NetworkSettings"]["Networks"]
+        if set(networks) != set(expected_networks):
+            raise RuntimeError("container network membership drifted")
         return {
             "container_id": handle.container_id,
             "daemon_identity": {"daemon_id": "daemon-id"},
-            "inspection": {"NetworkSettings": {"Networks": list(expected_networks)}},
+            "inspection": json.loads(json.dumps(self.containers[handle.container_id])),
         }
 
     def force_remove(self, handle):
@@ -559,6 +583,61 @@ class ProxyNetworkTests(unittest.TestCase):
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
 
+    def test_rejects_every_proxy_interface_drift_with_bounded_diagnostics(self):
+        agent_network = "alloy-swe-agent-272812a7"
+        egress_network = "alloy-swe-egress-272812a7"
+
+        def attachment(allocation, endpoint_id):
+            return {
+                "IPAddress": str(allocation.proxy),
+                "IPPrefixLen": allocation.subnet.prefixlen,
+                "Gateway": str(allocation.gateway),
+                "GlobalIPv6Address": "",
+                "EndpointID": endpoint_id,
+            }
+
+        for name, mutate, message in (
+            ("missing", lambda value: value.pop(agent_network), "membership"),
+            ("malformed", lambda value: value[agent_network].update(IPAddress="x" * 4096), "IPv4"),
+            ("ipv6-only", lambda value: value[agent_network].update(IPAddress="2001:db8::2"), "IPv4"),
+            ("wrong-ip", lambda value: value[agent_network].update(IPAddress="198.18.0.3"), "address"),
+            ("wrong-prefix", lambda value: value[agent_network].update(IPPrefixLen=24), "prefix"),
+            ("wrong-gateway", lambda value: value[egress_network].update(Gateway="198.18.0.19"), "gateway"),
+            ("duplicate-interface", lambda value: value[egress_network].update(EndpointID="a" * 64), "duplicate"),
+            ("extra-network", lambda value: value.update(foreign={}), "membership"),
+        ):
+            networks = {
+                agent_network: attachment(AGENT_ALLOCATION, "a" * 64),
+                egress_network: attachment(EGRESS_ALLOCATION, "b" * 64),
+            }
+            mutate(networks)
+            with self.subTest(name=name), self.assertRaisesRegex(ProxyStateError, message) as raised:
+                self.network._validate_proxy_interfaces(
+                    {"NetworkSettings": {"Networks": networks}},
+                    ((agent_network, AGENT_ALLOCATION), (egress_network, EGRESS_ALLOCATION)),
+                )
+            self.assertLess(len(str(raised.exception)), 512)
+
+    def test_egress_interface_drift_stops_before_agent_attach_and_cleans_every_resource(self):
+        self.runtime.network_attachment_overrides["alloy-swe-egress-272812a7"] = {
+            "IPAddress": "198.18.0.19"
+        }
+
+        with self.assertRaisesRegex(ProxyStateError, "egress.*address"):
+            self.network.start("run-123")
+
+        commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
+        self.assertFalse(any(
+            command[3:5] == ("network", "connect")
+            and command[-2] == "alloy-swe-agent-272812a7"
+            for command in commands
+        ))
+        self.assertEqual(self.runtime.networks, set())
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
+        self.assertTrue(self.relays[0].closed)
+        self.assertTrue(self.locks[0].closed)
+
     def test_rejects_created_network_that_does_not_preserve_static_allocation(self):
         unexpected = {
             "Name": "alloy-swe-agent-272812a7",
@@ -585,6 +664,12 @@ class ProxyNetworkTests(unittest.TestCase):
             r"network connect --ip 198\.18\.0\.18 alloy-swe-egress-272812a7.*Address already in use",
         ):
             self.network.start("run-123")
+
+        self.assertEqual(self.runtime.networks, set())
+        self.assertEqual(self.runtime.containers, {})
+        self.assertEqual(self.nft_tables, {})
+        self.assertTrue(self.relays[0].closed)
+        self.assertTrue(self.locks[0].closed)
 
     def test_rejects_fixed_subnet_collision_before_network_creation(self):
         self.runtime.foreign_networks["foreign-network"] = {
