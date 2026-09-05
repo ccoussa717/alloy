@@ -6,7 +6,6 @@ import fcntl
 import hashlib
 import ipaddress
 import json
-import math
 import os
 import re
 import signal
@@ -55,7 +54,7 @@ FIXED_ENV = {
 SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 TOKEN_PREFIX = "alloy-swe-"
 PROXY_CONTAINER_PREFIX = "alloy-proxy-"
-NETWORK_SETTLEMENT_POLL_SECONDS = 0.05
+NETWORK_INTENT_DIRECTORY = "proxy-network-intents"
 HOP_HEADERS = {
     "expect",
     "keep-alive",
@@ -134,6 +133,149 @@ class ProxyCleanupError(CleanupUncertaintyError):
             original_error=original_error,
             cleanup_errors=self.errors,
         )
+
+
+class _NetworkIntentStore:
+    def __init__(self, state_dir: Path) -> None:
+        if not state_dir.is_absolute():
+            raise ValueError("proxy state directory must be absolute")
+        self.state_dir = state_dir
+
+    @staticmethod
+    def _validate_directory(fd: int, label: str) -> None:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+            or metadata.st_nlink < 2
+        ):
+            raise ProxyStateError(f"{label} is not a private owner-controlled directory")
+
+    def _state_fd(self) -> int:
+        fd = os.open(
+            self.state_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        try:
+            self._validate_directory(fd, "proxy state directory")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _intent_fd(self, *, create: bool) -> int | None:
+        state_fd = self._state_fd()
+        try:
+            if create:
+                try:
+                    os.mkdir(NETWORK_INTENT_DIRECTORY, 0o700, dir_fd=state_fd)
+                except FileExistsError:
+                    pass
+                else:
+                    os.fsync(state_fd)
+            try:
+                intent_fd = os.open(
+                    NETWORK_INTENT_DIRECTORY,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=state_fd,
+                )
+            except FileNotFoundError:
+                return None
+            try:
+                self._validate_directory(intent_fd, "proxy intent directory")
+            except BaseException:
+                os.close(intent_fd)
+                raise
+            return intent_fd
+        finally:
+            os.close(state_fd)
+
+    @staticmethod
+    def _filename(name: str) -> str:
+        if SAFE_RUN_ID.fullmatch(name) is None:
+            raise ValueError("network intent name is unsafe")
+        return f"{name}.intent"
+
+    def create(self, name: str, run_id: str) -> None:
+        filename = self._filename(name)
+        if SAFE_RUN_ID.fullmatch(run_id) is None:
+            raise ValueError("network intent run ID is unsafe")
+        intent_fd = self._intent_fd(create=True)
+        assert intent_fd is not None
+        try:
+            payload = json.dumps(
+                {"name": name, "run_id": run_id}, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            try:
+                marker_fd = os.open(
+                    filename,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=intent_fd,
+                )
+            except FileExistsError as error:
+                raise ProxyStateError("network create quarantine marker already exists") from error
+            try:
+                written = os.write(marker_fd, payload)
+                if written != len(payload):
+                    raise OSError("could not persist complete network create intent")
+                os.fsync(marker_fd)
+            finally:
+                os.close(marker_fd)
+            os.fsync(intent_fd)
+        finally:
+            os.close(intent_fd)
+
+    def clear(self, name: str) -> None:
+        filename = self._filename(name)
+        intent_fd = self._intent_fd(create=False)
+        if intent_fd is None:
+            raise ProxyStateError("network create quarantine marker disappeared")
+        try:
+            try:
+                metadata = os.stat(filename, dir_fd=intent_fd, follow_symlinks=False)
+            except FileNotFoundError as error:
+                raise ProxyStateError("network create quarantine marker disappeared") from error
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_nlink != 1
+            ):
+                raise ProxyStateError("network create quarantine marker is unsafe")
+            os.unlink(filename, dir_fd=intent_fd)
+            os.fsync(intent_fd)
+        finally:
+            os.close(intent_fd)
+
+    def pending(self) -> tuple[str, ...]:
+        intent_fd = self._intent_fd(create=False)
+        if intent_fd is None:
+            return ()
+        try:
+            pending = []
+            for filename in os.listdir(intent_fd):
+                if not filename.endswith(".intent"):
+                    raise ProxyStateError("proxy intent directory contains an unexpected entry")
+                name = filename.removesuffix(".intent")
+                self._filename(name)
+                metadata = os.stat(filename, dir_fd=intent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_nlink != 1
+                ):
+                    raise ProxyStateError("network create quarantine marker is unsafe")
+                pending.append(name)
+            return tuple(sorted(pending))
+        finally:
+            os.close(intent_fd)
+
+    def assert_clear(self) -> None:
+        if self.pending():
+            raise ProxyStateError("network create quarantine requires operator recovery")
 
 
 class _ProcessLock:
@@ -351,6 +493,7 @@ class ProxyNetwork:
         authority_root: Path,
         ollama_origin: str,
         *,
+        state_dir: Path,
         nft_runner: NftRunner = subprocess.run,
         relay_factory: RelayFactory = HostRelay,
         lock_factory: LockFactory = _ProcessLock,
@@ -361,6 +504,8 @@ class ProxyNetwork:
         self.proxy_image_id = proxy_image_id
         self.authority_root = authority_root.resolve()
         self.ollama_origin = self._origin(ollama_origin)
+        self._intents = _NetworkIntentStore(state_dir)
+        self._intents.assert_clear()
         self.nft_runner = nft_runner
         self.relay_factory = relay_factory
         self.lock_factory = lock_factory
@@ -373,7 +518,7 @@ class ProxyNetwork:
         self._nft_table: str | None = None
         self._relay: HostRelay | None = None
         self._container: "ContainerHandle | None" = None
-        self._uncertain_networks: set[tuple[str, str]] = set()
+        self._network_intents: set[tuple[str, str]] = set()
         self._atexit_registered = False
         self._previous_sigterm = None
         self._closed = True
@@ -525,10 +670,10 @@ class ProxyNetwork:
             raise ProxyStateError("foreign Docker network state has an unexpected driver")
         return name, run_id
 
-    def _remove_network(self, name: str, run_id: str) -> None:
+    def _remove_network(self, name: str, run_id: str) -> bool:
         metadata = self._inspect_network(name, absent_ok=True)
         if metadata is None:
-            return
+            return False
         actual_name, actual_run = self._owned_network(metadata)
         if (actual_name, actual_run) != (name, run_id):
             raise ProxyStateError("foreign Docker network ownership changed")
@@ -537,45 +682,7 @@ class ProxyNetwork:
         self._docker("network", "rm", name)
         if self._inspect_network(name, absent_ok=True) is not None:
             raise ProxyStateError("could not prove Docker network removal")
-
-    def _settle_uncertain_network(self, name: str, run_id: str) -> None:
-        timeout = getattr(self.runtime, "command_timeout_seconds", None)
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout)
-            or timeout <= 0
-        ):
-            raise ProxyStateError("Docker command timeout is unavailable for network settlement")
-        window = float(timeout)
-        deadline = time.monotonic() + (4 * window)
-        absent_since: float | None = None
-        while time.monotonic() < deadline:
-            try:
-                metadata = self._inspect_network(name, absent_ok=True)
-                if metadata is None:
-                    observed_absence = time.monotonic()
-                    if absent_since is None:
-                        absent_since = observed_absence
-                    elif observed_absence - absent_since >= window:
-                        return
-                else:
-                    absent_since = None
-                    actual_name, actual_run = self._owned_network(metadata)
-                    if (actual_name, actual_run) != (name, run_id):
-                        raise ProxyStateError("foreign Docker network ownership changed")
-                    if self._mapping(metadata.get("Containers")):
-                        raise ProxyStateError("refusing to remove active gate-owned Docker network")
-                    self._docker("network", "rm", name)
-                    absent_since = None
-            except DockerCommandTimeoutError:
-                # A timed-out inspect or remove cannot prove absence. Continue until
-                # the bounded reconciliation deadline, then fail closed.
-                absent_since = None
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(NETWORK_SETTLEMENT_POLL_SECONDS, window, remaining))
-        raise ProxyStateError("timed-out network create cleanup remains uncertain")
+        return True
 
     def _nft(self, arguments: Sequence[str], *, input: str | None = None, check: bool = True):
         return self.nft_runner(
@@ -670,11 +777,10 @@ class ProxyNetwork:
         if internal:
             arguments.append("--internal")
         arguments.append(name)
-        try:
-            self._docker(*arguments)
-        except DockerCommandTimeoutError:
-            self._uncertain_networks.add((name, run_id))
-            raise
+        key = (name, run_id)
+        self._intents.create(*key)
+        self._network_intents.add(key)
+        self._docker(*arguments)
         metadata = self._inspect_network(name)
         assert metadata is not None
         actual_name, actual_run = self._owned_network(metadata)
@@ -688,6 +794,8 @@ class ProxyNetwork:
         ):
             raise ProxyStateError("created Docker network failed strict inspection")
         self._addresses(metadata, allocation)
+        self._intents.clear(name)
+        self._network_intents.remove(key)
         return metadata
 
     @staticmethod
@@ -941,6 +1049,7 @@ class ProxyNetwork:
         try:
             self._lock = self.lock_factory()
             self._arm_cleanup()
+            self._intents.assert_clear()
             self._reconcile()
             self._agent_network = agent_network
             agent = self._create_network(
@@ -1054,11 +1163,14 @@ class ProxyNetwork:
             if name is not None and self._run_id is not None:
                 try:
                     key = (name, self._run_id)
-                    if key in self._uncertain_networks:
-                        self._settle_uncertain_network(*key)
-                        self._uncertain_networks.remove(key)
-                    else:
-                        self._remove_network(name, self._run_id)
+                    observed = self._remove_network(name, self._run_id)
+                    if key in self._network_intents:
+                        if not observed:
+                            raise ProxyStateError(
+                                "network create quarantine remains because creation was not observed"
+                            )
+                        self._intents.clear(name)
+                        self._network_intents.remove(key)
                 except BaseException as error:
                     errors.append(error)
                 else:

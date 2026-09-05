@@ -36,6 +36,7 @@ from benchmarks.swebench.profile import load_profile
 from benchmarks.swebench.proxy import (
     AGENT_ALLOCATION,
     EGRESS_ALLOCATION,
+    ProxyCleanupError,
     ProxyNetwork,
     ProxyStateError,
 )
@@ -368,6 +369,8 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="alloy-docker-integration-")
         self.root = Path(self.temporary.name)
+        self.proxy_state = self.root / "proxy-state"
+        self.proxy_state.mkdir(mode=0o700)
         self.control = _ControlledGateway()
         self.addCleanup(self.control.close)
         self.host_paths = {}
@@ -513,6 +516,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
             REPO_ROOT,
             f"http://127.0.0.1:{self.upstream.server_port}",
             install_signal_handlers=False,
+            state_dir=self.proxy_state,
         )
         if name == "network-probes.py":
             proxy.endpoint_harness = RoutedEndpointHarness(
@@ -598,6 +602,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
             REPO_ROOT,
             f"http://127.0.0.1:{self.upstream.server_port}",
             install_signal_handlers=False,
+            state_dir=self.proxy_state,
         )
         self.runs.append((run_id, proxy, None))
 
@@ -635,6 +640,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
             ("construction", lambda: ProxyNetwork(
                 DockerRuntime(self.profile, REPO_ROOT), self.proxy_image_id, REPO_ROOT,
                 "https://invalid.example", install_signal_handlers=False,
+                state_dir=self.proxy_state,
             )),
         )
         for phase, setup in failures:
@@ -662,10 +668,12 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                 REPO_ROOT,
                 f"http://127.0.0.1:{self.upstream.server_port}",
                 install_signal_handlers=False,
+                state_dir=self.proxy_state,
             )
             self.runs.append((run_id, proxy, None))
-            with self.assertRaisesRegex(ProxyStateError, r"network create.*[Oo]verlap"):
+            with self.assertRaises(ProxyCleanupError) as raised:
                 proxy.start(run_id)
+            self.assertRegex(str(raised.exception.original_error), r"network create.*[Oo]verlap")
             self._assert_no_leaks(run_id, proxy)
 
     def test_daemon_network_create_races_have_one_winner_and_cleanup(self):
@@ -673,6 +681,8 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
             with self.subTest(role=allocation.role):
                 run_id = f"docker-static-{allocation.role}-race-" + uuid.uuid4().hex
                 external = "alloy-fixed-race-" + uuid.uuid4().hex
+                proxy_state = self.proxy_state / run_id
+                proxy_state.mkdir(mode=0o700)
                 runtime = DockerRuntime(self.profile, REPO_ROOT)
                 runtime.preflight()
                 proxy = ProxyNetwork(
@@ -681,6 +691,7 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                     REPO_ROOT,
                     f"http://127.0.0.1:{self.upstream.server_port}",
                     install_signal_handlers=False,
+                    state_dir=proxy_state,
                 )
                 self.runs.append((run_id, proxy, None))
                 barrier = threading.Barrier(2)
@@ -746,8 +757,10 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                         self.assertNotEqual(external_result.returncode, 0)
                         self.assertRegex(external_result.stderr, r"[Oo]verlap")
                     else:
-                        self.assertIsInstance(error, ProxyStateError)
-                        self.assertRegex(str(error), r"network create.*[Oo]verlap")
+                        self.assertIsInstance(error, ProxyCleanupError)
+                        self.assertRegex(
+                            str(error.original_error), r"network create.*[Oo]verlap"
+                        )
                         self.assertEqual(external_result.returncode, 0)
                         # An agent loss creates no gate state; an egress loss
                         # must also have removed the already-created agent network.

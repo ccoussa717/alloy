@@ -183,6 +183,24 @@ network, relay, firewall rule, and volume before writing `manifest.json` and
 `manifest.signature.json`. Any cleanup or signing uncertainty writes unsigned
 `failure.json` and blocks release; it cannot leave signed success evidence.
 
+A Docker network-create command is additionally fail-closed. Before every
+network create, the root-owned gate state records and fsyncs an exclusive
+intent marker under `/var/lib/alloy-swebench-gate/proxy-network-intents/`.
+A synchronous create clears its marker only after exact post-create inspection;
+an observed owned network clears it only after verified removal. A timeout or
+other create failure with no observed network leaves the marker in place. The
+gate will not start another proxy lifecycle (including a later launcher
+invocation) while that quarantine exists, even if a network appears later.
+
+There is intentionally no automatic absence-based marker clearing or launcher
+reconciliation command. Recovery is an operator procedure: preserve the
+unsigned failure evidence, verify Docker daemon identity continuity against the
+recorded preflight evidence, inspect the exact marker-named resource and its
+gate ownership label, remove that observed owned resource, prove its absence,
+and only then remove the corresponding root-owned marker while recording the
+operator action. Any identity drift, foreign resource, or inability to prove
+removal remains a release-blocking infrastructure incident.
+
 Verify `manifest.signature.json` says `Ed25519`, verify its signature over the
 canonical bytes of `manifest.json` with the provisioned public key, and verify
 that public key's SHA-256 equals `gate_public_key_sha256` in

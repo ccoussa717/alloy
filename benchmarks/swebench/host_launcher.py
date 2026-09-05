@@ -636,7 +636,10 @@ def _authority_main(host: TrustedHost, mode: str, candidate_commit: str, reason:
         runtime=runtime,
     )
     ollama_origin = "http://127.0.0.1:11434"
-    proxy = ProxyNetwork(runtime, proxy_image_id, host.paths.authority, ollama_origin)
+    proxy = ProxyNetwork(
+        runtime, proxy_image_id, host.paths.authority, ollama_origin,
+        state_dir=host.paths.state,
+    )
     services = TrustedRunServices(
         TrustedServiceConfig(
             repository=host.paths.authority,

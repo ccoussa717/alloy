@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -510,6 +511,9 @@ class ProxyNetworkTests(unittest.TestCase):
 
     def setUp(self):
         self.runtime = FakeRuntime()
+        self.state = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self.state.name)
+        self.addCleanup(self.state.cleanup)
         self.nft_calls = []
         self.relays = []
         self.nft_tables = {}
@@ -560,6 +564,7 @@ class ProxyNetworkTests(unittest.TestCase):
             lock_factory=self.lock_factory,
             ready_probe=lambda _host, _port: None,
             install_signal_handlers=False,
+            state_dir=self.state_dir,
         )
 
     def lock_factory(self):
@@ -621,6 +626,7 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertTrue(self.relays[0].closed)
         self.assertTrue(self.locks[0].closed)
         self.assertIn(("remove", self.runtime.handle), self.runtime.calls)
+        self.assertEqual(list((self.state_dir / "proxy-network-intents").glob("*.intent")), [])
         self.assertTrue(
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
@@ -713,11 +719,11 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertTrue(self.relays[0].closed)
         self.assertTrue(self.locks[0].closed)
 
-    def test_docker_timeout_is_redacted_bounded_and_cleans_created_networks(self):
+    def test_docker_timeout_is_redacted_bounded_and_quarantines_network_creation(self):
         name = "alloy-swe-egress-272812a7"
         self.runtime.network_create_timeouts[name] = 30
 
-        with self.assertRaisesRegex(ProxyStateError, "timed out") as raised:
+        with self.assertRaises(ProxyCleanupError) as raised:
             self.network.start("run-123")
 
         self.assertNotIn("REDACT-ME", str(raised.exception))
@@ -725,7 +731,9 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(self.runtime.networks, set())
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
-        self.assertTrue(self.locks[0].closed)
+        self.assertFalse(self.network._closed)
+        self.assertFalse(self.locks[0].closed)
+        self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
 
     def test_timed_out_network_create_reconciles_late_materialization_before_cleanup(self):
         name = "alloy-swe-egress-272812a7"
@@ -752,15 +760,41 @@ class ProxyNetworkTests(unittest.TestCase):
 
         self.assertLess(len(str(raised.exception)), 1024)
         self.assertFalse(self.network._closed)
-        self.assertTrue(self.network._uncertain_networks)
+        self.assertTrue(self.network._network_intents)
         self.assertFalse(self.locks[0].closed)
 
-    def test_agent_network_create_conflict_is_daemon_authoritative_and_cleans(self):
+    def test_timeout_quarantine_marker_survives_close_and_blocks_next_instance(self):
+        name = "alloy-swe-egress-272812a7"
+        self.runtime.network_create_timeouts[name] = 30
+
+        with self.assertRaises(ProxyCleanupError):
+            self.network.start("run-123")
+
+        marker = self.state_dir / "proxy-network-intents" / f"{name}.intent"
+        self.assertTrue(marker.is_file())
+        self.assertEqual(json.loads(marker.read_text()), {"name": name, "run_id": "run-123"})
+        self.runtime.networks.add(name)
+        with self.assertRaisesRegex(ProxyStateError, "quarantine"):
+            ProxyNetwork(
+                self.runtime,
+                "sha256:" + "a" * 64,
+                REPO_ROOT,
+                "http://127.0.0.1:11434",
+                nft_runner=self.network.nft_runner,
+                relay_factory=self.network.relay_factory,
+                lock_factory=self.lock_factory,
+                ready_probe=lambda _host, _port: None,
+                install_signal_handlers=False,
+                state_dir=self.state_dir,
+            )
+
+    def test_agent_network_create_conflict_is_daemon_authoritative_and_quarantines(self):
         name = "alloy-swe-agent-272812a7"
         self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
 
-        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
+        with self.assertRaises(ProxyCleanupError) as raised:
             self.network.start("run-123")
+        self.assertRegex(str(raised.exception.original_error), r"network create.*Pool overlaps")
 
         commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
         self.assertTrue(any(command[3:5] == ("network", "create") for command in commands))
@@ -773,14 +807,16 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertEqual(self.relays, [])
-        self.assertTrue(self.locks[0].closed)
+        self.assertFalse(self.locks[0].closed)
+        self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
 
-    def test_egress_network_create_conflict_cleans_created_agent_network(self):
+    def test_egress_network_create_conflict_cleans_agent_and_quarantines_egress(self):
         name = "alloy-swe-egress-272812a7"
         self.runtime.network_create_failures[name] = "Error response from daemon: Pool overlaps"
 
-        with self.assertRaisesRegex(ProxyStateError, r"network create.*Pool overlaps"):
+        with self.assertRaises(ProxyCleanupError) as raised:
             self.network.start("run-123")
+        self.assertRegex(str(raised.exception.original_error), r"network create.*Pool overlaps")
 
         commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
         creates = [command for command in commands if command[3:5] == ("network", "create")]
@@ -796,7 +832,8 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertEqual(self.runtime.containers, {})
         self.assertEqual(self.nft_tables, {})
         self.assertEqual(self.relays, [])
-        self.assertTrue(self.locks[0].closed)
+        self.assertFalse(self.locks[0].closed)
+        self.assertTrue((self.state_dir / "proxy-network-intents" / f"{name}.intent").is_file())
 
     def test_reconciles_only_empty_owned_state_and_refuses_active_or_foreign_state(self):
         stale = {
@@ -820,6 +857,7 @@ class ProxyNetworkTests(unittest.TestCase):
                 lock_factory=self.lock_factory,
                 ready_probe=lambda _host, _port: None,
                 install_signal_handlers=False,
+                state_dir=self.state_dir,
             )
             with mock.patch.object(network, "_owned_network_ids", return_value=("stale-id",)), mock.patch.object(
                 network, "_inspect_network", return_value=metadata
@@ -871,6 +909,7 @@ class ProxyNetworkTests(unittest.TestCase):
                 lock_factory=self.lock_factory,
                 ready_probe=lambda _host, _port: None,
                 install_signal_handlers=False,
+                state_dir=self.state_dir,
             )
             nft_before = len(self.nft_calls)
             relay_before = len(self.relays)
@@ -912,6 +951,7 @@ class ProxyNetworkTests(unittest.TestCase):
             lock_factory=self.lock_factory,
             ready_probe=lambda _host, _port: None,
             install_signal_handlers=True,
+            state_dir=self.state_dir,
         )
         with mock.patch("benchmarks.swebench.proxy.signal.getsignal", return_value=replacement), mock.patch(
             "benchmarks.swebench.proxy.signal.signal"
@@ -936,6 +976,7 @@ class ProxyNetworkTests(unittest.TestCase):
                 lock_factory=self.lock_factory,
                 ready_probe=lambda _host, _port: None,
                 install_signal_handlers=False,
+                state_dir=self.state_dir,
             )
             if error is None:
                 with network.running("run-123") as endpoint:
@@ -970,12 +1011,15 @@ class RootNetworkIntegrationTests(unittest.TestCase):
         upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
         upstream_thread.start()
         run_id = "root-network-" + uuid.uuid4().hex
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
         network = CausalProxyNetwork(
             runtime,
             proxy_image_id,
             REPO_ROOT,
             f"http://127.0.0.1:{upstream.server_port}",
             install_signal_handlers=False,
+            state_dir=Path(state.name),
         )
         network.endpoint_harness = RoutedEndpointHarness(
             runtime,
