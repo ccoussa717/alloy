@@ -402,12 +402,13 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
         self.temporary.cleanup()
 
     @staticmethod
-    def _docker(*arguments, check=True):
+    def _docker(*arguments, check=True, timeout=None):
         return subprocess.run(
             ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock", *arguments],
             check=check,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
 
     def _resource_inventory(self, run_id, proxy=None, services=None):
@@ -597,34 +598,32 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
 
         self._assert_no_leaks(run_id, proxy)
 
-    def test_daemon_rejects_preexisting_overlapping_fixed_subnets_and_cleans(self):
-        # Both fixed /28s are within 198.18.0.0/24. Exercise each requested
-        # allocation role independently: Docker, rather than host inspection,
-        # rejects the overlap at the network-create boundary.
-        for role in ("agent", "egress"):
-            with self.subTest(role=role):
-                run_id = f"docker-static-{role}-collision-" + uuid.uuid4().hex
-                overlap = "alloy-fixed-overlap-" + uuid.uuid4().hex
-                self._docker(
-                    "network", "create", "--driver", "bridge",
-                    "--subnet", "198.18.0.0/24", "--gateway", "198.18.0.1", overlap,
-                )
-                runtime = DockerRuntime(self.profile, REPO_ROOT)
-                runtime.preflight()
-                proxy = ProxyNetwork(
-                    runtime,
-                    self.proxy_image_id,
-                    REPO_ROOT,
-                    f"http://127.0.0.1:{self.upstream.server_port}",
-                    install_signal_handlers=False,
-                )
-                self.runs.append((run_id, proxy, None))
-                try:
-                    with self.assertRaisesRegex(ProxyStateError, r"network create.*[Oo]verlap"):
-                        proxy.start(run_id)
-                    self._assert_no_leaks(run_id, proxy)
-                finally:
-                    self._docker("network", "rm", overlap, check=False)
+    def test_daemon_rejects_broad_overlap_early_and_cleans(self):
+        # Both fixed /28s lie within this /24, but startup creates the agent
+        # network first. This test therefore proves only the aggregate overlap
+        # rejection at that early boundary; the exact egress conflict is raced below.
+        run_id = "docker-static-broad-collision-" + uuid.uuid4().hex
+        overlap = "alloy-fixed-overlap-" + uuid.uuid4().hex
+        self._docker(
+            "network", "create", "--driver", "bridge",
+            "--subnet", "198.18.0.0/24", "--gateway", "198.18.0.1", overlap,
+        )
+        runtime = DockerRuntime(self.profile, REPO_ROOT)
+        runtime.preflight()
+        proxy = ProxyNetwork(
+            runtime,
+            self.proxy_image_id,
+            REPO_ROOT,
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            install_signal_handlers=False,
+        )
+        self.runs.append((run_id, proxy, None))
+        try:
+            with self.assertRaisesRegex(ProxyStateError, r"network create.*[Oo]verlap"):
+                proxy.start(run_id)
+            self._assert_no_leaks(run_id, proxy)
+        finally:
+            self._docker("network", "rm", overlap, check=False)
 
     def test_daemon_network_create_races_have_one_winner_and_cleanup(self):
         for allocation in (AGENT_ALLOCATION, EGRESS_ALLOCATION):
@@ -642,38 +641,42 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                 )
                 self.runs.append((run_id, proxy, None))
                 barrier = threading.Barrier(2)
-                create_network = proxy._create_network
-
-                def race_create(name, gate_run_id, bridge, gate_allocation, *, internal):
-                    if gate_allocation == allocation:
-                        barrier.wait(timeout=15)
-                    return create_network(
-                        name, gate_run_id, bridge, gate_allocation, internal=internal
-                    )
-
-                proxy._create_network = race_create
                 outcome = {}
 
-                def start_gate():
+                def run_gate():
                     try:
+                        barrier.wait(timeout=15)
                         outcome["endpoint"] = proxy.start(run_id)
                     except BaseException as error:
-                        outcome["error"] = error
+                        outcome["gate_error"] = error
 
-                thread = threading.Thread(target=start_gate)
-                thread.start()
+                def run_external():
+                    try:
+                        barrier.wait(timeout=15)
+                        outcome["external"] = self._docker(
+                            "network", "create", "--driver", "bridge",
+                            "--subnet", str(allocation.subnet),
+                            "--gateway", str(allocation.gateway), external,
+                            check=False,
+                            timeout=30,
+                        )
+                    except BaseException as error:
+                        outcome["external_error"] = error
+
+                gate_thread = threading.Thread(target=run_gate)
+                external_thread = threading.Thread(target=run_external)
+                gate_thread.start()
+                external_thread.start()
+                deadline = time.monotonic() + 60
+                for thread in (gate_thread, external_thread):
+                    thread.join(timeout=max(0, deadline - time.monotonic()))
                 try:
-                    barrier.wait(timeout=15)
-                    external_result = self._docker(
-                        "network", "create", "--driver", "bridge",
-                        "--subnet", str(allocation.subnet),
-                        "--gateway", str(allocation.gateway), external,
-                        check=False,
-                    )
-                    thread.join(timeout=30)
-                    self.assertFalse(thread.is_alive(), "gate startup did not finish its create race")
+                    self.assertFalse(gate_thread.is_alive(), "gate startup did not finish its create race")
+                    self.assertFalse(external_thread.is_alive(), "external Docker create did not finish")
+                    self.assertNotIn("external_error", outcome)
+                    external_result = outcome["external"]
                     endpoint = outcome.get("endpoint")
-                    error = outcome.get("error")
+                    error = outcome.get("gate_error")
                     self.assertEqual(
                         int(external_result.returncode == 0) + int(endpoint is not None), 1,
                         {"external": external_result.stderr, "gate": repr(error)},
@@ -692,6 +695,9 @@ class DockerBoundaryIntegrationTests(unittest.TestCase):
                         self.assertIsInstance(error, ProxyStateError)
                         self.assertRegex(str(error), r"network create.*[Oo]verlap")
                         self.assertEqual(external_result.returncode, 0)
+                        # An agent loss creates no gate state; an egress loss
+                        # must also have removed the already-created agent network.
+                        self._assert_no_leaks(run_id, proxy)
                 finally:
                     if not proxy._closed:
                         proxy.close()
