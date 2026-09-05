@@ -137,7 +137,7 @@ Expected: import failure for `benchmarks.swebench.authority`.
 
 - [ ] **Step 3: Implement blob-level verification**
 
-Read blobs with `git show <sha>:<path>` without checking out or executing candidate files. Compare full tree path/mode/object tuples first, then allow only policy paths. Parse JSON and prove every value except the enumerated pointers is structurally equal. Verify exact old/new literal counts and changelog extraction into `## [1.1.26] - 2026-08-19`.
+Read blobs with `git show <sha>:<path>` without checking out or executing candidate files. Compare full tree path/mode/object tuples first, then allow only policy paths. Parse JSON and prove every value except the enumerated pointers is structurally equal. Verify exact old/new literal counts and changelog extraction into `## [1.1.26] - 2026-09-04`.
 
 Make current-release README copy version-neutral in this authority commit so it does not need a post-authority edit. Replace the SVG's fixed version with `ALLOY` only.
 
@@ -719,7 +719,7 @@ Run one wrong-SHA dry-run and confirm rejection before candidate execution, then
 
 - [ ] **Step 1: Write the release transformation only**
 
-Change exactly four JSON version values and the three runtime fallback literals from `1.1.25` to `1.1.26`. Move `[Unreleased]` entries unchanged under `## [1.1.26] - 2026-08-19`. Make no other byte changes.
+Change exactly four JSON version values and the three runtime fallback literals from `1.1.25` to `1.1.26`. Move `[Unreleased]` entries unchanged under `## [1.1.26] - 2026-09-04`. Make no other byte changes.
 
 - [ ] **Step 2: Verify the candidate locally**
 

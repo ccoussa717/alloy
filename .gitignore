@@ -12,6 +12,7 @@ coverage/
 *.cdx.json
 pack-list.txt
 spikes/
+.worktrees/
 __pycache__/
 benchmarks/swebench/.venv/
 benchmarks/swebench/.cache/

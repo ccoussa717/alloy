@@ -377,7 +377,7 @@ commit that receives the tag:
 2. In a separate release PR, bump root `package.json`, `tui/package.json`,
    `npm-shrinkwrap.json` root and
    `packages[""]`, and runtime fallback versions to `1.1.26`.
-3. Move `[Unreleased]` notes into `## [1.1.26] - 2026-08-19`.
+3. Move `[Unreleased]` notes into `## [1.1.26] - 2026-09-04`.
 4. Merge release metadata through protected `main` with green CI. This merge SHA
    is the final candidate; intervening changes from the authority are restricted
    to the reviewed release surfaces.

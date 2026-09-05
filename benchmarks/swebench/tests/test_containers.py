@@ -65,6 +65,22 @@ class DockerRuntimeTests(unittest.TestCase):
         )
         self.euid = euid_patch.start()
         self.addCleanup(euid_patch.stop)
+        socket_metadata = types.SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660,
+            st_uid=0,
+        )
+        original_lstat = os.lstat
+
+        def local_socket_lstat(path, *arguments, **keywords):
+            if path == containers.DOCKER_SOCKET:
+                return socket_metadata
+            return original_lstat(path, *arguments, **keywords)
+
+        socket_patch = mock.patch(
+            "benchmarks.swebench.containers.os.lstat", side_effect=local_socket_lstat
+        )
+        socket_patch.start()
+        self.addCleanup(socket_patch.stop)
         self.profile = load_profile(PROFILE_PATH, REPO_ROOT)
         self.image = self.profile.agent_image
         self.image_id = "sha256:" + "a" * 64
@@ -817,6 +833,14 @@ class DockerRuntimeTests(unittest.TestCase):
                 with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                     runtime.preflight()
                 self.assertEqual(runner.calls, [])
+
+    def test_preflight_rejects_missing_local_socket_before_docker_invocation(self):
+        runtime = self.runtime(ScriptedRunner())
+        with mock.patch(
+            "benchmarks.swebench.containers.os.lstat",
+            side_effect=FileNotFoundError(),
+        ), self.assertRaisesRegex(RuntimeError, "local Docker Unix socket is unavailable"):
+            runtime.preflight()
 
     def test_preflight_ignores_malicious_path_shims(self):
         with tempfile.TemporaryDirectory() as directory:

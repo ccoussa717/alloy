@@ -1,7 +1,7 @@
 {
   "old_version": "1.1.25",
   "new_version": "1.1.26",
-  "release_date": "2026-08-19",
+  "release_date": "2026-09-04",
   "json_pointers": {
     "package.json": ["/version"],
     "tui/package.json": ["/version"],

@@ -31,7 +31,7 @@ class AuthorityTests(unittest.TestCase):
         self.policy = ReleaseTransformPolicy(
             old_version=OLD_VERSION,
             new_version=NEW_VERSION,
-            release_date="2026-08-19",
+            release_date="2026-09-04",
             json_pointers={
                 "package.json": ("/version",),
                 "tui/package.json": ("/version",),
@@ -105,7 +105,7 @@ class AuthorityTests(unittest.TestCase):
         return {
             "old_version": OLD_VERSION,
             "new_version": NEW_VERSION,
-            "release_date": "2026-08-19",
+            "release_date": "2026-09-04",
             "json_pointers": {
                 "package.json": ["/version"],
                 "tui/package.json": ["/version"],
@@ -134,7 +134,7 @@ class AuthorityTests(unittest.TestCase):
         changelog = (self.repository / "CHANGELOG.md").read_text()
         changelog = changelog.replace(
             "## [Unreleased]\n\n### Added\n- Trusted release gate.\n",
-            "## [Unreleased]\n\n## [1.1.26] - 2026-08-19\n\n"
+            "## [Unreleased]\n\n## [1.1.26] - 2026-09-04\n\n"
             "### Added\n- Trusted release gate.\n",
         )
         (self.repository / "CHANGELOG.md").write_text(changelog)

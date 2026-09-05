@@ -929,6 +929,7 @@ class ReleaseWrapperTests(unittest.TestCase):
             "FAKE_SHA": SHA,
             "FAKE_COMMAND_LOG": str(self.commands),
         }
+        self.environment.pop("ALLOY_SWEBENCH_TEST_PYTHON", None)
 
     def tearDown(self):
         self.temporary.cleanup()
