@@ -84,6 +84,33 @@ class ProxyEndpoint:
     inspection: dict[str, object]
 
 
+@dataclass(frozen=True)
+class NetworkAllocation:
+    role: str
+    subnet: ipaddress.IPv4Network
+    gateway: ipaddress.IPv4Address
+    proxy: ipaddress.IPv4Address
+
+    def __post_init__(self) -> None:
+        if self.gateway not in self.subnet or self.proxy not in self.subnet:
+            raise ValueError(f"{self.role} allocation is outside its subnet")
+        if self.gateway == self.proxy:
+            raise ValueError(f"{self.role} gateway and proxy addresses must differ")
+
+
+# These fixed, disjoint benchmarking allocations make the trusted firewall's
+# exact source and relay assertions stable.  The process lock admits only one gate
+# lifecycle at a time; startup rejects any pre-existing Docker overlap.
+AGENT_ALLOCATION = NetworkAllocation(
+    "agent", ipaddress.ip_network("198.18.0.0/28"),
+    ipaddress.ip_address("198.18.0.1"), ipaddress.ip_address("198.18.0.2"),
+)
+EGRESS_ALLOCATION = NetworkAllocation(
+    "egress", ipaddress.ip_network("198.18.0.16/28"),
+    ipaddress.ip_address("198.18.0.17"), ipaddress.ip_address("198.18.0.18"),
+)
+
+
 class ProxyStateError(RuntimeError):
     pass
 
@@ -366,9 +393,15 @@ class ProxyNetwork:
 
     def _docker(self, *arguments: str, check: bool = True):
         self.runtime._assert_daemon_identity()
-        result = self.runtime._run(
-            [DOCKER_BIN, "--host", DOCKER_ENDPOINT, *arguments], check=check
-        )
+        try:
+            result = self.runtime._run(
+                [DOCKER_BIN, "--host", DOCKER_ENDPOINT, *arguments], check=check
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or "no Docker diagnostic").strip()
+            raise ProxyStateError(
+                f"Docker {' '.join(arguments)} failed: {detail[-1024:]!r}"
+            ) from error
         self.runtime._assert_daemon_identity()
         return result
 
@@ -567,13 +600,63 @@ class ProxyNetwork:
                 raise ProxyStateError("active gate-owned nftables state exists")
             self._delete_firewall(name, owner)
 
-    def _create_network(self, name: str, run_id: str, bridge: str, *, internal: bool) -> dict[str, object]:
+    @staticmethod
+    def _ipv4_subnets(metadata: dict[str, object]) -> tuple[ipaddress.IPv4Network, ...]:
+        ipam = ProxyNetwork._mapping(metadata.get("IPAM"))
+        configs = ipam.get("Config")
+        if not isinstance(configs, list):
+            raise ProxyStateError("Docker network has invalid IPAM configuration")
+        subnets = []
+        for config in configs:
+            if not isinstance(config, dict):
+                raise ProxyStateError("Docker network has invalid IPAM configuration")
+            subnet = config.get("Subnet")
+            if subnet is None:
+                continue
+            if not isinstance(subnet, str):
+                raise ProxyStateError("Docker network has invalid IPAM subnet")
+            try:
+                parsed = ipaddress.ip_network(subnet, strict=True)
+            except ValueError as error:
+                raise ProxyStateError("Docker network has invalid IPAM subnet") from error
+            if parsed.version == 4:
+                subnets.append(parsed)
+        return tuple(subnets)
+
+    def _assert_allocations_available(self, allocations: Sequence[NetworkAllocation]) -> None:
+        result = self._docker("network", "ls", "--format", "{{.ID}}")
+        for identifier in result.stdout.splitlines():
+            if not identifier:
+                continue
+            metadata = self._inspect_network(identifier)
+            assert metadata is not None
+            name = metadata.get("Name")
+            if not isinstance(name, str) or not name:
+                raise ProxyStateError("Docker network has invalid identity")
+            for existing in self._ipv4_subnets(metadata):
+                for allocation in allocations:
+                    if allocation.subnet.overlaps(existing):
+                        raise ProxyStateError(
+                            f"fixed {allocation.role} subnet {allocation.subnet} collides with "
+                            f"Docker network {name} subnet {existing}"
+                        )
+
+    def _create_network(
+        self,
+        name: str,
+        run_id: str,
+        bridge: str,
+        allocation: NetworkAllocation,
+        *,
+        internal: bool,
+    ) -> dict[str, object]:
         existing = self._inspect_network(name, absent_ok=True)
         if existing is not None:
             raise ProxyStateError("foreign Docker network occupies the requested gate name")
         arguments = [
             "network", "create", "--driver", "bridge", "--label", f"{LABEL}={run_id}",
             "--opt", f"com.docker.network.bridge.name={bridge}",
+            "--subnet", str(allocation.subnet), "--gateway", str(allocation.gateway),
         ]
         if internal:
             arguments.append("--internal")
@@ -591,10 +674,13 @@ class ProxyNetwork:
             or self._mapping(metadata.get("Containers"))
         ):
             raise ProxyStateError("created Docker network failed strict inspection")
+        self._addresses(metadata, allocation)
         return metadata
 
     @staticmethod
-    def _addresses(metadata: dict[str, object]) -> tuple[str, str]:
+    def _addresses(
+        metadata: dict[str, object], allocation: NetworkAllocation
+    ) -> tuple[str, str]:
         ipam = ProxyNetwork._mapping(metadata.get("IPAM"))
         configs = ipam.get("Config")
         if not isinstance(configs, list) or len(configs) != 1 or not isinstance(configs[0], dict):
@@ -606,12 +692,12 @@ class ProxyNetwork:
             gateway_ip = ipaddress.ip_address(str(gateway))
         except ValueError as error:
             raise ProxyStateError("Docker network has invalid IPAM state") from error
-        if network.version != 4 or gateway_ip not in network:
-            raise ProxyStateError("Docker network must have one IPv4 gateway")
-        proxy_ip = network.network_address + 2
-        if proxy_ip not in network or proxy_ip == gateway_ip:
-            raise ProxyStateError("Docker network is too small for a fixed proxy address")
-        return str(gateway_ip), str(proxy_ip)
+        if network != allocation.subnet or gateway_ip != allocation.gateway:
+            raise ProxyStateError(
+                f"Docker network did not preserve fixed {allocation.role} allocation "
+                f"subnet={allocation.subnet} gateway={allocation.gateway}"
+            )
+        return str(allocation.gateway), str(allocation.proxy)
 
     @staticmethod
     def _ruleset(
@@ -767,16 +853,17 @@ class ProxyNetwork:
             self._lock = self.lock_factory()
             self._arm_cleanup()
             self._reconcile()
+            self._assert_allocations_available((AGENT_ALLOCATION, EGRESS_ALLOCATION))
             self._agent_network = agent_network
             agent = self._create_network(
-                agent_network, run_id, f"asa{token}", internal=True
+                agent_network, run_id, f"asa{token}", AGENT_ALLOCATION, internal=True
             )
-            _agent_gateway, agent_ip = self._addresses(agent)
+            _agent_gateway, agent_ip = self._addresses(agent, AGENT_ALLOCATION)
             self._egress_network = egress_network
             egress = self._create_network(
-                egress_network, run_id, f"ase{token}", internal=False
+                egress_network, run_id, f"ase{token}", EGRESS_ALLOCATION, internal=False
             )
-            relay_ip, egress_ip = self._addresses(egress)
+            relay_ip, egress_ip = self._addresses(egress, EGRESS_ALLOCATION)
             self._relay = self.relay_factory((relay_ip, 0), self.ollama_origin)
             relay_port = int(self._relay.address[1])
             ruleset = self._ruleset(

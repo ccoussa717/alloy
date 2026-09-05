@@ -18,6 +18,7 @@ from benchmarks.swebench.profile import load_profile
 from benchmarks.swebench.proxy import (
     HEADER_LIMIT,
     BODY_LIMIT,
+    AGENT_ALLOCATION,
     ProxyCleanupError,
     ProxyNetwork,
     ProxyPolicy,
@@ -292,6 +293,9 @@ class FakeRuntime:
         self.profile = load_profile(PROFILE_PATH, REPO_ROOT)
         self.handle = ContainerHandle("alloy-proxy-run-123", "proxy-id", "run-123")
         self.networks = set()
+        self.network_config = {}
+        self.foreign_networks = {}
+        self.network_connect_failure = None
         self.containers = {}
 
     def _assert_daemon_identity(self, handle=None):
@@ -326,18 +330,31 @@ class FakeRuntime:
                 arguments, 0, stdout=json.dumps([metadata]), stderr=""
             )
         if action[:2] == ["network", "ls"]:
-            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+            names = sorted((*self.networks, *self.foreign_networks))
+            if "--filter" in action:
+                label = action[action.index("--filter") + 1]
+                if label.startswith("label=alloy.swebench.gate"):
+                    names = sorted(self.networks)
+            return subprocess.CompletedProcess(arguments, 0, stdout="\n".join(names), stderr="")
         if action[:2] == ["network", "inspect"]:
             name = action[2]
+            if name in self.foreign_networks:
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout=json.dumps([self.foreign_networks[name]]), stderr=""
+                )
             if name not in self.networks:
                 return subprocess.CompletedProcess(
                     arguments, 1, stdout="[]\n",
                     stderr=f"Error response from daemon: network {name} not found\n",
                 )
-            if name.endswith("agent-272812a7"):
-                internal, gateway, subnet = True, "172.28.0.1", "172.28.0.0/16"
+            config = self.network_config.get(name)
+            if config is None:
+                if name.endswith("agent-272812a7"):
+                    internal, gateway, subnet = True, "172.28.0.1", "172.28.0.0/16"
+                else:
+                    internal, gateway, subnet = False, "172.29.0.1", "172.29.0.0/16"
             else:
-                internal, gateway, subnet = False, "172.29.0.1", "172.29.0.0/16"
+                internal, gateway, subnet = config
             value = [{
                 "Name": name,
                 "Driver": "bridge",
@@ -354,9 +371,21 @@ class FakeRuntime:
             }]
             return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(value), stderr="")
         if action[:2] == ["network", "create"]:
-            self.networks.add(action[-1])
+            name = action[-1]
+            self.networks.add(name)
+            internal = "--internal" in action
+            if "--subnet" in action and "--gateway" in action:
+                self.network_config[name] = (
+                    internal,
+                    action[action.index("--gateway") + 1],
+                    action[action.index("--subnet") + 1],
+                )
         if action[:2] == ["network", "rm"]:
             self.networks.discard(action[-1])
+        if action[:2] == ["network", "connect"] and self.network_connect_failure is not None:
+            raise subprocess.CalledProcessError(
+                1, arguments, output="", stderr=self.network_connect_failure
+            )
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
     def create(self, spec):
@@ -449,7 +478,7 @@ class ProxyNetworkTests(unittest.TestCase):
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
         def relay_factory(bind, origin):
-            self.assertEqual(bind[0], "172.29.0.1")
+            self.assertEqual(bind[0], "198.18.0.17")
             self.assertEqual(origin, ("127.0.0.1", 11434))
             relay = FakeRelay((bind[0], 43123))
             self.relays.append(relay)
@@ -475,19 +504,31 @@ class ProxyNetworkTests(unittest.TestCase):
     def test_start_builds_internal_bridge_atomic_default_deny_and_exact_allowance(self):
         endpoint = self.network.start("run-123")
 
-        self.assertEqual(endpoint.url, "http://172.28.0.2:8080")
+        self.assertEqual(endpoint.url, "http://198.18.0.2:8080")
         docker_commands = [call[1] for call in self.runtime.calls if call[0] == "docker"]
         creates = [command for command in docker_commands if command[3:5] == ("network", "create")]
         self.assertEqual(len(creates), 2)
         self.assertIn("--internal", creates[0])
         self.assertNotIn("--internal", creates[1])
+        self.assertEqual(
+            creates[0][creates[0].index("--subnet") + 1], "198.18.0.0/28"
+        )
+        self.assertEqual(
+            creates[0][creates[0].index("--gateway") + 1], "198.18.0.1"
+        )
+        self.assertEqual(
+            creates[1][creates[1].index("--subnet") + 1], "198.18.0.16/28"
+        )
+        self.assertEqual(
+            creates[1][creates[1].index("--gateway") + 1], "198.18.0.17"
+        )
         transactions = [
             kwargs["input"] for args, kwargs in self.nft_calls if args[-2:] == ("-f", "-")
         ]
         self.assertEqual(len(transactions), 2)
         transaction = transactions[-1]
         self.assertIn("table inet alloy_swe_272812a7", transaction)
-        self.assertIn("ip saddr 172.29.0.2 ip daddr 172.29.0.1 tcp dport 43123 accept", transaction)
+        self.assertIn("ip saddr 198.18.0.18 ip daddr 198.18.0.17 tcp dport 43123 accept", transaction)
         self.assertIn('iifname "asa272812a7" ip saddr 0.0.0.0/0 drop', transaction)
         self.assertIn('iifname "ase272812a7"', transaction)
         self.assertIn("ip6 saddr ::/0 drop", transaction)
@@ -517,6 +558,48 @@ class ProxyNetworkTests(unittest.TestCase):
         self.assertTrue(
             any(args[1:4] == ("delete", "table", "inet") for args, _ in self.nft_calls)
         )
+
+    def test_rejects_created_network_that_does_not_preserve_static_allocation(self):
+        unexpected = {
+            "Name": "alloy-swe-agent-272812a7",
+            "Driver": "bridge",
+            "Internal": True,
+            "EnableIPv6": False,
+            "Options": {"com.docker.network.bridge.name": "asa272812a7"},
+            "Labels": {"alloy.swebench.gate": "run-123"},
+            "Containers": {},
+            "IPAM": {"Config": [{"Gateway": "198.18.0.2", "Subnet": "198.18.0.0/28"}]},
+        }
+        with mock.patch.object(self.network, "_inspect_network", side_effect=(None, unexpected)):
+            with self.assertRaisesRegex(ProxyStateError, "did not preserve fixed agent allocation"):
+                self.network._create_network(
+                    "alloy-swe-agent-272812a7", "run-123", "asa272812a7",
+                    AGENT_ALLOCATION, internal=True,
+                )
+
+    def test_reports_static_network_connect_diagnostics(self):
+        self.runtime.network_connect_failure = "Error response from daemon: Address already in use"
+
+        with self.assertRaisesRegex(
+            ProxyStateError,
+            r"network connect --ip 198\.18\.0\.18 alloy-swe-egress-272812a7.*Address already in use",
+        ):
+            self.network.start("run-123")
+
+    def test_rejects_fixed_subnet_collision_before_network_creation(self):
+        self.runtime.foreign_networks["foreign-network"] = {
+            "Name": "foreign-network",
+            "Driver": "bridge",
+            "IPAM": {"Config": [{"Gateway": "198.18.0.1", "Subnet": "198.18.0.0/24"}]},
+        }
+
+        with self.assertRaisesRegex(ProxyStateError, "fixed agent subnet.*foreign-network"):
+            self.network.start("run-123")
+
+        self.assertFalse(any(
+            call[0] == "docker" and call[1][3:5] == ("network", "create")
+            for call in self.runtime.calls
+        ))
 
     def test_reconciles_only_empty_owned_state_and_refuses_active_or_foreign_state(self):
         stale = {
