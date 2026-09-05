@@ -30,6 +30,7 @@ UNAME_BIN = "/usr/bin/uname"
 RUNC_BIN = "/usr/bin/runc"
 DOCKER_COMMAND_TIMEOUT_SECONDS = 30
 DOCKER_EXPORT_TIMEOUT_SECONDS = 300
+DOCKER_PULL_TIMEOUT_SECONDS = 600
 
 FIXED_ENV = MappingProxyType({
     "HOME": "/root",
@@ -151,6 +152,7 @@ class DockerRuntime:
         *,
         runner: Runner = subprocess.run,
         command_timeout_seconds: float = DOCKER_COMMAND_TIMEOUT_SECONDS,
+        pull_timeout_seconds: float = DOCKER_PULL_TIMEOUT_SECONDS,
     ) -> None:
         if (
             isinstance(command_timeout_seconds, bool)
@@ -159,10 +161,22 @@ class DockerRuntime:
             or command_timeout_seconds <= 0
         ):
             raise ValueError("Docker command timeout must be a positive finite number of seconds")
+        if (
+            isinstance(pull_timeout_seconds, bool)
+            or not isinstance(pull_timeout_seconds, (int, float))
+            or not math.isfinite(pull_timeout_seconds)
+            or pull_timeout_seconds <= 0
+            or pull_timeout_seconds > DOCKER_PULL_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "Docker pull timeout must be a positive finite number of seconds "
+                f"not exceeding {DOCKER_PULL_TIMEOUT_SECONDS}"
+            )
         self.profile = profile
         self.authority_root = authority_root.resolve()
         self.runner = runner
         self.command_timeout_seconds = float(command_timeout_seconds)
+        self.pull_timeout_seconds = float(pull_timeout_seconds)
         self.seccomp_path = (
             self.authority_root / profile.security_policy.seccomp_path
         ).resolve()
@@ -463,7 +477,10 @@ class DockerRuntime:
 
     def pull_and_verify(self, image: ImagePin) -> str:
         self._validate_image(image)
-        self._run(self._docker_arguments("pull", "--platform", "linux/amd64", image.reference))
+        self._run(
+            self._docker_arguments("pull", "--platform", "linux/amd64", image.reference),
+            timeout=self.pull_timeout_seconds,
+        )
         return self.verify_local_image(image)
 
     def verify_local_image(self, image: ImagePin) -> str:

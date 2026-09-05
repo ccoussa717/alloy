@@ -1002,11 +1002,17 @@ class DockerRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            runner.calls[0][1]["timeout"], containers.DOCKER_PULL_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
             runner.calls[1][0],
             [
                 "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
                 "image", "inspect", self.image.reference,
             ],
+        )
+        self.assertEqual(
+            runner.calls[1][1]["timeout"], containers.DOCKER_COMMAND_TIMEOUT_SECONDS,
         )
 
         for change, message in (
@@ -1018,6 +1024,43 @@ class DockerRuntimeTests(unittest.TestCase):
             runtime = self.runtime(ScriptedRunner(completed(), completed(json.dumps([bad]))))
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 runtime.pull_and_verify(self.image)
+
+    def test_pull_uses_dedicated_bounded_timeout_and_rejects_invalid_overrides(self):
+        metadata = {
+            "Id": self.image_id,
+            "Architecture": "amd64",
+            "Os": "linux",
+            "RepoDigests": [f"node@{self.image.manifest_digest}"],
+        }
+        runner = ScriptedRunner(completed(), completed(json.dumps([metadata])))
+
+        image_id = self.runtime(runner, pull_timeout_seconds=42).pull_and_verify(self.image)
+
+        self.assertEqual(image_id, self.image_id)
+        self.assertEqual(runner.calls[0][1]["timeout"], 42)
+        self.assertEqual(
+            runner.calls[1][1]["timeout"], containers.DOCKER_COMMAND_TIMEOUT_SECONDS,
+        )
+        for invalid in (
+            0, -1, containers.DOCKER_PULL_TIMEOUT_SECONDS + 1,
+            float("inf"), float("nan"), True, "600",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "pull timeout"):
+                self.runtime(runner, pull_timeout_seconds=invalid)
+
+    def test_pull_timeout_does_not_expose_docker_output(self):
+        runner = ScriptedRunner(
+            subprocess.TimeoutExpired(
+                ["docker", "pull"], containers.DOCKER_PULL_TIMEOUT_SECONDS,
+                output="REDACT-ME" * 1024, stderr="REDACT-ME" * 1024,
+            )
+        )
+
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            self.runtime(runner).pull_and_verify(self.image)
+
+        self.assertNotIn("REDACT-ME", str(raised.exception))
+        self.assertEqual(len(runner.calls), 1)
 
     def test_verify_local_image_never_pulls_and_returns_exact_image_id(self):
         metadata = {
