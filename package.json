@@ -94,7 +94,7 @@
     "@earendil-works/pi-ai": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-ai-0.82.1.tgz",
     "@earendil-works/pi-coding-agent": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-coding-agent-0.82.1.tgz",
     "@earendil-works/pi-tui": "https://github.com/ccoussa717/pi/releases/download/alloy-tui-v0.82.1.10/earendil-works-pi-tui-0.82.1.tgz",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "typebox": "1.1.38",
     "yaml": "2.9.0"
   },
